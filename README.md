@@ -12,3 +12,7 @@ It works through drivers; Claude Code is the first.
 
 This project is not affiliated with or endorsed by Anthropic. "Claude Code"
 names the agent the first driver drives.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
