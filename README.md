@@ -49,6 +49,10 @@ a plain `node:http` server), the page and the link.
 Fastify app that mounts the cockpit, offers a job and prints its link, and a
 page in plain JavaScript that runs the job, follows the sessions and mounts
 a terminal. It runs with no login against a scripted API.
+[examples/translate-and-access](examples/translate-and-access/DEMO.md) shows
+access: the link and its token, the app's own API checking it, a page of
+the network refused, then served once the app opens itself with
+`authorize`, the terminal kept to the machine, and the token renewed.
 
 ## Documents
 
