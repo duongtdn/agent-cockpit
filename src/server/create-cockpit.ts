@@ -43,7 +43,9 @@ export interface Cockpit {
    * @throws `CockpitError` `unknown-job`, `invalid-arguments`;
    * `wrong-state` when the key has a session, whatever its state, in this
    * version; `unobservable` when the agent reported nothing and its session
-   * was ended. An `Error` with no code when the cockpit is closed before the
+   * was ended; `no-app-port` when no port of the app's browser-facing
+   * server is known, so the session's sandbox could not be kept from it.
+   * An `Error` with no code when the cockpit is closed before the
    * run settles, or was closed before it (500 on the wire): an agent
    * already started goes on in tmux.
    */

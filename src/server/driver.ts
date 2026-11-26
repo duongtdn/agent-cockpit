@@ -76,7 +76,10 @@ export interface Confinement {
  * asking the person, as the app set the driver.
  */
 export type SessionNetwork =
-  /** No further than the confinement's lines allow; beyond them, the agent asks. */
+  /**
+   * No further than the confinement's lines allow; beyond them, the agent
+   * asks or refuses, never reaches.
+   */
   | { readonly reach: 'confined' }
   /**
    * Beyond the allow-list, without asking: other local ports, the internet,
