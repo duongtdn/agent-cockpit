@@ -1,20 +1,14 @@
 import { execFileSync } from 'node:child_process';
 
 /**
- * The variable by which CI, and only CI, says that its platform cannot run
- * the agent's sandbox, and why. A run where the sandbox cannot run and
- * nothing says so fails the sandbox's rows, so that they are never skipped
- * unseen; a run where CI says so leaves them out, and its results say why.
+ * Whether the agent's sandbox can run here, for the rows that turn it on.
+ * Where it cannot, those rows fail with the problem, on every platform: they
+ * are never left out.
  */
-export const SANDBOX_LACKING_VARIABLE = 'COCKPIT_CONTRACT_SANDBOX_LACKING';
-
-/** Whether the agent's sandbox can run here, for the rows that turn it on. */
 export type SandboxStatus =
   | { readonly kind: 'available' }
-  /** It cannot run and nothing says the platform lacks it: the rows fail with the problem. */
-  | { readonly kind: 'missing'; readonly problem: string }
-  /** It cannot run, and CI says its platform lacks it: the rows do not run, and the results say why. */
-  | { readonly kind: 'declared-lacking'; readonly reason: string; readonly problem: string };
+  /** It cannot run: the rows fail with the problem. */
+  | { readonly kind: 'missing'; readonly problem: string };
 
 /** Tells why the sandbox cannot run, or nothing when it can. */
 export type SandboxProbe = () => string | undefined;
@@ -43,27 +37,17 @@ export const probeTheSandbox: SandboxProbe = () => {
 /**
  * Tells whether the agent's sandbox can run here.
  *
- * @param variables - The process's environment.
  * @param probe - What tries the sandbox's programs; this machine's by default.
- * @returns The status: available; declared lacking, only when `CI` is
- * `true` and {@link SANDBOX_LACKING_VARIABLE} gives a reason; else missing.
+ * @returns The status: available, or missing with why and what would fix it.
  */
-export function sandboxStatus(
-  variables: Readonly<Record<string, string | undefined>> = process.env,
-  probe: SandboxProbe = probeTheSandbox,
-): SandboxStatus {
+export function sandboxStatus(probe: SandboxProbe = probeTheSandbox): SandboxStatus {
   const problem = probe();
   if (problem === undefined) return { kind: 'available' };
-  const reason = variables[SANDBOX_LACKING_VARIABLE];
-  if (variables.CI === 'true' && reason !== undefined && reason !== '') {
-    return { kind: 'declared-lacking', reason, problem };
-  }
   return {
     kind: 'missing',
     problem:
       `The agent's sandbox cannot run here: ${problem}. Install bubblewrap and socat, and let ` +
       'unprivileged user namespaces be made (on Ubuntu 24.04: sysctl ' +
-      'kernel.apparmor_restrict_unprivileged_userns=0). Only CI may say that its platform ' +
-      `lacks the sandbox, by ${SANDBOX_LACKING_VARIABLE}=<why> with CI=true.`,
+      'kernel.apparmor_restrict_unprivileged_userns=0).',
   };
 }

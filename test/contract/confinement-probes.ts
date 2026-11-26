@@ -183,9 +183,7 @@ type SandboxedBody = () => Promise<void>;
 
 /**
  * Declares a test that turns the agent's sandbox on. Where the sandbox
- * cannot run, the test fails, saying why — unless CI declared its platform
- * lacks it: then the test does not run, and the run's results say so. It is
- * never left out unseen.
+ * cannot run, the test fails, saying why: it is never left out.
  *
  * @param title - The behavior's number and the behavior.
  * @param body - The test.
@@ -193,16 +191,11 @@ type SandboxedBody = () => Promise<void>;
  */
 export function itInTheSandbox(title: string, body: SandboxedBody, timeoutMs?: number): void {
   const status = sandboxStatus();
-  const marked: SandboxedBody = async () => {
-    runningTestMeta().needsSandbox = true;
+  const checked: SandboxedBody = async () => {
     if (status.kind === 'missing') throw new Error(status.problem);
     await body();
   };
-  if (status.kind === 'declared-lacking') {
-    it.skip(title, marked);
-    return;
-  }
-  it(title, marked, timeoutMs);
+  it(title, checked, timeoutMs);
 }
 
 /** One address a sandboxed command tries, in a mode's measure. */

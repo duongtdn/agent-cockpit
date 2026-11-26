@@ -49,9 +49,7 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:browser
       # The pinned agent, in tmux, against a scripted API of the suite's own: no login, no secret.
-      # Its sandbox rows fail where the sandbox cannot run; only COCKPIT_CONTRACT_SANDBOX_LACKING,
-      # set here with a reason, would leave them out, and contract.json would say so. It is not set:
-      # the step above makes the sandbox run.
+      # Its sandbox rows fail, saying why, where the sandbox cannot run: the step above makes it run.
       - run: pnpm test:contract
       - uses: actions/upload-artifact@v7
         if: always()

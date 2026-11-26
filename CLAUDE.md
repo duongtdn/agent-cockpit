@@ -132,9 +132,7 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   folder (`personsSettings`), with `failIfUnavailable`. They need bubblewrap
   and socat, and user namespaces (`bwrap --unshare-all --ro-bind / / true`
   must run). Where the sandbox cannot run, those rows fail saying why
-  (`itInTheSandbox`); only CI may leave them out, by
-  `COCKPIT_CONTRACT_SANDBOX_LACKING=<why>` with `CI=true`, and the results
-  then say so. A mode's network is measured by `measureReach`: a person at
+  (`itInTheSandbox`), on every platform: they are never left out. A mode's network is measured by `measureReach`: a person at
   the terminal approves each command `auto`'s server-side check would judge
   (the scripted API cannot stand in for it) and answers every network ask
   "No"; the driver counts a mode as confined only where rows 80–81 show
@@ -145,7 +143,7 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   an artifact): the agent's version, the date, each behavior's number, title
   and outcome, every Enter the agent lost in a submit (`lostEnters`: the
   test, the text, how many), which fails no test, whether the sandbox ran
-  (`sandbox`: when not, why and the rows left out), and what a sandboxed
+  (`sandbox`: when not, why), and what a sandboxed
   command reached in each mode measured (`networkByMode`).
 
 ## The fake agent

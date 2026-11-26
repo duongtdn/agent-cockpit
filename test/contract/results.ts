@@ -35,8 +35,6 @@ declare module 'vitest' {
     lostEnters?: LostEnters[];
     /** What a sandboxed command reached, for a test that measures a mode's network. */
     networkReach?: NetworkReach;
-    /** Set on a test that turns the agent's sandbox on. */
-    needsSandbox?: boolean;
   }
 }
 
@@ -72,19 +70,10 @@ export interface ContractResults {
    * lost Enter fails no test, since the driver absorbs it, but shows here.
    */
   readonly lostEnters: readonly TestLostEnters[];
-  /**
-   * Whether the agent's sandbox ran: when it could not, why, and the
-   * behaviors that did not run for it (only where CI declared its platform
-   * lacks it; elsewhere they failed).
-   */
+  /** Whether the agent's sandbox could run: when it could not, why (its rows then failed). */
   readonly sandbox:
     | { readonly available: true }
-    | {
-        readonly available: false;
-        readonly reason?: string;
-        readonly problem: string;
-        readonly notRun: readonly string[];
-      };
+    | { readonly available: false; readonly problem: string };
   /** What a sandboxed command reached in each permission mode measured, with its test. */
   readonly networkByMode: readonly (NetworkReach & { readonly test: string })[];
 }
@@ -98,8 +87,6 @@ export interface FinishedTest {
   readonly lostEnters?: readonly LostEnters[];
   /** What it measured of a mode's network, as the test noted it. */
   readonly networkReach?: NetworkReach;
-  /** Whether it turns the agent's sandbox on. */
-  readonly needsSandbox?: boolean;
 }
 
 /** A behavior's test is titled with its number, a dash, and the behavior. */
@@ -149,22 +136,15 @@ export function contractResults(
     lostEnters: tests.flatMap((test) =>
       (test.lostEnters ?? []).map((lost) => ({ test: test.name, ...lost })),
     ),
-    sandbox: sandboxResult(sandbox, tests),
+    sandbox: sandboxResult(sandbox),
     networkByMode: tests.flatMap(({ name, networkReach }) =>
       networkReach === undefined ? [] : [{ test: name, ...networkReach }],
     ),
   };
 }
 
-function sandboxResult(
-  sandbox: SandboxStatus,
-  tests: readonly FinishedTest[],
-): ContractResults['sandbox'] {
-  if (sandbox.kind === 'available') return { available: true };
-  const notRun = tests
-    .filter((test) => test.needsSandbox === true && test.state === 'skipped')
-    .map((test) => test.name)
-    .filter((name) => BEHAVIOR_TITLE.test(name));
-  const reason = sandbox.kind === 'declared-lacking' ? { reason: sandbox.reason } : {};
-  return { available: false, ...reason, problem: sandbox.problem, notRun };
+function sandboxResult(sandbox: SandboxStatus): ContractResults['sandbox'] {
+  return sandbox.kind === 'available'
+    ? { available: true }
+    : { available: false, problem: sandbox.problem };
 }

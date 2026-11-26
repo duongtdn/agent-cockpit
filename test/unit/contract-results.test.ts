@@ -84,30 +84,10 @@ describe("the contract suite's results", () => {
     ]);
   });
 
-  it('say when CI declared its platform lacks the sandbox, and which behaviors did not run for it', () => {
-    const results = contractResults(
-      '2.1.332',
-      AT,
-      [
-        { name: '51 — deniedDomains refuses the port', state: 'skipped', needsSandbox: true },
-        { name: '75 — An Edit deny keeps writes out', state: 'passed' },
-        { name: 'not a behavior', state: 'skipped', needsSandbox: true },
-      ],
-      { kind: 'declared-lacking', reason: 'no user namespaces', problem: 'bwrap failed' },
-    );
-
-    expect(results.sandbox).toEqual({
-      available: false,
-      reason: 'no user namespaces',
-      problem: 'bwrap failed',
-      notRun: ['51 — deniedDomains refuses the port'],
-    });
-  });
-
-  it('say the sandbox was missing where nothing declared it lacking: its rows failed', () => {
+  it('say why the sandbox could not run: its rows failed', () => {
     const results = contractResults('2.1.332', AT, [], { kind: 'missing', problem: 'no bwrap' });
 
-    expect(results.sandbox).toEqual({ available: false, problem: 'no bwrap', notRun: [] });
+    expect(results.sandbox).toEqual({ available: false, problem: 'no bwrap' });
   });
 
   it('list what a sandboxed command reached in each mode measured, in the order of the run', () => {
