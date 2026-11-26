@@ -22,15 +22,26 @@ jobs:
       # sandbox, which the contract rows of the confinement lines turn on, runs on bubblewrap and socat.
       - name: Install tmux, what node-pty compiles with, and the agent's sandbox
         run: sudo apt-get update && sudo apt-get install --yes tmux build-essential python3 bubblewrap socat
-      # Ubuntu 24.04 keeps an unconfined bwrap from making user namespaces; the sandbox needs them.
-      # The check fails the job here, loudly, if the runner still cannot make one.
-      - name: Let the agent's sandbox make user namespaces
+      # Ubuntu 24.04 restricts user namespaces through AppArmor twice: an unconfined process may not
+      # make one (the sysctl), and its bwrap-userns-restrict profile, where loaded, lets bwrap make
+      # one but denies every capability to what bwrap runs. The agent's seccomp helper, run inside
+      # bwrap, makes a user namespace of its own and needs its capabilities there (to write
+      # /proc/self/setgroups), so that profile is unloaded. The check makes the same nesting, and
+      # fails the job here, loudly, if the runner still cannot.
+      - name: Let the agent's sandbox make user namespaces, nested ones too
         run: |
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-          bwrap --unshare-all --die-with-parent --ro-bind / / true
-          echo "bwrap makes its namespaces"
+          bwrap_profiles() { sudo aa-status 2> /dev/null | grep -i bwrap || echo "  none"; }
+          echo "AppArmor profiles about bwrap:"; bwrap_profiles
+          if [ -e /etc/apparmor.d/bwrap-userns-restrict ]; then
+            sudo apparmor_parser --remove /etc/apparmor.d/bwrap-userns-restrict || true
+          fi
+          echo "Still loaded:"; bwrap_profiles
+          bwrap --unshare-all --die-with-parent --ro-bind / / --proc /proc --dev /dev \
+            unshare --user --map-root-user true
+          echo "bwrap makes its namespaces, and what it runs makes its own"
       - name: Check that tmux is 3.2a or later
         run: |
           version="$(tmux -V | cut -d ' ' -f 2)"
