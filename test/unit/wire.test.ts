@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isWireToken,
   keyOfTerminalPath,
   terminalPath,
   tokenOfSubprotocols,
@@ -13,6 +14,25 @@ const token = 'kq3J_x-9Zt0aPbXw2eYc8vRm4nLs6uHd1oQiGfAjK7E';
 function offeredHeader(protocols: readonly string[]): string {
   return protocols.join(', ');
 }
+
+describe('what can be a token on the wire', () => {
+  it.each([
+    ['base64url', token],
+    ['hex', '0123456789abcdef'],
+  ])('takes a token in %s', (_, text) => {
+    expect(isWireToken(text)).toBe(true);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['with a space', 'a b'],
+    ['with a comma', 'a,b'],
+    ['with an equals sign', 'ab='],
+    ['beyond ASCII', 'café'],
+  ])('refuses a text %s', (_, text) => {
+    expect(isWireToken(text)).toBe(false);
+  });
+});
 
 describe('the subprotocols that carry the token', () => {
   it('offers the wire subprotocol, then the token', () => {

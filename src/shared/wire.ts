@@ -38,6 +38,19 @@ const TOKEN_CARRIER = `${WIRE_SUBPROTOCOL}.token.`;
 const SUBPROTOCOL_TEXT = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 /**
+ * Tells whether a text can be the app's token on the wire: carried in a
+ * subprotocol, so in a header too. A token the server makes always can
+ * (base64url without padding, or hex); a text read from a link or a storage
+ * may not.
+ *
+ * @param text - The candidate token.
+ * @returns `true` for one or more of the characters a subprotocol may hold.
+ */
+export function isWireToken(text: string): boolean {
+  return SUBPROTOCOL_TEXT.test(text);
+}
+
+/**
  * Gives the subprotocols a browser offers when it opens a WebSocket of the
  * wire: {@link WIRE_SUBPROTOCOL}, then one that carries the token.
  *
@@ -48,7 +61,7 @@ const SUBPROTOCOL_TEXT = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
  * ASCII): the browser would refuse to open the socket.
  */
 export function wireSubprotocols(token: string): [string, string] {
-  if (!SUBPROTOCOL_TEXT.test(token)) {
+  if (!isWireToken(token)) {
     throw new TypeError('The token holds characters a WebSocket subprotocol cannot carry.');
   }
   return [WIRE_SUBPROTOCOL, `${TOKEN_CARRIER}${token}`];
