@@ -106,7 +106,17 @@ class FolderJudge {
         `can be written by its group (gid ${gid}), without the sticky bit, and ${why}: another member could put a folder of theirs in place of the cockpit's.`,
       );
     if (gid !== process.getgid?.()) throw shared("it is not the user's primary group");
-    const listed = (await readGroups(this.#groupFile)).filter((group) => group.gid === gid);
+    let groups: Group[];
+    let accounts: Account[];
+    try {
+      groups = await readGroups(this.#groupFile);
+      accounts = await readPrimaryGroups(this.#passwdFile);
+    } catch (error) {
+      // The exception is granted only on files read whole: anything less refuses it.
+      if (!(error instanceof IncompleteListError)) throw error;
+      throw shared(`${error.message}, so the cockpit cannot tell it is the user's private group`);
+    }
+    const listed = groups.filter((group) => group.gid === gid);
     if (listed.length === 0) {
       throw shared(
         `${this.#groupFile} does not list it, so the cockpit cannot tell it is the user's private group`,
@@ -117,7 +127,7 @@ class FolderJudge {
     const user = userInfo().username;
     if (group.name !== user) throw shared(`it is not named after the user ${user}`);
     if (group.members.some((member) => member !== user)) throw shared('it has other members');
-    const others = (await readPrimaryGroups(this.#passwdFile))
+    const others = accounts
       .filter((account) => account.gid === gid && account.name !== user)
       .map((account) => account.name);
     if (others.length > 0) {
@@ -166,7 +176,7 @@ async function leadsTo(link: string): Promise<string> {
     return await realpath(link);
   } catch (error) {
     const { code } = error as NodeJS.ErrnoException;
-    if (code !== 'ENOENT' && code !== 'ELOOP') throw error;
+    if (code !== 'ENOENT' && code !== 'ELOOP' && code !== 'ENOTDIR') throw error;
     throw new UntrustedStateError(link, `is a symbolic link that leads to no folder (${code}).`);
   }
 }
@@ -184,27 +194,62 @@ interface Account {
   readonly gid: number;
 }
 
+/** A system file the cockpit cannot read whole: what it lists is not all there is. */
+class IncompleteListError extends Error {}
+
 /** The groups of a group file (`name:password:gid:member,member`), in its order. */
 async function readGroups(file: string): Promise<Group[]> {
-  return (await readEntries(file)).flatMap(([name, , gid, members]) =>
-    name && gid && /^\d+$/.test(gid)
-      ? [{ name, gid: Number(gid), members: (members ?? '').split(',').filter(Boolean) }]
-      : [],
-  );
+  return (await readEntries(file, 2)).map(({ name, gid, fields }) => ({
+    name,
+    gid,
+    members: (fields[3] ?? '').split(',').filter(Boolean),
+  }));
 }
 
 /** The users of a passwd file (`name:password:uid:gid:…`) with their primary groups. */
 async function readPrimaryGroups(file: string): Promise<Account[]> {
-  return (await readEntries(file)).flatMap(([name, , , gid]) =>
-    name && gid && /^\d+$/.test(gid) ? [{ name, gid: Number(gid) }] : [],
-  );
+  return (await readEntries(file, 3)).map(({ name, gid }) => ({ name, gid }));
 }
 
-/** The fields of each line of a system file, its line ends CRLF or LF. */
-async function readEntries(file: string): Promise<string[][]> {
-  return (await readFile(file, 'utf8'))
+/** A line of a system file: its name, its gid and all its fields. */
+interface Entry {
+  readonly name: string;
+  readonly gid: number;
+  readonly fields: readonly string[];
+}
+
+/**
+ * The entries of a system file, its comments and blank lines skipped, its
+ * line ends CRLF or LF.
+ *
+ * @throws IncompleteListError when the file cannot be read, or a line is
+ * no plain entry — a NIS `+` or `-` line, which brings entries from
+ * elsewhere, or a gid that is no number.
+ */
+async function readEntries(file: string, gidField: number): Promise<Entry[]> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (error) {
+    throw new IncompleteListError(
+      `${file} cannot be read (${(error as NodeJS.ErrnoException).code})`,
+    );
+  }
+  return text
     .split('\n')
-    .map((line) => line.replace(/\r$/, '').split(':'));
+    .map((line) => line.replace(/\r$/, ''))
+    .filter((line) => line.trim() !== '' && !line.startsWith('#'))
+    .map((line) => {
+      const fields = line.split(':');
+      const [name] = fields;
+      const gid = fields[gidField];
+      if (!name || /^[+-]/.test(name) || gid === undefined || !/^\d+$/.test(gid)) {
+        throw new IncompleteListError(
+          `${file} has a line that is no plain entry (${JSON.stringify(line)})`,
+        );
+      }
+      return { name, gid: Number(gid), fields };
+    });
 }
 
 /** A folder and every folder above it, the root first. */

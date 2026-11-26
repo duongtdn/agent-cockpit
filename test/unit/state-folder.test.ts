@@ -175,8 +175,13 @@ describe('openStateFolder', () => {
     function privateGroup(groupLine = `${me}:x:${myGroup}:`) {
       return {
         groupFile: groupFile('other:x:1:', groupLine),
-        passwdFile: passwdFile(`${me}:x:${process.getuid?.()}:${myGroup}::/home/${me}:/bin/sh`),
+        passwdFile: passwdFile(myAccount()),
       };
+    }
+
+    /** The user's own line of the passwd file. */
+    function myAccount(): string {
+      return `${me}:x:${process.getuid?.()}:${myGroup}::/home/${me}:/bin/sh`;
     }
 
     const me = userInfo().username;
@@ -310,7 +315,52 @@ describe('openStateFolder', () => {
     });
 
     it.each([
+      ['a NIS line in the passwd file', () => ({ passwdFile: passwdFile(myAccount(), '+::::::') })],
+      [
+        'a NIS line in the group file',
+        () => ({ groupFile: groupFile(`${me}:x:${myGroup}:`, '-bob') }),
+      ],
+      [
+        'a gid that is no number',
+        () => ({ passwdFile: passwdFile(myAccount(), 'bob:x:4243:staff::/:/bin/sh') }),
+      ],
+      ['a passwd file it cannot read', () => ({ passwdFile: join(root, 'no-passwd') })],
+      ['a group file it cannot read', () => ({ groupFile: join(root, 'no-group') })],
+    ])(
+      'refuses a parent its group can write when the system’s files are not read whole: %s',
+      async (_, files) => {
+        const parent = groupWritable('shared');
+        const given = { ...privateGroup(), ...files() };
+        const named = 'passwdFile' in files() ? given.passwdFile : given.groupFile;
+        await expect(openStateFolder(join(parent, 'my-app'), given)).rejects.toThrow(
+          expect.objectContaining({
+            name: 'UntrustedStateError',
+            path: parent,
+            message: expect.stringContaining(named),
+          }),
+        );
+      },
+    );
+
+    it('skips the comments and blank lines of the system’s files', async () => {
+      const parent = groupWritable('mine');
+      const given = {
+        groupFile: groupFile('# groups', '', `${me}:x:${myGroup}:`),
+        passwdFile: passwdFile('# users', '', myAccount()),
+      };
+      await openStateFolder(join(parent, 'my-app'), given);
+      expect(modeOf(join(parent, 'my-app'))).toBe(0o700);
+    });
+
+    it.each([
       ['leads nowhere', () => symlinkSync(join(root, 'missing'), join(root, 'link'))],
+      [
+        'leads through a file',
+        () => {
+          writeFileSync(join(root, 'file'), '');
+          symlinkSync(join(root, 'file/below'), join(root, 'link'));
+        },
+      ],
       [
         'loops',
         () => {

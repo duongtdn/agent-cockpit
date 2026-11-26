@@ -74,8 +74,12 @@ request also carries the app's token, or is refused with `no-token`
   is the user's private one (the user's primary group, listed once in
   `/etc/group`, named after the user, with no other member there and no
   other user's primary group in `/etc/passwd`; a group `/etc/group` does
-  not list, as from LDAP, is refused). A symbolic link that leads nowhere,
-  or loops, is refused the same way. Otherwise another user could rename the
+  not list, as from LDAP, is refused). The exception holds only on files
+  read whole: if either file cannot be read, or holds a NIS `+` or `-` line
+  or a gid that is no number, the group-writable folder is refused, the
+  message saying why (comments and blank lines are skipped). A symbolic
+  link that leads nowhere, loops, or passes through a file is refused the
+  same way. Otherwise another user could rename the
   state folder away and put a folder of theirs in its place, with a
   session's settings whose hooks run commands as the person; the start is
   refused (`invalid-options`) and nothing is created. The missing folders
