@@ -1,4 +1,5 @@
 import type { StartUpDialogKind } from './configuration.ts';
+import type { DrawnBox } from './input-box.ts';
 import { type DialogSubjects, renderStartUpDialog } from './start-up-dialogs.ts';
 
 /** What a session is doing, in the words of its screen. */
@@ -33,8 +34,10 @@ export interface ScreenView {
   readonly lastPrompt: string | undefined;
   /** Why the agent fails, when it was asked to play what it cannot: its last screen says so. */
   readonly problem: string | undefined;
-  /** The text in the input box. */
-  readonly input: string;
+  /** The input box, as it is drawn. */
+  readonly box: DrawnBox;
+  /** Whether a subagent ran in the background and ended: the footer then says where to see it. */
+  readonly subagentEnded?: boolean;
   /** The start-up dialog that covers the screen, if any: Claude Code draws nothing else then. */
   readonly startUpDialog?: ShownStartUpDialog | undefined;
   /** What the agent printed as it left, below what it showed. */
@@ -46,7 +49,8 @@ const DEFAULT_WIDTH = 80;
 
 /**
  * The footer under the input box, as Claude Code 2.1.332 draws it in the
- * modes and states it was seen in; none in the others.
+ * modes and states it was seen in; none in the others. In the default mode
+ * an idle box with text drops the hints, and shell mode says so.
  */
 const FOOTERS: Readonly<Record<string, Partial<Record<AgentState, string>>>> = {
   default: {
@@ -55,13 +59,21 @@ const FOOTERS: Readonly<Record<string, Partial<Record<AgentState, string>>>> = {
   },
   bypassPermissions: { idle: '⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents' },
 };
+const DEFAULT_FOOTER_OVER_TEXT = '⏸ manual mode on';
+const SHELL_MODE_FOOTER = '! for shell mode';
+/** Seen of Claude Code once a subagent ended: a hint in place of the shortcuts', over an empty box and over text. */
+const FOOTERS_AFTER_A_SUBAGENT = {
+  empty: '⏸ manual mode on · /tasks to see subagents · ← for agents',
+  overText: '⏸ manual mode on · /tasks to see subagents',
+};
 
 /**
  * Renders the screen. A start-up dialog is drawn as Claude Code draws it,
  * alone. Otherwise one fact a line, always in the same order, so that a
  * test finds each by its label; then, once the session started, the input
  * box between two rules as Claude Code draws it (`❯`, the text), and the
- * footer of the mode where it is known.
+ * footer of the mode where it is known. A dialog takes the box's place, as
+ * in Claude Code: no box is drawn while one shows.
  *
  * @param view - What to show.
  * @param width - The terminal's width, for the rules.
@@ -75,7 +87,7 @@ export function renderScreen(view: ScreenView, width = DEFAULT_WIDTH): string[] 
         view.startUpDialog.subjects,
         width,
       )
-    : [...facts(view), ...inputBox(view, width)];
+    : [...facts(view), ...(view.dialog ? [] : inputBox(view, width))];
   return [...shown, ...(view.farewell ?? [])];
 }
 
@@ -94,9 +106,31 @@ function facts(view: ScreenView): string[] {
 
 /** Seen of Claude Code: the box is drawn once the session started; keys typed before are kept in it. */
 function inputBox(view: ScreenView, width: number): string[] {
-  const rows = view.input.split('\n').map((line, index) => `${index === 0 ? '❯ ' : '  '}${line}`);
-  if (view.state === 'starting') return rows;
-  const rule = '─'.repeat(width);
-  const footer = FOOTERS[view.permissionMode]?.[view.state];
-  return [rule, ...rows, rule, ...(footer === undefined ? [] : [`  ${footer}`])];
+  const { box } = view;
+  if (view.state === 'starting') return [...box.rows];
+  const footer = footerOf(view);
+  return [
+    rule(box.above, width),
+    ...box.rows,
+    rule(box.below, width),
+    ...(footer === undefined ? [] : [`  ${footer}`]),
+  ];
+}
+
+function footerOf({ box, permissionMode, state, subagentEnded }: ScreenView): string | undefined {
+  if (permissionMode === 'default' && state === 'idle') {
+    if (box.inShellMode) return SHELL_MODE_FOOTER;
+    if (subagentEnded) {
+      return box.looksEmpty ? FOOTERS_AFTER_A_SUBAGENT.empty : FOOTERS_AFTER_A_SUBAGENT.overText;
+    }
+    if (!box.looksEmpty) return DEFAULT_FOOTER_OVER_TEXT;
+  }
+  return FOOTERS[permissionMode]?.[state];
+}
+
+/** A rule across the terminal, with what it says after three of its dashes, as Claude Code draws it. */
+function rule(label: string | undefined, width: number): string {
+  if (label === undefined) return '─'.repeat(width);
+  const start = `─── ${label} `;
+  return start + '─'.repeat(Math.max(0, width - Array.from(start).length));
 }

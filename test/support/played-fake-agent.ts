@@ -1,4 +1,5 @@
 import { createFakeAgent, type FakeAgent } from './fake-agent/agent.ts';
+import { OBSERVED_SIZE } from './fake-agent/box-layout.ts';
 import type { StartUpDialogKind } from './fake-agent/configuration.ts';
 import type { HookEvent } from './fake-agent/hook-events.ts';
 import type { ScreenView } from './fake-agent/screen.ts';
@@ -109,6 +110,8 @@ export async function playFakeAgent({
     promptsTaken: 0,
     secondsSinceLastResponse: resumedAfterSeconds,
     workFolder: WORK_FOLDER,
+    historyIsOwn: resumedAfterSeconds === undefined,
+    terminalSize: () => OBSERVED_SIZE,
     allowRules,
     deniedPaths,
     configuration: {

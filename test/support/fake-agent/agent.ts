@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { TerminalSize } from './box-layout.ts';
 import type { CommandLine } from './command-line.ts';
 import type { AgentConfiguration, StartUpDialogKind } from './configuration.ts';
 import { type Decision, decisionOf } from './hook-answers.ts';
@@ -27,7 +28,7 @@ import {
   userPromptSubmit,
 } from './hook-events.ts';
 import type { HookRunner } from './hook-runner.ts';
-import { createInputBox } from './input-box.ts';
+import { createInputBox, type DrawnBox } from './input-box.ts';
 import type { Key } from './keys.ts';
 import { allowsEveryCallOf, deniedPathNamedBy } from './permission-settings.ts';
 import type { AgentState, Dialog, ScreenView, ShownStartUpDialog } from './screen.ts';
@@ -64,6 +65,14 @@ export interface AgentSurroundings {
   readonly secondsSinceLastResponse: number | undefined;
   /** The folder the session runs in. */
   readonly workFolder: string;
+  /**
+   * Whether the prompts Up would show are all this process's own to know:
+   * no conversation of the folder's project took any before it. Claude Code
+   * shows earlier sessions' too, in a way that was not made out.
+   */
+  readonly historyIsOwn: boolean;
+  /** The terminal's size now, which the input box is laid out in. */
+  terminalSize(): TerminalSize;
   /** The rules the settings allow tool calls by, with no ask. */
   readonly allowRules: readonly string[];
   /**
@@ -141,6 +150,22 @@ const DECLINED_STATUS = 1;
 
 /** The only local command the fake agent plays: the others were not observed, or not as typed. */
 const COMPACT_COMMAND = '/compact';
+
+/**
+ * How long after `PermissionRequest` is sent the permission dialog is
+ * drawn: Claude Code was seen to draw it 324 to 514 ms after the hook
+ * reached its receiver, the input box on screen and taking keys until then.
+ */
+const PERMISSION_DIALOG_DELAY_MS = 400;
+
+/** What the screen shows of an input box it cannot draw, once the agent fails on it. */
+const UNDRAWN_BOX: DrawnBox = {
+  rows: [],
+  above: undefined,
+  below: undefined,
+  looksEmpty: true,
+  inShellMode: false,
+};
 
 /** Thrown inside a turn to end it as an interruption does: with no hook. */
 class Interruption extends Error {}
@@ -231,7 +256,9 @@ interface PendingTask {
  */
 export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   const { commandLine, hooks, transcript } = surroundings;
-  const box = createInputBox();
+  /** The prompts this process took, for Up to show; `undefined` once what Claude Code would show is not known. */
+  let history: string[] | undefined = surroundings.historyIsOwn ? [] : undefined;
+  const box = createInputBox({ size: surroundings.terminalSize, history: () => history });
   let state: AgentState = 'starting';
   let startUpDialog: OpenStartUpDialog | undefined;
   let farewell: readonly string[] | undefined;
@@ -247,8 +274,9 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   let promptsTaken = surroundings.promptsTaken;
   let toolCalls = 0;
   let ending = false;
+  let subagentEnded = false;
 
-  function view(): ScreenView {
+  function view(drawnBox: DrawnBox = box.drawn()): ScreenView {
     return {
       sessionId: commandLine.sessionId,
       permissionMode: commandLine.permissionMode,
@@ -257,7 +285,8 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       dialog: dialog?.shown,
       lastPrompt,
       problem,
-      input: box.text(),
+      box: drawnBox,
+      subagentEnded,
       startUpDialog: shownStartUpDialog(),
       farewell,
     };
@@ -271,7 +300,12 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
 
   /** Draws the screen, unless the session ends: its last screen stays, the reason of a failure on it. */
   function show(): void {
-    if (!ending) surroundings.show(view());
+    if (ending) return;
+    try {
+      surroundings.show(view());
+    } catch (error) {
+      fail(messageOf(error));
+    }
   }
 
   /**
@@ -308,7 +342,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       state = 'idle';
       show();
     } else if (await reported) {
-      submit(commandLine.prompt);
+      submitLaunchPrompt(commandLine.prompt);
     }
   }
 
@@ -382,22 +416,91 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       pressOnStartUpDialog(startUpDialog, key);
       return;
     }
-    box.press(key);
+    if (dialog !== undefined) {
+      pressOnDialog(dialog, key);
+      return;
+    }
+    try {
+      pressInBox(key);
+    } catch (error) {
+      fail(messageOf(error));
+      return;
+    }
     if (key.kind === 'enter') pressEnter();
     if (key.kind === 'escape') turn?.interrupt();
     show();
   }
 
   /**
-   * Enter answers a dialog, or submits the input box of an idle session. A
-   * session that starts loses it. What Claude Code does with one while a
-   * turn runs was not observed.
+   * Gives a key to the input box. Seen of Claude Code: Down that leaves the
+   * box while a background task runs moves to the task in the footer, and
+   * the keys after it go to the task's panel; that is not played.
+   */
+  function pressInBox(key: Key): void {
+    if (key.kind === 'down' && task !== undefined && box.downLeavesTheBox()) {
+      throw new Error(
+        'Down past the input box while a background task runs: Claude Code moves to the task in its footer, which the fake agent does not play',
+      );
+    }
+    box.press(key);
+  }
+
+  /**
+   * Plays a key on a dialog over the input box. Seen of Claude Code: Enter
+   * answers it with the option selected (Yes), Esc interrupts the turn, and
+   * text typed on a permission dialog does nothing. Any other key (a digit
+   * alone, which may choose an option; Down, which moves the selection) was
+   * not observed as the fake agent would play it.
+   */
+  function pressOnDialog(open: OpenDialog, key: Key): void {
+    if (key.kind === 'enter') open.answerInTerminal();
+    else if (key.kind === 'escape') turn?.interrupt();
+    else if (!isIgnoredOn(open.shown, key)) {
+      fail(
+        `the key ${key.kind} on a ${open.shown.kind} dialog: what Claude Code does with it was not observed`,
+      );
+    }
+  }
+
+  /**
+   * Enter submits the input box of an idle session. A session that starts
+   * loses it. What Claude Code does with one while a turn runs was not
+   * observed, nor what it runs in shell mode.
    */
   function pressEnter(): void {
-    if (dialog) dialog.answerInTerminal();
-    else if (state === 'busy')
+    if (state === 'busy')
       fail('Enter was pressed while a turn runs: nothing tells what Claude Code does with it');
-    else if (state === 'idle' && box.text() !== '') submit(box.take());
+    else if (state === 'idle' && box.text() !== '') submitInputBox();
+  }
+
+  function submitInputBox(): void {
+    if (box.inShellMode()) {
+      fail(
+        'Enter in shell mode: Claude Code runs the text as a shell command, which the fake agent does not play',
+      );
+      return;
+    }
+    try {
+      const prompt = promptOf(box.take());
+      if (prompt === '') throw new Error('Enter on an input box of blanks: not observed');
+      submit(prompt);
+    } catch (error) {
+      fail(messageOf(error));
+    }
+  }
+
+  /** A prompt of the command line is taken as it is: whether Claude Code trims one there was not observed. */
+  function submitLaunchPrompt(prompt: string): void {
+    try {
+      if (promptOf(prompt) !== prompt) {
+        throw new Error(
+          'a launch prompt with blanks at its end or an invisible separator: what Claude Code makes of it on the command line was not observed',
+        );
+      }
+      submit(prompt);
+    } catch (error) {
+      fail(messageOf(error));
+    }
   }
 
   /** Ends the process as a program that cannot go on does, unless it ends already. */
@@ -412,8 +515,17 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     problem = reason;
     // A start-up dialog would cover the reason.
     startUpDialog = undefined;
-    surroundings.show(view());
+    surroundings.show(view(drawnOrNone()));
     surroundings.exit(CANNOT_PLAY_STATUS);
+  }
+
+  /** The input box as drawn; none, when it is what the agent cannot draw. */
+  function drawnOrNone(): DrawnBox {
+    try {
+      return box.drawn();
+    } catch {
+      return UNDRAWN_BOX;
+    }
   }
 
   /**
@@ -423,6 +535,8 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
    */
   function submit(prompt: string): void {
     if (prompt.startsWith('/')) {
+      // Whether Claude Code keeps a command in the history of the prompts was not observed.
+      history = undefined;
       if (prompt === COMPACT_COMMAND) void compact();
       else fail(`the local command ${JSON.stringify(prompt)}: only ${COMPACT_COMMAND} is played`);
       return;
@@ -431,6 +545,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       fail('a prompt while a background task is pending: the fake agent plays its end first');
       return;
     }
+    history?.push(prompt);
     startTurnOn(prompt);
   }
 
@@ -451,6 +566,8 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
    * Code leaves it, and so does its place in the script.
    */
   function withdraw(prompt: string, promptBefore: string | undefined): void {
+    // Whether the history keeps a withdrawn prompt was not observed.
+    history = undefined;
     box.putBack(prompt);
     lastPrompt = promptBefore;
   }
@@ -624,6 +741,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       }),
     );
     task = undefined;
+    subagentEnded = true;
     const notification = taskNotification({
       ...pending.launched,
       toolUseId: pending.toolUseId,
@@ -631,6 +749,8 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       toolUses: calls.length,
       durationMs: Date.now() - pending.startedAt,
     });
+    // Whether the history shows the turn a task started was not observed.
+    history = undefined;
     if (!ending) startTurnOn(notification);
   }
 
@@ -811,24 +931,39 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     const asked = hooks.configures('PermissionRequest')
       ? permissionRequest(call, planned.suggestionsIn(surroundings.workFolder))
       : permissionRequest(call);
+    let answer: (outcome: AskOutcome) => void = () => {};
     const fromTerminal = new Promise<AskOutcome>((resolve) => {
-      dialog = {
-        shown: { kind: planned.dialog, toolName: planned.name },
-        answerInTerminal: () => resolve({ runsWith: planned.inputFromTerminal() }),
-      };
+      answer = resolve;
     });
-    state = 'waiting';
-    show();
+    const open: OpenDialog = {
+      shown: { kind: planned.dialog, toolName: planned.name },
+      answerInTerminal: () => answer({ runsWith: planned.inputFromTerminal() }),
+    };
+    // Seen of Claude Code: a question shows as it is asked; a permission dialog a while after its hook.
+    if (planned.dialog === 'question') draw(open);
     const fromHooks = fire(asked, running.signal).then(
       (decision) => outcomeOf(decision, planned) ?? fromTerminal,
     );
     // The hook stays open after an answer in the terminal: what it answers then is still read.
     fromHooks.catch((error: unknown) => fail(messageOf(error)));
-    const outcome = await running.during(Promise.race([fromTerminal, fromHooks]));
+    const drawing =
+      planned.dialog === 'permission'
+        ? setTimeout(() => draw(open), PERMISSION_DIALOG_DELAY_MS)
+        : undefined;
+    const outcome = await running
+      .during(Promise.race([fromTerminal, fromHooks]))
+      .finally(() => clearTimeout(drawing));
     dialog = undefined;
     state = 'busy';
     show();
     return outcome;
+  }
+
+  /** Draws a dialog over the input box, which takes the keys from now on. */
+  function draw(open: OpenDialog): void {
+    dialog = open;
+    state = 'waiting';
+    show();
   }
 
   async function end(reason: 'prompt_input_exit' | 'other', status: number): Promise<void> {
@@ -844,6 +979,29 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   }
 
   return { start, press, terminate: () => end('other', TERMINATED_STATUS) };
+}
+
+/**
+ * Gives the prompt Claude Code takes from the input box's text. Seen of it:
+ * blanks and line breaks at the end are trimmed, those at the start kept,
+ * and the invisible separator at either end dropped.
+ *
+ * @throws `Error` for an invisible separator inside the text: what becomes of it was not observed.
+ */
+export function promptOf(text: string): string {
+  const separators = /^\u2063+|\u2063+$/g;
+  const unmarked = text.replace(separators, '');
+  if (unmarked.includes('\u2063')) {
+    throw new Error(
+      'an invisible separator inside a prompt: what Claude Code makes of it was not observed',
+    );
+  }
+  return unmarked.replace(/[ \n]+$/, '');
+}
+
+/** Seen of Claude Code: text typed on a permission dialog does nothing; a digit alone may choose an option. */
+function isIgnoredOn(shown: Dialog, key: Key): boolean {
+  return shown.kind === 'permission' && key.kind === 'text' && !/^\d$/.test(key.text);
 }
 
 function messageOf(error: unknown): string {

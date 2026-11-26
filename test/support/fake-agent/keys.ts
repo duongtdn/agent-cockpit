@@ -7,6 +7,7 @@ export type Key =
   | { readonly kind: 'backspace' }
   | { readonly kind: 'kill-line' }
   | { readonly kind: 'yank' }
+  | { readonly kind: 'end-of-line' }
   | { readonly kind: 'up' }
   | { readonly kind: 'down' }
   | { readonly kind: 'other' };
@@ -38,6 +39,7 @@ const CONTROL_KEYS: Readonly<Record<string, Key>> = {
   '\b': { kind: 'backspace' },
   '\x15': { kind: 'kill-line' },
   '\x19': { kind: 'yank' },
+  '\x05': { kind: 'end-of-line' },
 };
 
 /** Where the decoder is in a key of several characters. */

@@ -30,13 +30,16 @@ describe('the fake agent, interrupted with Esc', () => {
     expect(played.screen()).toMatchObject({
       state: 'busy',
       lastPrompt: 'think about it',
-      input: '',
+      box: expect.objectContaining({ rows: ['❯\u00a0'] }),
     });
 
     played.agent.press({ kind: 'escape' });
 
     await becomesIdle(played);
-    expect(played.screen()).toMatchObject({ lastPrompt: undefined, input: 'think about it' });
+    expect(played.screen()).toMatchObject({
+      lastPrompt: undefined,
+      box: expect.objectContaining({ rows: ['❯\u00a0think about it'] }),
+    });
     expect(played.recorded).toEqual(['think about it']);
     expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit']);
     expect(played.exits).toEqual([]);
@@ -52,7 +55,10 @@ describe('the fake agent, interrupted with Esc', () => {
     played.agent.press({ kind: 'escape' });
 
     await becomesIdle(played);
-    expect(played.screen()).toMatchObject({ lastPrompt: 'first', input: 'second' });
+    expect(played.screen()).toMatchObject({
+      lastPrompt: 'first',
+      box: expect.objectContaining({ rows: ['❯\u00a0second'] }),
+    });
   });
 
   it('takes the withdrawn prompt again on Enter, as the next prompt of the script', async () => {
@@ -88,7 +94,7 @@ describe('the fake agent, interrupted with Esc', () => {
     expect(played.recorded).toEqual(['touch, then think', INTERRUPTED]);
     expect(played.screen()).toMatchObject({
       lastPrompt: 'touch, then think',
-      input: '',
+      box: expect.objectContaining({ rows: ['❯\u00a0'] }),
       step: undefined,
     });
     expect(played.fired).toEqual([
@@ -123,7 +129,7 @@ describe('the fake agent, interrupted with Esc', () => {
     expect(played.recorded).toEqual(['think about it', INTERRUPTED]);
     expect(played.screen()).toMatchObject({
       lastPrompt: 'think about it',
-      input: 'typed meanwhile',
+      box: expect.objectContaining({ rows: ['❯\u00a0typed meanwhile'] }),
     });
   });
 });

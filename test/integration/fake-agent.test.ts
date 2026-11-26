@@ -132,6 +132,8 @@ function runDirectly(options: {
   script?: readonly Turn[];
   settings?: string;
   prompt?: string;
+  /** The conversation resumed, by its id; a new one by default. */
+  resume?: string;
 }): DirectRun {
   const { folder, settingsFile } = prepare(
     options.script,
@@ -142,8 +144,9 @@ function runDirectly(options: {
     agent.command,
     [
       ...agent.args,
-      '--session-id',
-      randomUUID(),
+      ...(options.resume === undefined
+        ? ['--session-id', randomUUID()]
+        : ['--resume', options.resume]),
       '--settings',
       settingsFile,
       ...(options.prompt === undefined ? [] : ['--', options.prompt]),
@@ -308,13 +311,37 @@ describe('the fake agent: its start and its hooks', () => {
     expect(transcriptOf(end)).toContain('"first"');
   });
 
-  it('resumed for a conversation that does not exist, exits at once with no SessionStart', async () => {
-    const never = { name: 'never', id: randomUUID(), folder: join(root, 'never') };
+  it('resumed for a conversation with no transcript, says so, fires SessionEnd (other) and no SessionStart, and exits with 1', async () => {
+    const id = randomUUID();
 
-    const session = await launch({ resume: never });
+    const { status, errors } = await runDirectly({ resume: id }).ended;
 
-    await expectGone(session);
-    expect(receiver.events()).toEqual([]);
+    expect(status).toBe(1);
+    expect(errors).toBe(`No conversation found with session ID: ${id}\n`);
+    expect(receiver.events()).toEqual(['SessionEnd', 'SessionEnd']);
+    expect(receiver.received.map((hook) => hook.payload)).toEqual([
+      expect.objectContaining({ session_id: id, hook_event_name: 'SessionEnd', reason: 'other' }),
+      expect.objectContaining({ session_id: id, hook_event_name: 'SessionEnd', reason: 'other' }),
+    ]);
+  });
+
+  it('resumed for a conversation that never took a prompt, finds none: no transcript was written', async () => {
+    const never = await launchReady();
+    process.kill(await pidOf(never), 'SIGTERM');
+    await expectGone(never);
+    await receiver.next('SessionEnd');
+    await receiver.next('SessionEnd');
+
+    const resumed = await launch({ resume: never });
+
+    await expectGone(resumed);
+    expect(receiver.events()).toEqual([
+      'SessionStart',
+      'SessionEnd',
+      'SessionEnd',
+      'SessionEnd',
+      'SessionEnd',
+    ]);
   });
 
   it('refuses to start without a configuration folder of the test: it writes nowhere else', async () => {
@@ -352,11 +379,11 @@ describe('the fake agent: taking a prompt', () => {
 
     await type(session, 'early');
     await host.sendText(session.name, '!', pacing);
-    await expectScreen(session, 'state: starting', '❯ early!');
+    await expectScreen(session, 'state: starting', '❯\u00a0early!');
     expect(receiver.events()).toEqual([]);
     releaseStart(session.folder);
     await receiver.next('SessionStart');
-    await expectScreen(session, 'state: idle', '─\n❯ early!\n─');
+    await expectScreen(session, 'state: idle', '─\n❯\u00a0early!\n─');
     expect(receiver.events()).toEqual(['SessionStart']);
     await host.sendKeys(session.name, ['Enter']);
 
@@ -811,7 +838,7 @@ describe('the fake agent: an interruption', () => {
 
     await host.sendKeys(session.name, ['Escape']);
 
-    await expectScreen(session, 'state: idle', 'prompt: none', '❯ think about it');
+    await expectScreen(session, 'state: idle', 'prompt: none', '❯\u00a0think about it');
     expect(transcriptOf(taken)).not.toContain('interrupted');
     expect(receiver.events()).toEqual(['SessionStart', 'UserPromptSubmit']);
     await host.sendKeys(session.name, ['Enter']);

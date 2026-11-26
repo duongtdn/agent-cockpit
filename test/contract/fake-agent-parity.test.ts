@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
 import { readScreen } from '../../src/claude-code/screen-reading.ts';
@@ -97,6 +98,141 @@ async function compactCommand(agent: ParityAgent, session: AgentSession): Promis
 
 function permissionDecision(decision: object): object {
   return { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } };
+}
+
+/** The character the driver marks the end of a person's draft with: never drawn. */
+const SEPARATOR = '\u2063';
+
+/** A rule of the input box: plain, or saying what the box hides or which history entry it shows. */
+const BOX_RULE = /^─+$|^─── (?:[↑↓] \d+ more|History \d+\/\d+) ─+$/;
+
+/**
+ * Gives the input box as a screen draws it: its rule above, its rows, its
+ * rule below and the first row of the footer; `undefined` when the screen
+ * shows no box, as while a dialog takes its place.
+ */
+function drawnBox(screen: string): string[] | undefined {
+  const rows = screen.split('\n').map((row) => row.trimEnd());
+  const bottom = rows.findLastIndex((row) => BOX_RULE.test(row));
+  const top = rows.slice(0, Math.max(bottom, 0)).findLastIndex((row) => BOX_RULE.test(row));
+  if (top === -1) return undefined;
+  return rows.slice(top, bottom + 2);
+}
+
+/** Waits until the input box drawn passes a check, and gives it. */
+function boxShowing(
+  agent: ParityAgent,
+  session: AgentSession,
+  check: (box: readonly string[]) => boolean,
+): Promise<string[]> {
+  return agent.eventually(async () => {
+    const box = drawnBox(await session.screen());
+    expect(box !== undefined && check(box)).toBe(true);
+    return box as string[];
+  });
+}
+
+/** Waits until the input box drawn shows a row, and observes it. */
+async function observeBox(
+  agent: ParityAgent,
+  session: AgentSession,
+  what: string,
+  row: string | RegExp | ((shown: string) => boolean),
+): Promise<void> {
+  const matches = (shown: string) => {
+    if (typeof row === 'string') return shown === row;
+    return row instanceof RegExp ? row.test(shown) : row(shown);
+  };
+  agent.observe(what, await boxShowing(agent, session, (box) => box.some(matches)));
+}
+
+/** Presses keys, then waits until the input box drawn is no longer what it was, and gives it. */
+async function pressUntilRedrawn(
+  agent: ParityAgent,
+  session: AgentSession,
+  ...keys: string[]
+): Promise<string[]> {
+  const before = JSON.stringify(drawnBox(await session.screen()));
+  await session.press(...keys);
+  return boxShowing(agent, session, (box) => JSON.stringify(box) !== before);
+}
+
+/** Types a text as a person does, a line break as ESC CR. */
+async function typeAsAPerson(session: AgentSession, text: string): Promise<void> {
+  for (const [index, line] of text.split('\n').entries()) {
+    if (index > 0) await session.press('Escape', 'Enter');
+    if (line !== '') await session.type(line);
+  }
+}
+
+/** Whether the box drawn shows no text: between its rules, one row, the sign alone. */
+function looksEmpty(box: readonly string[]): boolean {
+  const rows = box.slice(
+    1,
+    box.findLastIndex((row) => BOX_RULE.test(row)),
+  );
+  return rows.length === 1 && /^[❯!]$/.test(rows[0] ?? '');
+}
+
+/**
+ * Types a prompt over the person's draft as the driver does, and observes
+ * the box at each step: Down to the last row, Ctrl+E, the separator, Ctrl+U
+ * until the box shows no text, the prompt, Enter (confirmed), then Ctrl+Y
+ * and Backspace. The draft is then submitted, for its text to be compared.
+ */
+async function typeOverTheDraft(
+  agent: ParityAgent,
+  session: AgentSession,
+  prompt: string,
+  rowsBelowTheCursor: number,
+): Promise<void> {
+  if (rowsBelowTheCursor > 0) await session.press(...Array(rowsBelowTheCursor).fill('Down'));
+  await session.press('C-e');
+  await session.type(SEPARATOR);
+  let kills = 0;
+  let box: string[];
+  do {
+    box = await pressUntilRedrawn(agent, session, 'C-u');
+    kills += 1;
+    if (kills === 1 || kills === 5) agent.observe(`the box after kill ${kills}`, box);
+  } while (!looksEmpty(box));
+  agent.observe('the kills that emptied the box', kills);
+  await typeAsAPerson(session, prompt);
+  // The prompt's last characters end the last row it fills, wrapped or not.
+  const end = prompt.slice(-8);
+  await observeBox(agent, session, 'the box with the prompt typed', (row: string) =>
+    row.endsWith(end),
+  );
+  await submitInputBox(agent, session, (text) => text.trim() !== '');
+  await turnEnded(agent);
+  await session.press('C-y');
+  agent.observe('the box restored', await boxShowing(agent, session, (box) => !looksEmpty(box)));
+  await session.press('BSpace');
+  await submitInputBox(agent, session, (text) => text.trim() !== '');
+  await turnEnded(agent);
+}
+
+/** A person's draft of numbered lines, each with as many letters after it as asked. */
+function draftLines(count: number, letters = 0): string {
+  const tail =
+    letters > 0 ? ` ${'abcdefghij'.repeat(Math.ceil(letters / 10)).slice(0, letters)}` : '';
+  return Array.from(
+    { length: count },
+    (_, i) => `draft line ${String(i + 1).padStart(2, '0')}${tail}`,
+  ).join('\n');
+}
+
+/** Seventy words of nine characters: one line over six rows of the box. */
+const LONG_LINE = Array.from({ length: 70 }, (_, i) => `word${String(i).padStart(3, '0')}x`).join(
+  ' ',
+);
+
+/** Launches a resume of a conversation with no transcript, and waits for it to leave and say so. */
+async function resumesNothing(agent: ParityAgent, sessionId: string): Promise<void> {
+  const resumed = await agent.resume(sessionId);
+  await agent.exits(resumed);
+  await agent.hook('SessionEnd');
+  await agent.hook('SessionEnd');
 }
 
 /**
@@ -380,6 +516,239 @@ agreeOn('a task in the background: Stop lists it, its calls name it, its end sta
     await terminated(agent, session);
   },
 });
+
+agreeOn(
+  'a draft of 25 lines, the cursor up in it: stashed row by row, the prompt taken, the draft back whole',
+  {
+    script: [[reply('Taken.')], [reply('The draft.')]],
+    async play(agent) {
+      const session = await agent.startNew();
+      await agent.hook('SessionStart');
+      await typeAsAPerson(session, draftLines(25));
+      await session.press(...Array(10).fill('Up'));
+      await observeBox(agent, session, 'the draft, the cursor 10 rows up', /↓ 3 more/);
+      await typeOverTheDraft(agent, session, 'the prompt over 25 lines', 10);
+      await terminated(agent, session);
+    },
+  },
+);
+
+agreeOn('a draft of one line over six rows: Ctrl+U kills one row at a time', {
+  script: [[reply('Taken.')], [reply('The draft.')]],
+  async play(agent) {
+    const session = await agent.startNew();
+    await agent.hook('SessionStart');
+    await session.type(LONG_LINE);
+    await observeBox(agent, session, 'the long line', /word069x$/);
+    await session.press('Up', 'Up', 'Up');
+    await typeOverTheDraft(agent, session, 'the prompt over a long line', 3);
+    await terminated(agent, session);
+  },
+});
+
+agreeOn(
+  'a draft of five lines that each wrap, the cursor at the top, under a prompt of several lines',
+  {
+    script: [[reply('Taken.')], [reply('The draft.')]],
+    async play(agent) {
+      const session = await agent.startNew();
+      await agent.hook('SessionStart');
+      await typeAsAPerson(session, draftLines(5, 280));
+      const typed = await boxShowing(
+        agent,
+        session,
+        (box) =>
+          box.some((row) => row.startsWith('  draft line 05')) && /^ {2}ij/.test(box.at(-3) ?? ''),
+      );
+      agent.observe('the wrapped lines', typed);
+      await session.press(...Array(14).fill('Up'));
+      const prompt = `line one\n\n    indented line three\nlast line ${'z'.repeat(300)}`;
+      await typeOverTheDraft(agent, session, prompt, 14);
+      await terminated(agent, session);
+    },
+  },
+);
+
+const PROMPTS_AT_THE_EDGES = [
+  '  two leading spaces',
+  'two trailing spaces  ',
+  'a trailing line break\n',
+  '\na leading line break',
+  'a\ttab',
+  `${SEPARATOR}the separator first`,
+  `the separator last${SEPARATOR}`,
+];
+
+agreeOn(
+  'typed prompts: blanks and line breaks trimmed at the end, kept at the start; a tab dropped; the separator dropped',
+  {
+    script: PROMPTS_AT_THE_EDGES.map(() => [reply('Taken.')]),
+    async play(agent) {
+      const session = await agent.startNew();
+      await agent.hook('SessionStart');
+      for (const prompt of PROMPTS_AT_THE_EDGES) {
+        await typeAsAPerson(session, prompt);
+        await submitInputBox(agent, session, (text) => text.trim() !== '');
+        await turnEnded(agent);
+      }
+      await terminated(agent, session);
+    },
+  },
+);
+
+agreeOn(
+  'the history of prompts: Up shows them, History n/m on the rule; Down back to the draft; an entry edited is lost',
+  {
+    script: [[reply('One.')], [reply('Two.')], [reply('Three.')]],
+    async play(agent) {
+      const session = await agent.startNew({ prompt: 'launch prompt' });
+      await agent.hook('UserPromptSubmit');
+      await turnEnded(agent);
+      await submitPrompt(agent, session, 'typed prompt');
+      await turnEnded(agent);
+      await typeAsAPerson(session, 'm1\nm2\nm3');
+      await submitInputBox(agent, session, (text) => text.includes('m1'));
+      await turnEnded(agent);
+      await session.type('dr');
+      await observeBox(agent, session, 'the draft', '❯\u00a0dr');
+      const steps: [keys: string[], row: string][] = [
+        [['Up'], '─── History 3/3 '],
+        [['Up', 'Up', 'Up'], '─── History 2/3 '],
+        [['Up', 'Up'], '─── History 1/3 '],
+        [['Down'], '─── History 2/3 '],
+        [['Down', 'Down', 'Down', 'Down'], '❯\u00a0dr'],
+      ];
+      for (const [keys, row] of steps) {
+        await session.press(...keys);
+        await observeBox(
+          agent,
+          session,
+          `after ${keys.join(' ')}, the box shows ${row}`,
+          (shown: string) => shown.startsWith(row),
+        );
+      }
+      await session.type('X');
+      await observeBox(agent, session, 'the draft back, the cursor at its start', '❯\u00a0Xdr');
+      await session.press('Up');
+      await session.type(' EDITED');
+      await observeBox(agent, session, 'the newest entry, edited', '  m3 EDITED');
+      await session.press('Down');
+      await observeBox(agent, session, 'the draft again, the edit lost', '❯\u00a0Xdr');
+      await terminated(agent, session);
+    },
+  },
+);
+
+agreeOn(
+  'shell mode: a ! into an empty box turns it on; Backspace or Ctrl+U on the empty box turns it off; the kill ring kept',
+  {
+    script: [],
+    async play(agent) {
+      const session = await agent.startNew();
+      await agent.hook('SessionStart');
+      const steps: [typed: string | string[], row: string][] = [
+        ['!', '!'],
+        [['BSpace'], '❯'],
+        ['!', '!'],
+        ['ls', '!\u00a0ls'],
+        [['C-u'], '!'],
+        [['C-u'], '❯'],
+        ['!', '!'],
+        [['C-y'], '!\u00a0ls'],
+        [['BSpace'], '!\u00a0l'],
+      ];
+      for (const [typed, row] of steps) {
+        if (Array.isArray(typed)) await session.press(...typed);
+        else await session.type(typed);
+        await observeBox(
+          agent,
+          session,
+          `after ${JSON.stringify(typed)}, the box shows ${row}`,
+          row,
+        );
+      }
+      await terminated(agent, session);
+    },
+  },
+);
+
+agreeOn(
+  '--resume of a conversation that never took a prompt, then of one whose transcript is gone: SessionEnd, no SessionStart',
+  {
+    script: [[reply('Before it was gone.')]],
+    async play(agent) {
+      const unprompted = await agent.startNew();
+      await agent.hook('SessionStart');
+      await terminated(agent, unprompted);
+      await resumesNothing(agent, unprompted.id);
+      const prompted = await agent.startNew({ prompt: 'say one line' });
+      await agent.hook('MessageDisplay');
+      const stop = await agent.hook('Stop');
+      await terminated(agent, prompted);
+      rmSync(stop.payload.transcript_path as string);
+      await resumesNothing(agent, prompted.id);
+    },
+  },
+);
+
+agreeOn(
+  'text typed as a permission dialog comes: into the box until the dialog is drawn, ignored on it',
+  {
+    script: [[touch('a.txt'), reply('Touched.')]],
+    permissions: {},
+    async play(agent) {
+      agent.hooks.hold('PermissionRequest');
+      const session = await agent.startNew();
+      await agent.hook('SessionStart');
+      await submitPrompt(agent, session, 'touch it');
+      const asked = await agent.hook('PermissionRequest');
+      // The hook comes well before the dialog is drawn: these keys reach the box.
+      await session.type('typed early');
+      const dialogShown = await agent.eventually(async () => {
+        const screen = await session.screen();
+        expect(drawnBox(screen)).toBeUndefined();
+        return screen;
+      });
+      agent.observe('the screen with the dialog, as the driver reads it', readScreen(dialogShown));
+      await session.type('typed on the dialog');
+      asked.answer(permissionDecision({ behavior: 'allow' }));
+      await turnEnded(agent);
+      await observeBox(agent, session, 'the box after the turn', /typed/);
+      await terminated(agent, session);
+    },
+  },
+);
+
+agreeOn(
+  'a draft in the box as a background task ends: its turn starts by itself, the draft stays',
+  {
+    script: [
+      [
+        {
+          do: 'task',
+          description: 'Count files',
+          prompt: 'Count the files.',
+          agentType: 'general-purpose',
+          work: [touch('inner.txt'), reply('Counted.')],
+        },
+        reply('Started.'),
+      ],
+      [reply('Noted.')],
+    ],
+    async play(agent) {
+      const session = await agent.startNew({ prompt: 'start a task' });
+      await turnEnded(agent);
+      await session.type('my draft');
+      await observeBox(agent, session, 'the box while the task runs', '❯\u00a0my draft');
+      await agent.releaseTask();
+      await agent.hook('SubagentStop');
+      await turnEnded(agent);
+      await observeBox(agent, session, 'the box once the task turn ended', '❯\u00a0my draft');
+      agent.observe('the box emptied', await pressUntilRedrawn(agent, session, 'C-u'));
+      await terminated(agent, session);
+    },
+  },
+);
 
 it('--version: the same line, and nothing else', async () => {
   const run = promisify(execFile);

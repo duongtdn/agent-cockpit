@@ -1,8 +1,28 @@
 import { describe, expect, it } from 'vitest';
+import { createInputBox, type DrawnBox } from '../support/fake-agent/input-box.ts';
+import type { Key } from '../support/fake-agent/keys.ts';
 import { renderScreen } from '../support/fake-agent/screen.ts';
 import { START_UP_DIALOGS } from '../support/fake-agent/start-up-dialogs.ts';
 
 const RULE = '─'.repeat(80);
+
+/** The input box after keys, as drawn. */
+function boxAfter(...keys: Key[]): DrawnBox {
+  const box = createInputBox();
+  for (const key of keys) box.press(key);
+  return box.drawn();
+}
+
+function typed(text: string): DrawnBox {
+  return boxAfter(
+    ...text
+      .split('\n')
+      .flatMap((line, index): Key[] => [
+        ...(index > 0 ? [{ kind: 'line-break' } as const] : []),
+        { kind: 'text', text: line },
+      ]),
+  );
+}
 
 const view = {
   sessionId: '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11',
@@ -12,7 +32,7 @@ const view = {
   dialog: undefined,
   lastPrompt: undefined,
   problem: undefined,
-  input: '',
+  box: typed(''),
 } as const;
 
 describe("the fake agent's screen", () => {
@@ -25,16 +45,16 @@ describe("the fake agent's screen", () => {
       'dialog: none',
       'prompt: none',
       RULE,
-      '❯ ',
+      '❯\u00a0',
       RULE,
       '  ⏸ manual mode on · ? for shortcuts · ← for agents',
     ]);
   });
 
   it('draws the input box between rules, as Claude Code does, only once the session started', () => {
-    const starting = renderScreen({ ...view, state: 'starting', input: 'early' });
+    const starting = renderScreen({ ...view, state: 'starting', box: typed('early') });
 
-    expect(starting.slice(-1)).toEqual(['❯ early']);
+    expect(starting.slice(-1)).toEqual(['❯\u00a0early']);
     expect(starting).not.toContain(RULE);
   });
 
@@ -124,18 +144,50 @@ describe("the fake agent's screen", () => {
     expect(lines.slice(3, 6)).toEqual(['state: busy', 'step: stay-busy', 'dialog: none']);
   });
 
-  it('shows the dialog a person could answer (behavior 9)', () => {
+  it('shows the dialog a person could answer in place of the input box, as Claude Code does (behavior 9)', () => {
     const lines = renderScreen({
       ...view,
       state: 'waiting',
       dialog: { kind: 'permission', toolName: 'Bash' },
+      box: typed('a draft'),
     });
 
     expect(lines).toContain('dialog: permission Bash');
+    expect(lines).not.toContain(RULE);
+    expect(lines).not.toContain('❯\u00a0a draft');
   });
 
-  it('shows what is in the input box, line by line', () => {
-    expect(renderScreen({ ...view, input: 'one\ntwo' }).slice(-4, -2)).toEqual(['❯ one', '  two']);
+  it('shows what is in the input box, line by line, and the footer of a box with text', () => {
+    expect(renderScreen({ ...view, box: typed('one\ntwo') }).slice(-4)).toEqual([
+      '❯\u00a0one',
+      '  two',
+      RULE,
+      '  ⏸ manual mode on',
+    ]);
+  });
+
+  it('draws the footer of an empty box over the invisible separator alone', () => {
+    expect(renderScreen({ ...view, box: typed('\u2063') }).slice(-3)).toEqual([
+      '❯\u00a0',
+      RULE,
+      '  ⏸ manual mode on · ? for shortcuts · ← for agents',
+    ]);
+  });
+
+  it('draws shell mode with its sign and its footer', () => {
+    expect(renderScreen({ ...view, box: typed('!ls') }).slice(-3)).toEqual([
+      '!\u00a0ls',
+      RULE,
+      '  ! for shell mode',
+    ]);
+  });
+
+  it('says on the rules what a scrolled box hides, three dashes in', () => {
+    const lines = Array.from({ length: 25 }, (_, index) => `line ${index + 1}`).join('\n');
+    const screen = renderScreen({ ...view, box: typed(lines) }, 120);
+    const rules = screen.filter((line) => line.startsWith('─'));
+
+    expect(rules).toEqual([`─── ↑ 10 more ${'─'.repeat(106)}`, '─'.repeat(120)]);
   });
 
   it('shows a problem with the script', () => {

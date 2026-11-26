@@ -231,6 +231,26 @@ the test released tasks, then its end starts the next turn by itself with
 a `<task-notification>` prompt). A script's tool call on a path a deny
 rule of its settings names (the state roots, the files the cockpit names
 that start code at the next launch) is not played: nothing tells what Claude Code answers there.
+Its input box is drawn and edited as Claude Code's was seen at 120×40 (a
+box of several rows at another size is refused): the sign `❯` (`!` in shell
+mode) and a no-break space, words wrapped at 116 columns as `wrap-ansi`
+wraps them, at most 15 rows around the cursor with `↑ N more` and `↓ N more`
+on the rules, `History n/m` while a past prompt shows; Up and Down by
+screen row (Up from the first into the history of its own prompts, Down
+back to the draft), Ctrl+E to the end of the line, Ctrl+U back to the start
+of the screen row (or the line break), Ctrl+Y what kills in a row killed,
+Backspace, ESC CR; a `!` into an empty box turns shell mode on, Backspace or
+Ctrl+U on the empty box off. A prompt taken is trimmed of blanks and line
+breaks at its end and of U+2063 at its ends; a tab typed is dropped. A
+permission dialog is drawn 400 ms after its `PermissionRequest` (the keys
+typed meanwhile reach the box) and takes the box's place: text on it does
+nothing, Enter answers Yes. `--resume` of a conversation with no transcript
+(gone, or never prompted) fires `SessionEnd` (`other`) and exits with 1.
+It refuses Enter in shell mode, Down past the box while a background task
+runs (Claude Code moves to the task), Up into a history it did not make
+alone (a resume, another conversation of the project, after a command, a
+withdrawn prompt or a task's turn), any key on a dialog but text, Enter and
+Esc, and characters of other scripts than Latin.
 
 The fake agent is held to the real one by
 `test/contract/fake-agent-parity.test.ts`: each scenario is played once on

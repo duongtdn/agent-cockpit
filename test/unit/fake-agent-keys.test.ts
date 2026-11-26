@@ -36,11 +36,12 @@ describe("the keys the fake agent's terminal receives", () => {
     expect(decoder.settle()).toEqual([]);
   });
 
-  it('reads Backspace, Ctrl+U and Ctrl+Y', () => {
-    expect(decode('\x7f\x15\x19')).toEqual([
+  it('reads Backspace, Ctrl+U, Ctrl+Y and Ctrl+E', () => {
+    expect(decode('\x7f\x15\x19\x05')).toEqual([
       { kind: 'backspace' },
       { kind: 'kill-line' },
       { kind: 'yank' },
+      { kind: 'end-of-line' },
     ]);
   });
 
@@ -53,11 +54,11 @@ describe("the keys the fake agent's terminal receives", () => {
     ]);
   });
 
-  it('reads the keys it has no use for as such: Right, Ctrl+Up, Ctrl+E, a function key, Meta', () => {
+  it('reads the keys it has no use for as such: Right, Ctrl+Up, Ctrl+A, a function key, Meta', () => {
     const keys = decode(
       `${ESC}[C`,
       `${ESC}[1;5A`,
-      '\x05',
+      '\x01',
       `${ESC}OP`,
       `${ESC}x`,
       `${ESC}[1;5`,
@@ -101,7 +102,7 @@ describe("the fake agent's input box", () => {
   });
 
   it('Backspace removes the last character, whole', () => {
-    expect(boxAfter(text('ab\u{1F600}'), { kind: 'backspace' }).text()).toBe('ab');
+    expect(boxAfter(text('abệ'), { kind: 'backspace' }).text()).toBe('ab');
     expect(boxAfter({ kind: 'backspace' }).text()).toBe('');
   });
 

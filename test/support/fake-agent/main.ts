@@ -1,11 +1,13 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { findTranscript } from '../transcript-files.ts';
 import { CANNOT_PLAY_STATUS, createFakeAgent, type FakeAgent } from './agent.ts';
+import type { TerminalSize } from './box-layout.ts';
 import { type CommandLine, parseCommandLine } from './command-line.ts';
 import { type AgentConfiguration, keySuffixOf, readConfiguration } from './configuration.ts';
-import { createHookRunner } from './hook-runner.ts';
+import { sessionEnd } from './hook-events.ts';
+import { createHookRunner, type HookRunner } from './hook-runner.ts';
 import { type HookSettings, parseHookSettings } from './hook-settings.ts';
 import { createKeyDecoder, type Key } from './keys.ts';
 import { type PlayedPermissions, parsePermissions } from './permission-settings.ts';
@@ -55,13 +57,58 @@ function configFolder(): string {
   );
 }
 
-/** Finds where the conversation is written: for a resumed one, where it already is. */
-function transcriptPathOf(commandLine: CommandLine, cwd: string): string {
+/**
+ * Finds where the conversation is written: for a resumed one, where it
+ * already is; none when it has no transcript (gone, or never prompted).
+ */
+function transcriptPathOf(commandLine: CommandLine, cwd: string): string | undefined {
   if (!commandLine.resumes) return transcriptPathFor(configFolder(), cwd, commandLine.sessionId);
-  return (
-    findTranscript(configFolder(), commandLine.sessionId) ??
-    refuse(`No conversation found with session ID: ${commandLine.sessionId}`)
-  );
+  return findTranscript(configFolder(), commandLine.sessionId);
+}
+
+/**
+ * Leaves as Claude Code (2.1.332) was seen to on `--resume` of a
+ * conversation with no transcript, deleted or never prompted: it says so,
+ * fires `SessionEnd` with the reason `other` and the id it was given, and
+ * exits with 1 — no `SessionStart`, no dialog, no file written.
+ */
+async function leaveForAMissingConversation(
+  hooks: HookRunner,
+  configuration: AgentConfiguration,
+): Promise<never> {
+  if (configuration.startUpDialogs.length > 0) {
+    refuseToPlay(
+      new Error(
+        '--resume of a missing conversation where a start-up dialog would show: not observed',
+      ),
+    );
+  }
+  process.stderr.write(`No conversation found with session ID: ${commandLine.sessionId}\n`);
+  try {
+    await hooks.fire(sessionEnd('other'));
+  } catch (error) {
+    refuseToPlay(error);
+  }
+  process.exit(MISSING_CONVERSATION_STATUS);
+}
+
+/** The status Claude Code exits with when `--resume` finds no conversation. */
+const MISSING_CONVERSATION_STATUS = 1;
+
+/**
+ * Tells whether every prompt Up could show is this process's own: a new
+ * conversation, and no other in the folder's project. Claude Code shows the
+ * prompts of the project's earlier sessions too, in a way not made out.
+ */
+function historyIsOwn(commandLine: CommandLine, cwd: string): boolean {
+  if (commandLine.resumes) return false;
+  const project = dirname(transcriptPathFor(configFolder(), cwd, commandLine.sessionId));
+  return !existsSync(project) || readdirSync(project).every((name) => !name.endsWith('.jsonl'));
+}
+
+/** The terminal's size now; a terminal that does not say its own counts as the usual 80×24. */
+function terminalSize(): TerminalSize {
+  return { columns: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 };
 }
 
 /** Ends the process at once on settings it has no evidence for, as on anything else it cannot play. */
@@ -141,7 +188,9 @@ function takeKeys(agent: FakeAgent): void {
 if (process.argv.slice(2).join(' ') === '--version') sayVersion();
 const commandLine = readCommandLine();
 const cwd = process.cwd();
-const transcriptPath = transcriptPathOf(commandLine, cwd);
+const foundTranscript = transcriptPathOf(commandLine, cwd);
+const transcriptPath =
+  foundTranscript ?? transcriptPathFor(configFolder(), cwd, commandLine.sessionId);
 const settings = settingsOf(commandLine);
 const configuration = configurationOf(commandLine, cwd);
 const session = {
@@ -150,14 +199,18 @@ const session = {
   transcriptPath,
   permissionMode: commandLine.permissionMode,
 };
+// Seen of Claude Code: the person's settings turning hooks off leave no hook at all.
+const hooks = createHookRunner(configuration.hooksOff ? {} : settings.hooks, session);
+if (foundTranscript === undefined) await leaveForAMissingConversation(hooks, configuration);
 const agent = createFakeAgent({
   commandLine,
-  // Seen of Claude Code: the person's settings turning hooks off leave no hook at all.
-  hooks: createHookRunner(configuration.hooksOff ? {} : settings.hooks, session),
+  hooks,
   transcript: openTranscript(transcriptPath, commandLine.sessionId),
   promptsTaken: countPrompts(transcriptPath),
   secondsSinceLastResponse: secondsSinceLastResponse(transcriptPath, new Date()),
   workFolder: cwd,
+  historyIsOwn: historyIsOwn(commandLine, cwd),
+  terminalSize,
   allowRules: settings.allowRules,
   deniedPaths: settings.deniedPaths,
   configuration,
