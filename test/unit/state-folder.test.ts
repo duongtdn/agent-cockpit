@@ -56,20 +56,22 @@ describe('openStateFolder', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('creates the folder and its missing parents, readable by the app’s user alone', async () => {
+  it('creates the folder readable by the app’s user alone, its missing parents as any folder', async () => {
     const path = join(root, 'a/b/my-app');
     const folder = await openStateFolder(path);
     expect(folder.path).toBe(path);
     expect(modeOf(path)).toBe(0o700);
-    expect(modeOf(join(root, 'a/b'))).toBe(0o700);
+    const plain = join(root, 'plain');
+    mkdirSync(plain);
+    expect(modeOf(join(root, 'a/b'))).toBe(modeOf(plain));
   });
 
-  it('makes a folder that exists private again', async () => {
+  it('leaves the rights of a folder that exists, which may be the app’s, as they are', async () => {
     const path = join(root, 'my-app');
     mkdirSync(path);
     chmodSync(path, 0o755);
     await openStateFolder(path);
-    expect(modeOf(path)).toBe(0o700);
+    expect(modeOf(path)).toBe(0o755);
   });
 
   it('refuses a path that is a file', async () => {

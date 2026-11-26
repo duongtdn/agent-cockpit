@@ -22,9 +22,11 @@ export interface CockpitOptions {
   /** The jobs the app offers, each with an id of its own. */
   readonly jobs: readonly Job[];
   /**
-   * Where the cockpit keeps its own files; by default
-   * `$XDG_STATE_HOME/agent-cockpit/<name>` (`~/.local/state` when
-   * `XDG_STATE_HOME` is unset).
+   * The folder the cockpit keeps its own files in — the folder itself, not
+   * a parent of it; by default `$XDG_STATE_HOME/agent-cockpit/<name>`
+   * (`~/.local/state` when `XDG_STATE_HOME` is unset). Created readable by
+   * the app's user alone when missing; one that exists keeps its rights,
+   * the cockpit's files and folders in it being the user's alone.
    */
   readonly stateDirectory?: string;
   /**

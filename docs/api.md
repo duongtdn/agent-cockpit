@@ -185,7 +185,9 @@ launches `claude` from the `PATH` of the server's environment, without the
 variables Claude Code sets for the programs it runs (`CLAUDE_CODE_*`,
 `CLAUDECODE`), so a server started from a Claude Code terminal does not hand
 that session's to its agents. Each session's settings and its token are
-written in the cockpit's state folder, readable by the app's user alone;
+written in the cockpit's state folder (`stateDirectory`, the folder itself:
+created readable by the app's user alone when missing, its rights kept when
+it exists), in files and folders readable by the app's user alone;
 the token is never on a command line or in the environment.
 
 ## Operations
