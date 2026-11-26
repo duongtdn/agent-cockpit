@@ -50,8 +50,10 @@ export interface TerminalLink {
  * any other close is the connection's, and the link reconnects, waiting
  * longer after each attempt that did not reach the session. A handshake
  * that failed is explained first (`Connection.explainFailedSocket`) and the
- * screen told why; when the terminal is off, the link stops: no attempt
- * can succeed until the app turns it on.
+ * screen told why, once the next attempt is set; when the terminal is off,
+ * the link stops: no attempt can succeed until the app turns it on. A link
+ * that gives the page a new token reconnects it at once, with it, unless it
+ * stopped.
  *
  * @param connection - How the page reaches the cockpit.
  * @param key - The session's key: a valid one.
@@ -83,12 +85,13 @@ export function linkTerminal(
     failures += 1;
   };
 
-  const explainThenReconnect = async (): Promise<void> => {
+  const explainThenReconnect = async (failed: WebSocket): Promise<void> => {
     const error = await connection.explainFailedSocket(path);
-    if (closed) return;
-    screen.failed(error);
+    // Closed, or replaced by a socket with a new token: this failure is no longer the terminal's.
+    if (closed || socket !== failed) return;
     if (isTerminalOff(error)) closed = true;
     else reconnectLater();
+    screen.failed(error);
   };
 
   function connect(): void {
@@ -96,13 +99,16 @@ export function linkTerminal(
     const current = connection.openSocket(path);
     current.binaryType = 'arraybuffer';
     socket = current;
+    const isCurrent = (): boolean => !closed && socket === current;
     let opened = false;
     current.addEventListener('open', () => {
+      if (!isCurrent()) return;
       opened = true;
       sendMessage({ type: 'resize', ...screen.size() });
       screen.status('open');
     });
     current.addEventListener('message', ({ data }: MessageEvent) => {
+      if (!isCurrent()) return;
       if (data instanceof ArrayBuffer) {
         screen.write(new Uint8Array(data));
         return;
@@ -114,7 +120,7 @@ export function linkTerminal(
       failures = 0;
     });
     current.addEventListener('close', ({ code }: CloseEvent) => {
-      if (closed) return;
+      if (!isCurrent()) return;
       if (code === SESSION_ENDED_CLOSE_CODE) {
         closed = true;
         screen.status('ended');
@@ -122,10 +128,20 @@ export function linkTerminal(
       }
       screen.status('closed');
       if (opened) reconnectLater();
-      else void explainThenReconnect();
+      else void explainThenReconnect(current);
     });
   }
 
+  const reconnectWithNewToken = (): void => {
+    if (closed) return;
+    clearTimeout(retry);
+    failures = 0;
+    const replaced = socket;
+    connect();
+    replaced?.close();
+  };
+
+  const stopWatchingLinks = connection.onLinkedToken(reconnectWithNewToken);
   connect();
   return {
     keyRules: () => rules,
@@ -135,6 +151,7 @@ export function linkTerminal(
     resize: (size) => sendMessage({ type: 'resize', ...size }),
     close: () => {
       closed = true;
+      stopWatchingLinks();
       clearTimeout(retry);
       socket?.close();
     },

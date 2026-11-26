@@ -11,6 +11,14 @@ export interface BrowserPage {
   readonly historyState: () => unknown;
   /** The page origin's local storage. */
   readonly storage: Storage;
+  /**
+   * Opens a link to this page in its own tab, as a person pastes one in the
+   * address bar: only the fragment changes, so the page is not loaded again;
+   * the browser fires `hashchange`.
+   *
+   * @param fragment - The new fragment, without its `#`.
+   */
+  readonly followFragment: (fragment: string) => void;
 }
 
 /** Local storage that keeps its items in memory. */
@@ -54,9 +62,12 @@ export class RefusedStorage extends MemoryStorage {
 }
 
 /**
- * Opens a page at an address: stubs the globals `location`, `history` and
- * `localStorage` that the client reads, as a browser gives them to a page.
- * `vi.unstubAllGlobals()` closes it.
+ * Opens a page at an address: stubs the globals `location`, `history`,
+ * `localStorage` and the window's `addEventListener` and
+ * `removeEventListener` that the client uses, as a browser gives them to a
+ * page. `vi.unstubAllGlobals()` closes it. A module that listens to the
+ * window listens to the page it was loaded for: a test of the page's events
+ * loads the client afresh ({@link loadAfresh}).
  *
  * @param address - The page's URL, fragment included.
  * @param options - `storage`, the origin's local storage: empty by default;
@@ -83,7 +94,21 @@ export function openPage(
     },
   });
   vi.stubGlobal('localStorage', storage);
-  return { address: () => current.href, historyState: () => currentState, storage };
+  const window = new EventTarget();
+  vi.stubGlobal('addEventListener', window.addEventListener.bind(window));
+  vi.stubGlobal('removeEventListener', window.removeEventListener.bind(window));
+  return {
+    address: () => current.href,
+    historyState: () => currentState,
+    storage,
+    followFragment: (fragment) => {
+      const next = new URL(current);
+      next.hash = fragment;
+      if (next.href === current.href) return;
+      current = next;
+      window.dispatchEvent(new Event('hashchange'));
+    },
+  };
 }
 
 /**

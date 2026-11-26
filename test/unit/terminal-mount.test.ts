@@ -370,6 +370,24 @@ describe('the status', () => {
     expect(errors).toEqual([]);
   });
 
+  it('keeps connecting, and tells every status handler, though one throws; the throw goes to the console', async () => {
+    const thrown = new Error('the app’s handler failed');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    terminal = mountTerminal(element, 'explain-a', { baseUrl: '/cockpit' });
+    terminal.on('status', () => {
+      throw thrown;
+    });
+    terminal.on('status', (status) => statuses.push(status));
+
+    FakeWebSocket.last().drop();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(statuses).toEqual(['connecting', 'closed', 'connecting']);
+    expect(FakeWebSocket.created).toHaveLength(2);
+    expect(consoleError).toHaveBeenCalledWith(expect.any(String), thrown);
+    consoleError.mockRestore();
+  });
+
   it('is ended when the server closes with 4000, and never reconnects', async () => {
     const { socket } = mountAttached();
 
@@ -518,6 +536,25 @@ describe('errors', () => {
     expect(errors.map((error) => error.code)).toEqual(['unreachable']);
   });
 
+  it('gives unreachable, and tries again, when the explaining answer breaks off as it is read', async () => {
+    probeAnswer = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start: (controller) => controller.error(new TypeError('network error')),
+          }),
+          { status: 401 },
+        ),
+      );
+    mountReporting();
+
+    await refuseHandshake();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(errors.map((error) => error.code)).toEqual(['unreachable']);
+    expect(FakeWebSocket.created).toHaveLength(2);
+  });
+
   it('gives unreachable when the checks pass yet no WebSocket opened: a proxy may not pass it', async () => {
     mountReporting();
 
@@ -601,6 +638,27 @@ describe('errors', () => {
     expect(others).toHaveLength(1);
   });
 
+  it('tells every error handler, and tries again, though one throws; the throw goes to the console', async () => {
+    const thrown = new Error('the app’s handler failed');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    probeAnswer = noToken;
+    const mounted = mount();
+    mounted.on('error', () => {
+      throw thrown;
+    });
+    errors = [];
+    mounted.on('error', (error) => errors.push(error));
+
+    await refuseHandshake();
+    await vi.advanceTimersByTimeAsync(500);
+    await refuseHandshake();
+
+    expect(errors.map((error) => error.code)).toEqual(['no-token', 'no-token']);
+    expect(FakeWebSocket.created).toHaveLength(2);
+    expect(consoleError.mock.calls.map((call) => call.at(-1))).toEqual([thrown, thrown]);
+    consoleError.mockRestore();
+  });
+
   it('keeps trying without an error handler', async () => {
     probeAnswer = noToken;
     mount();
@@ -609,6 +667,63 @@ describe('errors', () => {
     await vi.advanceTimersByTimeAsync(500);
 
     expect(FakeWebSocket.created).toHaveLength(2);
+  });
+});
+
+describe('a new link opened in the tab', () => {
+  /** Mounts a terminal on a page newly opened without a token, its modules loaded for it. */
+  async function mountOnPageWithoutToken(): Promise<ReturnType<typeof openPage>> {
+    const page = openPage('http://127.0.0.1:8765/');
+    const fresh = await loadAfresh(() => import('../../src/terminal/index.ts'));
+    terminal = fresh.mountTerminal(element, 'explain-a', { baseUrl: '/cockpit' });
+    terminal.on('status', (status) => statuses.push(status));
+    return page;
+  }
+
+  it('connects again at once, with its token', async () => {
+    probeAnswer = noToken;
+    const page = await mountOnPageWithoutToken();
+    FakeWebSocket.last().drop();
+    await vi.advanceTimersByTimeAsync(0);
+    const refused = FakeWebSocket.last();
+
+    page.followFragment(`cockpit=${token}`);
+    FakeWebSocket.last().accept();
+
+    expect(page.address()).toBe('http://127.0.0.1:8765/');
+    expect(refused.closedByPage).toBe(true);
+    expect(FakeWebSocket.created).toHaveLength(2);
+    expect(FakeWebSocket.last().protocols).toEqual([
+      'agent-cockpit',
+      `agent-cockpit.token.${token}`,
+    ]);
+    expect(statuses).toEqual(['connecting', 'closed', 'connecting', 'open']);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeWebSocket.created).toHaveLength(2);
+  });
+
+  it('gives nothing of the socket it replaced', async () => {
+    const page = await mountOnPageWithoutToken();
+    const replaced = FakeWebSocket.last();
+
+    page.followFragment(`cockpit=${token}`);
+    replaced.deliver(new Uint8Array([104, 105]).buffer);
+    replaced.drop();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(FakeTerminal.last().written).toEqual([]);
+    expect(probes).toEqual([]);
+    expect(FakeWebSocket.created).toHaveLength(2);
+  });
+
+  it('changes nothing once the session ended, nor once disposed', async () => {
+    const page = await mountOnPageWithoutToken();
+    FakeWebSocket.last().closeWith(4000);
+    page.followFragment(`cockpit=${token}`);
+    terminal?.dispose();
+    page.followFragment(`cockpit=${token.replace('k', 'K')}`);
+
+    expect(FakeWebSocket.created).toHaveLength(1);
   });
 });
 

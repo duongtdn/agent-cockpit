@@ -150,6 +150,40 @@ describe('the token from the link', () => {
   });
 });
 
+describe('a new link opened in a tab that already shows the page', () => {
+  it('gives its token, taken from the fragment change as from the first load', async () => {
+    const page = openPage(`http://127.0.0.1:8765/#cockpit=${otherToken}`);
+    const client = createCockpitClient({ baseUrl: server.baseUrl });
+
+    page.followFragment(`cockpit=${token}`);
+
+    expect(page.address()).toBe('http://127.0.0.1:8765/');
+    expect(page.storage.getItem(STORED_TOKEN_KEY)).toBe(token);
+    expect(await tokenSent(client)).toBe(token);
+  });
+
+  it('gives its token when the browser refuses the page local storage', async () => {
+    const page = openPage(`http://127.0.0.1:8765/#cockpit=${otherToken}`, {
+      storage: new RefusedStorage(),
+    });
+    const client = createCockpitClient({ baseUrl: server.baseUrl });
+
+    page.followFragment(`cockpit=${token}`);
+
+    expect(await tokenSent(client)).toBe(token);
+  });
+
+  it("leaves a fragment change without a token to the app's own routes", async () => {
+    const page = openPage(`http://127.0.0.1:8765/#cockpit=${token}`);
+    const client = createCockpitClient({ baseUrl: server.baseUrl });
+
+    page.followFragment('/chapters/3');
+
+    expect(page.address()).toBe('http://127.0.0.1:8765/#/chapters/3');
+    expect(await tokenSent(client)).toBe(token);
+  });
+});
+
 describe("the token on the app's own routes", () => {
   /** The headers function, loaded afresh for each test's page as the client is. */
   async function loadHeaders() {

@@ -37,10 +37,18 @@ export interface Connection {
    *
    * @param path - The socket's path, relative to the mount.
    * @returns The server's refusal; `unreachable` when there is none to
-   * read: no answer, an answer not the cockpit's, or the checks passing
-   * though no WebSocket opened.
+   * read: no answer, an answer not the cockpit's or broken off, or the
+   * checks passing though no WebSocket opened. It never rejects.
    */
   explainFailedSocket(path: string): Promise<CockpitError>;
+  /**
+   * Tells when a link opened in the page's tab gives it a new token, so that
+   * a stream connects again at once with it, rather than after its wait.
+   *
+   * @param listener - Called once per such link.
+   * @returns A function that stops telling it.
+   */
+  onLinkedToken(listener: () => void): () => void;
 }
 
 /**
@@ -109,6 +117,7 @@ export function createConnection(baseUrl: unknown, token: TokenKeeper): Connecti
         `The cockpit at ${mount} lets ${path} through but did not open its WebSocket: a proxy between may not pass them.`,
       );
     },
+    onLinkedToken: (listener) => token.onLinked(listener),
   };
 }
 

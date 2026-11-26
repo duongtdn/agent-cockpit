@@ -15,10 +15,17 @@ export function unreachable(message: string, cause?: unknown): CockpitError<'unr
  * status is the wire's detail: only the body says what failed.
  *
  * @param answer - An answer whose status is not a success.
- * @returns The server's error; `unreachable` when the body holds none.
+ * @returns The server's error; `unreachable` when the body holds none, or
+ * breaks off as it is read (the connection reset). It never rejects.
  */
 export async function errorOfAnswer(answer: Response): Promise<CockpitError> {
-  const error = carriedError(await answer.text());
+  let body: string;
+  try {
+    body = await answer.text();
+  } catch (cause) {
+    return unreachable(`The answer with status ${answer.status} broke off as it was read.`, cause);
+  }
+  const error = carriedError(body);
   if (error === undefined) {
     return unreachable(`What answered with status ${answer.status} is not the cockpit.`);
   }

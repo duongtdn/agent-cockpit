@@ -1,5 +1,6 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { type ITheme, Terminal } from '@xterm/xterm';
+import { callEach } from '../client/app-handlers.js';
 import { createConnection } from '../client/connection.js';
 import { takeTokenFromLink } from '../client/token.js';
 import { CockpitError } from '../shared/cockpit-error.js';
@@ -33,7 +34,9 @@ export interface MountedTerminal {
    * connection dropped or was refused; the terminal reconnects by itself,
    * unless the terminal's switch refused it: then it stays `closed`) or
    * `ended` (the session is gone: nothing to attach to). The handler
-   * receives the status at once, then each change.
+   * receives the status at once, then each change. A handler that throws
+   * stops neither the other handlers nor the terminal; what it threw goes
+   * to the console.
    *
    * @param event - `'status'`.
    * @param handler - Receives each status.
@@ -50,7 +53,9 @@ export interface MountedTerminal {
    * no WebSocket opened (a proxy between may not pass them). A connection
    * that drops and reconnects is not reported. On `terminal-off` the
    * terminal stops trying: the app's switch refuses it until the app
-   * changes it, and a new mount connects then.
+   * changes it, and a new mount connects then. A handler that throws stops
+   * neither the other handlers nor the reconnection; what it threw goes to
+   * the console.
    *
    * @param event - `'error'`.
    * @param handler - Receives each error.
@@ -71,7 +76,8 @@ export interface MountedTerminal {
  * cockpit's own, fitted to the element and following its size, attached to
  * the session over a WebSocket that carries the app's token (taken from the
  * page's link as the client takes it). After a drop it reconnects by itself,
- * waiting 0.5 s, doubling up to 10 s; once the session has ended it stays
+ * waiting 0.5 s, doubling up to 10 s, and at once when a link opened in the
+ * page's tab gives a new token; once the session has ended it stays
  * `ended`. Why it could not connect goes to `on('error')`; refused by the
  * terminal's switch (`terminal-off`), it stays `closed`.
  *
@@ -113,9 +119,7 @@ export function mountTerminal(
     size: () => ({ columns: terminal.cols, rows: terminal.rows }),
     write: (output) => terminal.write(output),
     status: statuses.emit,
-    failed: (error) => {
-      for (const handler of errors) handler(error);
-    },
+    failed: (error) => callEach(errors, error),
   });
   const subscriptions = [
     terminal.onData((text) => link.sendInput(text)),
@@ -235,11 +239,11 @@ function statusEmitter(): {
   return {
     emit: (status) => {
       current = status;
-      for (const handler of handlers) handler(status);
+      callEach(handlers, status);
     },
     subscribe: (handler) => {
       const stop = subscribe(handlers, handler);
-      handler(current);
+      callEach([handler], current);
       return stop;
     },
     clear: () => handlers.clear(),

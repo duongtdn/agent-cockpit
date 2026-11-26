@@ -7,10 +7,12 @@ import { reconnectDelay } from './reconnect-delay.js';
 /**
  * Follows the sessions over the wire's WebSocket: delivers the list the
  * server sends at once, then at every change, and reconnects after a drop,
- * a refusal or an unreachable server, waiting longer after each failure.
+ * a refusal or an unreachable server, waiting longer after each failure. A
+ * link that gives the page a new token reconnects it at once, with it.
  *
  * @param report - Told why a connection could not be made, once per failed
- * attempt; a drop that only needs a reconnection is not reported.
+ * attempt, after the next attempt is set; a drop that only needs a
+ * reconnection is not reported.
  * @returns A function that stops following and closes the socket.
  */
 export function followSessions(
@@ -28,36 +30,48 @@ export function followSessions(
     failures += 1;
   };
 
-  const explainThenReconnect = async (): Promise<void> => {
+  const explainThenReconnect = async (failed: WebSocket): Promise<void> => {
     const error = await connection.explainFailedSocket(FOLLOW_SESSIONS_PATH);
-    if (stopped) return;
-    report(error);
+    // Stopped, or replaced by a socket with a new token: this failure is no longer the page's.
+    if (stopped || socket !== failed) return;
     reconnectLater();
+    report(error);
   };
 
   function connect(): void {
     const current = connection.openSocket(FOLLOW_SESSIONS_PATH);
     socket = current;
+    const isCurrent = (): boolean => !stopped && socket === current;
     let opened = false;
     current.addEventListener('open', () => {
       opened = true;
     });
     current.addEventListener('message', ({ data }: MessageEvent) => {
-      const sessions = sessionsOf(data);
+      const sessions = isCurrent() ? sessionsOf(data) : undefined;
       if (sessions === undefined) return;
       failures = 0;
       handler(sessions);
     });
     current.addEventListener('close', () => {
-      if (stopped) return;
+      if (!isCurrent()) return;
       if (opened) reconnectLater();
-      else void explainThenReconnect();
+      else void explainThenReconnect(current);
     });
   }
 
+  const reconnectWithNewToken = (): void => {
+    clearTimeout(retry);
+    failures = 0;
+    const replaced = socket;
+    connect();
+    replaced?.close();
+  };
+
+  const stopWatchingLinks = connection.onLinkedToken(reconnectWithNewToken);
   connect();
   return () => {
     stopped = true;
+    stopWatchingLinks();
     clearTimeout(retry);
     socket?.close();
   };

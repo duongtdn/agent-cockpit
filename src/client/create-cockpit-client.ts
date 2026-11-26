@@ -1,6 +1,7 @@
 import type { CockpitError } from '../shared/cockpit-error.js';
 import type { RunResult, Session } from '../shared/session.js';
 import { RUN_PATH, type RunRequest } from '../shared/wire.js';
+import { callEach } from './app-handlers.js';
 import { createConnection } from './connection.js';
 import { followSessions } from './follow-sessions.js';
 import { takeTokenFromLink } from './token.js';
@@ -37,6 +38,8 @@ export interface CockpitClient {
      * Follows the sessions: the handler receives the list at once, then at
      * every change. After a drop it reconnects by itself, waiting longer
      * after each failed attempt, and the handler receives the list again.
+     * A link opened in the page's tab (a new `#cockpit=…`) reconnects it at
+     * once, with the link's token.
      *
      * Why a connection could not be made goes to the client's `error`
      * handlers.
@@ -51,7 +54,8 @@ export interface CockpitClient {
    * connect: the server's refusal (`no-token`, `refused`) or `unreachable`,
    * once per failed attempt. The stream goes on trying, and its handler
    * receives what it follows once connected. A connection that drops and
-   * reconnects is not reported.
+   * reconnects is not reported. A handler that throws stops neither the
+   * other handlers nor the stream; what it threw goes to the console.
    *
    * @param event - `'error'`.
    * @param handler - Receives each error.
@@ -63,7 +67,9 @@ export interface CockpitClient {
 /**
  * Creates the client. It takes the app's token from the page's link (the
  * fragment `#cockpit=…`), removes it from the address bar and keeps it in
- * the origin's local storage, so a reload needs no link; it sends it with
+ * the origin's local storage, so a reload needs no link; a link opened
+ * later in the same tab, which changes only the fragment, is taken the same
+ * way, and the client's streams reconnect with it. It sends the token with
  * every request, in a header, and every WebSocket, as a subprotocol, never in
  * a URL. Without a valid token the server refuses every call with
  * `no-token`, on which the app tells the person to open its link.
@@ -76,9 +82,7 @@ export interface CockpitClient {
 export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitClient {
   const connection = createConnection(baseUrl, takeTokenFromLink());
   const errorHandlers = new Set<(error: CockpitError) => void>();
-  const report = (error: CockpitError): void => {
-    for (const handler of errorHandlers) handler(error);
-  };
+  const report = (error: CockpitError): void => callEach(errorHandlers, error);
   return {
     run: async (jobId, args) => {
       const body: RunRequest = { jobId, args };
