@@ -3,7 +3,7 @@ import type { IncomingMessage } from 'node:http';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import { CockpitError, type Issue } from '../shared/cockpit-error.js';
-import type { Driver } from './driver.js';
+import type { Driver, SessionNetwork } from './driver.js';
 import { issuesOf, type Job } from './jobs.js';
 
 /** What `createCockpit` takes. */
@@ -20,8 +20,21 @@ export interface CockpitOptions {
   readonly directory: string;
   /** The driver of the agent the sessions run: `claudeCode(…)`. */
   readonly driver: Driver;
-  /** The jobs the app offers, each with an id of its own. */
+  /**
+   * The jobs the app offers, each with an id of its own. A job's `driver`
+   * part is checked by the driver, and refused as the driver's own options
+   * are when it opens the network of a cockpit opened beyond loopback.
+   */
   readonly jobs: readonly Job[];
+  /**
+   * The names of the variables of the server's environment that no
+   * session's agent gets: the app's secrets. Each launch starts from the
+   * server's environment at that moment without them; the driver then
+   * removes its agent's own (for Claude Code, every `CLAUDE_CODE_*` and
+   * `CLAUDECODE`). The agent's own settings files, the person's, may still
+   * give it variables: those are the person's.
+   */
+  readonly hiddenEnv?: readonly string[];
   /**
    * The folder the cockpit keeps its own files in — the folder itself, not
    * a parent of it; by default `$XDG_STATE_HOME/agent-cockpit/<name>`
@@ -88,15 +101,26 @@ export interface CheckedCockpitOptions extends CockpitOptions {
   readonly terminal: 'on' | 'loopback' | 'off';
   /** The app's ports the app gave; none when left out. */
   readonly ports: readonly number[];
+  /** The variables hidden from every session; none when left out. */
+  readonly hiddenEnv: readonly string[];
 }
 
-const JOB_FIELDS: readonly string[] = ['id', 'title', 'description', 'args', 'key', 'prompt'];
+const JOB_FIELDS: readonly string[] = [
+  'id',
+  'title',
+  'description',
+  'args',
+  'key',
+  'prompt',
+  'driver',
+];
 
 const OPTION_NAMES: readonly string[] = [
   'name',
   'directory',
   'driver',
   'jobs',
+  'hiddenEnv',
   'stateDirectory',
   'agentPort',
   'authorize',
@@ -132,6 +156,8 @@ const job = z.object({
   args: schemaLike,
   key: z.custom(isFunction, 'Expected a function from the arguments to the key.'),
   prompt: z.custom(isFunction, 'Expected a function from the arguments to the prompt.').optional(),
+  // Its own driver checks it: the core does not know its shape.
+  driver: z.unknown().optional(),
 });
 
 const driver = z.custom<Driver>(
@@ -144,6 +170,10 @@ const driver = z.custom<Driver>(
 );
 
 const port = z.int().min(1).max(65535);
+
+const variableName = z
+  .string()
+  .regex(/^[^=\0]+$/, "Expected a variable's name: not empty, with no = or NUL in it.");
 
 const origin = z
   .string()
@@ -163,6 +193,7 @@ const options = z.object({
   directory: z.string().min(1),
   driver,
   jobs: z.array(job),
+  hiddenEnv: z.array(variableName).optional(),
   stateDirectory: z.string().min(1).optional(),
   agentPort: port.optional(),
   authorize: z.custom(isFunction, 'Expected a function from the request to a boolean.').optional(),
@@ -173,10 +204,11 @@ const options = z.object({
 
 /**
  * Checks `createCockpit`'s options: what this version takes, of the right
- * kinds, the jobs' ids unique, the app's folder an existing folder, and no
- * cockpit opened beyond loopback with a driver whose sessions reach an open
- * network the app did not accept. An option or a job's field that a later
- * version takes is refused rather than silently ignored.
+ * kinds, the jobs' ids unique, each job's driver part fitting the driver,
+ * the app's folder an existing folder, and no cockpit opened beyond
+ * loopback with a driver, or a job, whose sessions reach an open network
+ * the app did not accept. An option or a job's field that a later version
+ * takes is refused rather than silently ignored.
  *
  * @param given - What the app gave, unchecked: an app in JavaScript gives anything.
  * @returns The options, the app's folder absolute, the access options with
@@ -195,8 +227,8 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
   ];
   if (!parsed.success || issues.length > 0) throw invalidOptions(issues);
   const checked = given as CockpitOptions;
-  const openNetwork = openNetworkIssues(checked);
-  if (openNetwork.length > 0) throw invalidOptions(openNetwork);
+  const driverIssues = [...openNetworkIssues(checked), ...jobsPartIssues(checked)];
+  if (driverIssues.length > 0) throw invalidOptions(driverIssues);
   const directory = resolve(checked.directory);
   if (!(await isFolder(directory))) {
     throw invalidOptions([{ path: ['directory'], message: `No folder at ${directory}.` }]);
@@ -207,6 +239,7 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
     origins: checked.origins ?? [],
     terminal: checked.terminal ?? 'on',
     ports: checked.port === undefined ? [] : [checked.port].flat(),
+    hiddenEnv: checked.hiddenEnv ?? [],
   };
 }
 
@@ -216,14 +249,66 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
  * that works from afar. The app accepts it in the driver's options.
  */
 function openNetworkIssues({ authorize, driver }: CockpitOptions): Issue[] {
-  const network = driver.networkOf();
-  if (authorize === undefined || network.reach === 'confined' || network.accepted) return [];
+  const refusal = openNetworkRefusal(authorize, driver.networkOf());
+  if (refusal === undefined) return [];
   return [
     {
       path: ['driver'],
-      message: `The cockpit is opened beyond loopback (authorize), and the driver's sessions reach an open network. ${network.reason}`,
+      message: `The cockpit is opened beyond loopback (authorize), and the driver's sessions reach an open network. ${refusal}`,
     },
   ];
+}
+
+/** Each job's part issues, their paths from the options. */
+function jobsPartIssues(options: CockpitOptions): Issue[] {
+  return options.jobs.flatMap((job, index) =>
+    jobPartIssues(options, job).map(({ path, message }) => ({
+      path: ['jobs', index, ...path],
+      message,
+    })),
+  );
+}
+
+/**
+ * Checks a job's driver part, as the cockpit launches it: the driver's
+ * check of its shape, then the network its sessions reach — refused, as
+ * the driver's own options are, when the cockpit is opened beyond loopback
+ * and the app did not accept it (ADR-0081).
+ *
+ * @param options - The cockpit's options: its driver and its `authorize`.
+ * @param job - The job, its `driver` unchecked.
+ * @returns Every issue found, each path from the job; none for a job with
+ * no part.
+ */
+export function jobPartIssues(
+  { authorize, driver }: Pick<CockpitOptions, 'authorize' | 'driver'>,
+  job: Pick<Job, 'id' | 'driver'>,
+): Issue[] {
+  if (job.driver === undefined) return [];
+  const shape = driver
+    .checkPart(job.driver)
+    .map(({ path, message }) => ({ path: ['driver', ...path], message }));
+  if (shape.length > 0) return shape;
+  const refusal = openNetworkRefusal(authorize, driver.networkOf(job.driver));
+  if (refusal === undefined) return [];
+  return [
+    {
+      path: ['driver'],
+      message: `The cockpit is opened beyond loopback (authorize), and the sessions of the job ${JSON.stringify(job.id)} reach an open network. ${refusal}`,
+    },
+  ];
+}
+
+/**
+ * Why a cockpit opened beyond loopback must not launch sessions with this
+ * network: the driver's reason, when it is open and not accepted.
+ */
+function openNetworkRefusal(
+  authorize: CockpitOptions['authorize'],
+  network: SessionNetwork,
+): string | undefined {
+  if (authorize === undefined || network.reach === 'confined' || network.accepted) return undefined;
+  return network.reason;
 }
 
 /** The issues of the jobs beyond their schema: fields of a later version, ids given twice. */

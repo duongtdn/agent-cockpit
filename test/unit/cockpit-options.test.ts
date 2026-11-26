@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { claudeCode } from '../../src/claude-code/index.ts';
 import { checkCockpitOptions } from '../../src/server/cockpit-options.ts';
 import { checkPlatform, linkTo } from '../../src/server/create-cockpit.ts';
-import { issuesOf, type Job, launchOfJob } from '../../src/server/jobs.ts';
+import { issuesOf, type Job, jobOf, launchOfJob } from '../../src/server/jobs.ts';
 import { isCockpitError } from '../../src/shared/cockpit-error.ts';
 
 const folder = mkdtempSync(join(tmpdir(), 'cockpit-options-'));
@@ -61,6 +61,7 @@ describe("createCockpit's options", () => {
       origins: 'https://app.example',
       authorize: 'yes',
       port: -1,
+      hiddenEnv: 'SECRET',
     });
 
     expect(issues.map(({ path }) => path).sort()).toEqual(
@@ -69,6 +70,7 @@ describe("createCockpit's options", () => {
         ['authorize'],
         ['directory'],
         ['driver'],
+        ['hiddenEnv'],
         ['jobs'],
         ['name'],
         ['origins'],
@@ -79,7 +81,7 @@ describe("createCockpit's options", () => {
     );
   });
 
-  it.each(['channel', 'hiddenEnv', 'idleTimeout', 'maxSessions', 'elicitations', 'typo'])(
+  it.each(['channel', 'idleTimeout', 'maxSessions', 'elicitations', 'typo'])(
     'refuse %s, an option this version does not take, rather than ignore it',
     async (name) => {
       expect(await optionIssues({ ...valid(), [name]: undefined })).toEqual([
@@ -93,6 +95,20 @@ describe("createCockpit's options", () => {
 
     expect(checked).toMatchObject({ terminal: 'on', origins: [], ports: [] });
     expect(checked.authorize).toBeUndefined();
+  });
+
+  it('take the names of the variables hidden from the sessions; none when left out', async () => {
+    expect((await checkCockpitOptions(valid())).hiddenEnv).toEqual([]);
+    expect(
+      (await checkCockpitOptions({ ...valid(), hiddenEnv: ['ADMIN_TOKEN', 'db.password'] }))
+        .hiddenEnv,
+    ).toEqual(['ADMIN_TOKEN', 'db.password']);
+  });
+
+  it.each(['', 'A=B', 'A\0B'])('refuse %j as the name of a hidden variable', async (name) => {
+    expect(
+      (await optionIssues({ ...valid(), hiddenEnv: ['OK', name] })).map(({ path }) => path),
+    ).toEqual([['hiddenEnv', 1]]);
   });
 
   it('take the access options: authorize, sync or async, origins, the terminal switch', async () => {
@@ -196,7 +212,66 @@ describe("createCockpit's options", () => {
     );
   });
 
-  it.each(['options', 'directory', 'fresh', 'driver'])(
+  it("take a job's driver part that fits the driver", async () => {
+    const part = claudeCode.job({ permissionMode: 'acceptEdits', model: 'haiku' });
+
+    const checked = await checkCockpitOptions({ ...valid(), jobs: [{ ...explain, driver: part }] });
+
+    expect(checked.jobs[0]?.driver).toBe(part);
+  });
+
+  it("refuse a job's driver part that does not fit the driver, each issue with its path from the options", async () => {
+    const issues = await optionIssues({
+      ...valid(),
+      jobs: [
+        explain,
+        { ...explain, id: 'other', driver: { permissionMode: 'loose', pluginDir: '.' } },
+      ],
+    });
+
+    expect(issues.map(({ path }) => path).sort()).toEqual(
+      [
+        ['jobs', 1, 'driver', 'permissionMode'],
+        ['jobs', 1, 'driver', 'pluginDir'],
+      ].sort(),
+    );
+  });
+
+  it.each(['plan', 'auto', 'bypassPermissions'] as const)(
+    "refuse a job in %s with authorize, naming the job, unless the app's driver accepted the open network",
+    async (permissionMode) => {
+      const job = { ...explain, id: 'free', driver: claudeCode.job({ permissionMode }) };
+      const authorize = () => true;
+
+      expect(await optionIssues({ ...valid(), jobs: [explain, job], authorize })).toEqual([
+        { path: ['jobs', 1, 'driver'], message: expect.stringContaining('"free"') },
+      ]);
+      await expect(
+        checkCockpitOptions({
+          ...valid(),
+          driver: claudeCode({ acceptOpenNetwork: true }),
+          jobs: [job],
+          authorize,
+        }),
+      ).resolves.toBeDefined();
+      await expect(checkCockpitOptions({ ...valid(), jobs: [job] })).resolves.toBeDefined();
+    },
+  );
+
+  it("refuse the driver's own open mode with authorize, even when every job sets a confined one", async () => {
+    const job = { ...explain, driver: claudeCode.job({ permissionMode: 'default' }) };
+
+    expect(
+      await optionIssues({
+        ...valid(),
+        driver: claudeCode({ permissionMode: 'auto' }),
+        jobs: [job],
+        authorize: () => true,
+      }),
+    ).toEqual([{ path: ['driver'], message: expect.stringContaining('acceptOpenNetwork') }]);
+  });
+
+  it.each(['options', 'directory', 'fresh'])(
     'refuse a job’s %s, a field this version does not take',
     async (field) => {
       expect(await optionIssues({ ...valid(), jobs: [{ ...explain, [field]: true }] })).toEqual([
@@ -226,8 +301,10 @@ describe("createCockpit's options", () => {
 describe('a run of a job', () => {
   const jobs = new Map<string, Job>([[explain.id, explain as unknown as Job]]);
 
+  const explainJob = explain as unknown as Job;
+
   it('gives the key and the prompt from the arguments the schema gave', () => {
-    expect(launchOfJob(jobs, 'explain', { file: 'README.md' })).toEqual({
+    expect(launchOfJob(jobOf(jobs, 'explain'), { file: 'README.md' })).toEqual({
       key: 'explain-readme-md',
       prompt: 'Explain README.md',
     });
@@ -237,21 +314,27 @@ describe('a run of a job', () => {
     const typing = { ...explain, id: 'type' } as Partial<typeof explain>;
     delete typing.prompt;
 
-    expect(
-      launchOfJob(new Map([['type', typing as unknown as Job]]), 'type', { file: 'a' }),
-    ).toEqual({
+    expect(launchOfJob(typing as unknown as Job, { file: 'a' })).toEqual({ key: 'explain-a' });
+  });
+
+  it("carries the job's driver part, as the job gives it", () => {
+    const part = claudeCode.job({ permissionMode: 'acceptEdits' });
+
+    expect(launchOfJob({ ...explainJob, driver: part }, { file: 'a' })).toEqual({
       key: 'explain-a',
+      prompt: 'Explain a',
+      part,
     });
   });
 
   it('refuses an id no job has: unknown-job', () => {
-    expect(() => launchOfJob(jobs, 'nothing', {})).toThrow(
+    expect(() => jobOf(jobs, 'nothing')).toThrow(
       expect.objectContaining({ code: 'unknown-job', jobId: 'nothing' }),
     );
   });
 
   it('refuses arguments the schema refuses: invalid-arguments, each issue with its path', () => {
-    expect(() => launchOfJob(jobs, 'explain', { file: '' })).toThrow(
+    expect(() => launchOfJob(explainJob, { file: '' })).toThrow(
       expect.objectContaining({
         code: 'invalid-arguments',
         issues: [{ path: ['file'], message: expect.any(String) }],

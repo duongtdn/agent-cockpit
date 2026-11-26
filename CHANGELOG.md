@@ -133,9 +133,7 @@ Nothing is published yet.
 
 - `cockpit.status()` (`CockpitStatus`: `{ agentVersion?, tested,
   testedRange }`) and `cockpit.on('untested-version', handler)`
-  (`UntestedVersion`), with `TestedRange`, from `.`; the agent's version is
-  not read yet, so `status()` has no `agentVersion` and the event never
-  fires. `cockpit.on` throws `TypeError` for an event it does not have.
+  (`UntestedVersion`), with `TestedRange`, from `.`. `cockpit.on` throws `TypeError` for an event it does not have.
 - `claudeCode.job({ permissionMode?, permissions?, model? })` from
   `./claude-code`, with the type `ClaudeCodeJobPart`: builds a job's driver
   part, `invalid-options` when it does not fit. The types
@@ -153,22 +151,31 @@ Nothing is published yet.
   carry the hooks `StopFailure`, `PreCompact`, `PostCompact`,
   `SubagentStart` and `SubagentStop`.
 - The error code `sandbox-unavailable` (`cause`, 503).
+- `createCockpit({ hiddenEnv })`: the names of the server's variables no
+  session's agent gets. A job's `driver` part (`claudeCode.job(…)`),
+  checked at `createCockpit` and again at each run (`invalid-options`),
+  its mode, rules and model laid over the driver's at launch; a part that
+  opens the network of a cockpit opened beyond loopback, unaccepted, is
+  refused naming the job.
+- The agent's version is read at `createCockpit` (for `status()`; no agent
+  is no failure there) and before each launch: no agent → `agent-not-found`,
+  older than the tested range → `agent-too-old`, nothing listed; newer →
+  the session runs and `on('untested-version')` tells it once per version.
+  A run resolves `waiting` at a start-up dialog, and a session left at one
+  ends `declined` with its `dialog`.
 
 ### Not yet: refused or missing in this version
 
 - `createCockpit` refuses every option but `name`, `directory`, `driver`,
-  `jobs`, `stateDirectory`, `agentPort`, `authorize`, `origins`, `terminal`
-  and `port`, and every job field but `id`,
-  `title`, `description`, `args`, `key` and `prompt`, with
-  `invalid-options`: a job's `driver` among them. `claudeCode` refuses
-  `sandbox`.
+  `jobs`, `hiddenEnv`, `stateDirectory`, `agentPort`, `authorize`,
+  `origins`, `terminal` and `port`, and every job field but `id`, `title`,
+  `description`, `args`, `key`, `prompt` and `driver`, with
+  `invalid-options`.
 - A run on a key that has a session, whatever its state, is refused with
   `wrong-state`: there is no resume, send, open, interrupt, end or remove.
-- A run whose agent reports nothing within 30 seconds is ended and refused
-  with `unobservable`; start-up dialogs (trusting a folder, logging in) are
-  not read, so a session held behind one ends this way.
-- An agent that cannot be run is not reported as `agent-not-found`: the run
-  resolves with `state: 'ended'`. The agent's version is not checked.
+- A run whose agent neither reports nor shows a start-up dialog within 10
+  seconds (5 seconds once its input box shows) is ended and refused with
+  `unobservable`.
 - A key whose tmux session an earlier process of the app left cannot be run:
   the run rejects with an error that is not a `CockpitError` (500 on the
   wire, `unreachable` in the client). Such sessions are not listed, and a

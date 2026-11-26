@@ -35,50 +35,62 @@ export interface Job<Args extends z.ZodType = z.ZodType> {
   /**
    * The job's driver part, built by the driver's factory
    * (`claudeCode.job(…)`): the agent's own options for the job's sessions,
-   * laid over the app's.
+   * laid over the app's. The driver checks it, at `createCockpit` and at
+   * each run.
    */
   readonly driver?: DriverPart;
 }
 
-/** What a job's run asks of the sessions: its key and its first prompt. */
+/** What a job's run asks of the sessions: its key, its first prompt and its driver part. */
 export interface JobLaunch {
   readonly key: string;
   readonly prompt?: string;
+  readonly part?: DriverPart;
 }
 
 /**
- * Reads a run of a job: finds the job, checks the arguments against its
- * schema, and derives the key and the prompt from what the schema gave.
+ * Finds the job a run names.
  *
  * @param jobs - The app's jobs, by id.
  * @param jobId - The id the run names.
- * @param args - The run's arguments, unchecked.
- * @returns The key and the prompt.
- * @throws `CockpitError` `unknown-job` when no job has the id;
- * `invalid-arguments`, with each issue, when the arguments do not fit.
- * What the job's own `key` or `prompt` throws.
+ * @returns The job.
+ * @throws `CockpitError` `unknown-job` when no job has the id.
  */
-export function launchOfJob(
-  jobs: ReadonlyMap<string, Job>,
-  jobId: string,
-  args: unknown,
-): JobLaunch {
+export function jobOf(jobs: ReadonlyMap<string, Job>, jobId: string): Job {
   const job = jobs.get(jobId);
   if (job === undefined) {
     throw new CockpitError('unknown-job', `The app has no job ${JSON.stringify(jobId)}.`, {
       jobId,
     });
   }
+  return job;
+}
+
+/**
+ * Reads a run of a job: checks the arguments against its schema, and
+ * derives the key and the prompt from what the schema gave.
+ *
+ * @param job - The job the run names.
+ * @param args - The run's arguments, unchecked.
+ * @returns The key, the prompt and the job's driver part.
+ * @throws `CockpitError` `invalid-arguments`, with each issue, when the
+ * arguments do not fit. What the job's own `key` or `prompt` throws.
+ */
+export function launchOfJob(job: Job, args: unknown): JobLaunch {
   const parsed = job.args.safeParse(args);
   if (!parsed.success) {
     throw new CockpitError(
       'invalid-arguments',
-      `The arguments do not fit the job ${JSON.stringify(jobId)}.`,
+      `The arguments do not fit the job ${JSON.stringify(job.id)}.`,
       { issues: issuesOf(parsed.error.issues) },
     );
   }
   const prompt = job.prompt?.(parsed.data);
-  return { key: job.key(parsed.data), ...(prompt === undefined ? {} : { prompt }) };
+  return {
+    key: job.key(parsed.data),
+    ...(prompt === undefined ? {} : { prompt }),
+    ...(job.driver === undefined ? {} : { part: job.driver }),
+  };
 }
 
 /**

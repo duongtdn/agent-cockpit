@@ -21,6 +21,7 @@ import type {
   Confinement,
   Driver,
   DriverEvent,
+  DriverPart,
   HookAddress,
   HookRequest,
   LaunchCommand,
@@ -133,6 +134,12 @@ export interface SessionsOptions {
    */
   readonly environment: () => Readonly<Record<string, string>>;
   /**
+   * Admits the agent a launch with this environment would run, before
+   * anything of the launch is listed or written: rejects with why it may
+   * not run (`agent-not-found`, `agent-too-old`).
+   */
+  readonly admitAgent: (environment: Readonly<Record<string, string>>) => Promise<void>;
+  /**
    * Reads what a launch's agent must not reach, at each launch, before
    * anything of it is written: a launch whose confinement cannot be read
    * fails with that error.
@@ -148,6 +155,8 @@ export interface SessionRun {
   readonly directory: string;
   /** The first prompt; absent for a job for typing, which starts at `idle`. */
   readonly prompt?: string;
+  /** The job's driver part, checked, laid over the app's options at launch; none when it has none. */
+  readonly part?: DriverPart;
 }
 
 /**
@@ -170,7 +179,9 @@ export interface Sessions {
    * its state, for now; `unobservable` when the agent reported nothing and
    * showed no dialog by {@link START_DEADLINE_MS}, or within
    * {@link READY_BOUND_MS} of showing its input box: the session was ended.
-   * What the driver's launch rejects with, such as `agent-not-found`.
+   * What the agent's admission rejects with (`agent-not-found`,
+   * `agent-too-old`), and what the driver's launch rejects with (such as
+   * `sandbox-unavailable`).
    * @throws `SessionsClosedError` when the core is closed before the run
    * settles, or was closed before it: a launch not yet on the host stops,
    * one already there goes on, unwatched.
@@ -315,7 +326,7 @@ class SessionRegistry implements Sessions {
     });
   }
 
-  async run({ key, directory, prompt }: SessionRun): Promise<RunResult> {
+  async run({ key, directory, prompt, part }: SessionRun): Promise<RunResult> {
     if (!isSessionKey(key)) throw new TypeError(`${JSON.stringify(key)} is no session key.`);
     if (this.#closed) throw new SessionsClosedError(key);
     const existing = this.#entries.get(key);
@@ -323,7 +334,7 @@ class SessionRegistry implements Sessions {
 
     const entry = this.#reserve(key, directory, prompt !== undefined);
     await this.#refuseLeftOver(entry);
-    await this.#launch(entry, prompt);
+    await this.#launch(entry, { prompt, part });
     return this.#outcome(entry);
   }
 
@@ -425,10 +436,16 @@ class SessionRegistry implements Sessions {
     }
   }
 
-  async #launch(entry: Entry, prompt: string | undefined): Promise<void> {
+  async #launch(
+    entry: Entry,
+    { prompt, part }: { prompt: string | undefined; part: DriverPart | undefined },
+  ): Promise<void> {
     const { host, driver, hooks, folders } = this.#options;
     let granted = false;
     try {
+      this.#refuseIfClosed(entry);
+      const environment = this.#options.environment();
+      await this.#options.admitAgent(environment);
       this.#refuseIfClosed(entry);
       this.#setPhase(entry, 'launching');
       const confinement = await this.#options.confinement();
@@ -444,7 +461,8 @@ class SessionRegistry implements Sessions {
         files,
         hooks: address,
         ...(prompt === undefined ? {} : { prompt }),
-        environment: this.#options.environment(),
+        ...(part === undefined ? {} : { part }),
+        environment,
         confinement,
       });
       this.#refuseIfClosed(entry);

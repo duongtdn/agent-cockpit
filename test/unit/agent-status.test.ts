@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createAgentStatus, type TestedRange } from '../../src/server/agent-status.ts';
+import { isCockpitError } from '../../src/shared/cockpit-error.ts';
 
 const RANGE: TestedRange = { oldest: '2.1.330', newest: '2.1.332' };
 
@@ -40,18 +41,18 @@ describe("the cockpit's status of the agent", () => {
     expect(status.current()).toEqual({ tested: false, testedRange: RANGE });
   });
 
-  it('tells each handler of a newer version once per version', () => {
+  it('tells each handler of a newer version once per version a launch runs', () => {
     const status = createAgentStatus(RANGE);
     const first = vi.fn();
     const second = vi.fn();
     status.onUntested(first);
     status.onUntested(second);
 
-    status.record({ found: true, version: '2.2.0', standing: 'newer' });
-    status.record({ found: true, version: '2.2.0', standing: 'newer' });
-    status.record({ found: true, version: '2.1.332', standing: 'tested' });
-    status.record({ found: true, version: '2.2.0', standing: 'newer' });
-    status.record({ found: true, version: '2.3.0', standing: 'newer' });
+    status.admit({ found: true, version: '2.2.0', standing: 'newer' });
+    status.admit({ found: true, version: '2.2.0', standing: 'newer' });
+    status.admit({ found: true, version: '2.1.332', standing: 'tested' });
+    status.admit({ found: true, version: '2.2.0', standing: 'newer' });
+    status.admit({ found: true, version: '2.3.0', standing: 'newer' });
 
     for (const handler of [first, second]) {
       expect(handler.mock.calls).toEqual([
@@ -61,25 +62,65 @@ describe("the cockpit's status of the agent", () => {
     }
   });
 
-  it('tells nothing of a tested version, an older one, or none found', () => {
+  it('tells nothing of a version read with no launch, and tells it at the first launch that runs it', () => {
     const status = createAgentStatus(RANGE);
     const handler = vi.fn();
     status.onUntested(handler);
 
-    status.record({ found: true, version: '2.1.332', standing: 'tested' });
-    status.record({ found: true, version: '2.0.0', standing: 'older' });
-    status.record({ found: false, command: 'claude' });
+    status.record({ found: true, version: '2.2.0', standing: 'newer' });
+    expect(handler).not.toHaveBeenCalled();
+    expect(status.current()).toEqual({ agentVersion: '2.2.0', tested: false, testedRange: RANGE });
+
+    status.admit({ found: true, version: '2.2.0', standing: 'newer' });
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it('admits a tested version, telling nothing', () => {
+    const status = createAgentStatus(RANGE);
+    const handler = vi.fn();
+    status.onUntested(handler);
+
+    status.admit({ found: true, version: '2.1.332', standing: 'tested' });
 
     expect(handler).not.toHaveBeenCalled();
+    expect(status.current()).toMatchObject({ agentVersion: '2.1.332', tested: true });
+  });
+
+  it('refuses a launch with no agent: agent-not-found, naming the command; the version forgotten', () => {
+    const status = createAgentStatus(RANGE);
+    status.record({ found: true, version: '2.1.332', standing: 'tested' });
+
+    expect(() => status.admit({ found: false, command: 'claude' })).toThrow(
+      expect.objectContaining({ code: 'agent-not-found', command: 'claude' }),
+    );
+    expect(status.current()).toEqual({ tested: false, testedRange: RANGE });
+  });
+
+  it('refuses a launch with an agent older than the range: agent-too-old, telling nothing', () => {
+    const status = createAgentStatus(RANGE);
+    const handler = vi.fn();
+    status.onUntested(handler);
+
+    let refusal: unknown;
+    try {
+      status.admit({ found: true, version: '2.0.0', standing: 'older' });
+    } catch (error) {
+      refusal = error;
+    }
+
+    expect(isCockpitError(refusal, 'agent-too-old')).toBe(true);
+    expect(refusal).toMatchObject({ found: '2.0.0', oldestTested: RANGE.oldest });
+    expect(handler).not.toHaveBeenCalled();
+    expect(status.current()).toEqual({ agentVersion: '2.0.0', tested: false, testedRange: RANGE });
   });
 
   it('counts a newer version told while no handler listened as told', () => {
     const status = createAgentStatus(RANGE);
-    status.record({ found: true, version: '2.2.0', standing: 'newer' });
+    status.admit({ found: true, version: '2.2.0', standing: 'newer' });
     const handler = vi.fn();
     status.onUntested(handler);
 
-    status.record({ found: true, version: '2.2.0', standing: 'newer' });
+    status.admit({ found: true, version: '2.2.0', standing: 'newer' });
 
     expect(handler).not.toHaveBeenCalled();
   });
@@ -92,7 +133,7 @@ describe("the cockpit's status of the agent", () => {
     status.onUntested(kept);
 
     stop();
-    status.record({ found: true, version: '2.2.0', standing: 'newer' });
+    status.admit({ found: true, version: '2.2.0', standing: 'newer' });
 
     expect(removed).not.toHaveBeenCalled();
     expect(kept).toHaveBeenCalledOnce();
@@ -108,7 +149,7 @@ describe("the cockpit's status of the agent", () => {
     });
     status.onUntested(kept);
 
-    status.record({ found: true, version: '2.2.0', standing: 'newer' });
+    status.admit({ found: true, version: '2.2.0', standing: 'newer' });
 
     expect(fallback).toHaveBeenCalledWith(broken);
     expect(kept).toHaveBeenCalledOnce();

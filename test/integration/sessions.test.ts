@@ -59,6 +59,7 @@ function sessionsWith(driver: Driver): Sessions {
       },
     },
     environment: () => ({ PATH: process.env.PATH ?? '' }),
+    admitAgent: async () => {},
     confinement: async () => ({
       stateRoots: [join(root, 'state')],
       appAddresses: [],

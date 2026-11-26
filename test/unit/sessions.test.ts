@@ -39,9 +39,11 @@ let driver: StubDriver;
 let access: RecordingHookAccess;
 let sessions: Sessions;
 let confinement: () => Promise<Confinement>;
+let admitAgent: (environment: Readonly<Record<string, string>>) => Promise<void>;
 
 beforeEach(() => {
   confinement = async () => CONFINEMENT;
+  admitAgent = async () => {};
   vi.useFakeTimers({ now: T0 });
   host = createFakeHost();
   driver = createStubDriver();
@@ -52,6 +54,7 @@ beforeEach(() => {
     hooks: access,
     folders: stubFolders(),
     environment: () => ({ PATH: '/usr/bin', HOME: '/home/someone' }),
+    admitAgent: (environment) => admitAgent(environment),
     confinement: () => confinement(),
   });
 });
@@ -284,6 +287,47 @@ describe('a launch that fails', () => {
     expect(driver.launches).toEqual([]);
     expect(host.starts).toEqual([]);
     expect(sessions.list()).toEqual([]);
+  });
+
+  it('admits the agent with the environment the launch starts from, then launches it with that environment', async () => {
+    const admitted: Readonly<Record<string, string>>[] = [];
+    admitAgent = async (environment) => {
+      admitted.push(environment);
+    };
+
+    await launched();
+
+    expect(admitted).toEqual([{ PATH: '/usr/bin', HOME: '/home/someone' }]);
+    expect(driver.launches[0]?.environment).toBe(admitted[0]);
+  });
+
+  it("rejects with the agent's refusal before anything is listed, written or granted", async () => {
+    const refusal = new CockpitError('agent-too-old', 'Too old.', {
+      found: '1.0.0',
+      oldestTested: '2.0.0',
+    });
+    admitAgent = async () => {
+      throw refusal;
+    };
+    const seen: (readonly Session[])[] = [];
+    sessions.follow((list) => seen.push(list));
+
+    await expect(sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(
+      refusal,
+    );
+    expect(access.granted).toEqual([]);
+    expect(driver.launches).toEqual([]);
+    expect(host.starts).toEqual([]);
+    expect(seen).toEqual([[]]);
+  });
+
+  it("hands the job's driver part to the driver's launch", async () => {
+    const part = { permissionMode: 'acceptEdits' };
+    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi', part });
+    result.catch(() => {});
+    await settle();
+
+    expect(driver.launches[0]?.part).toBe(part);
   });
 
   it("rejects with the driver's error, the host never asked", async () => {

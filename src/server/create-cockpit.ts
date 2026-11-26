@@ -14,12 +14,13 @@ import {
   type CheckedCockpitOptions,
   type CockpitOptions,
   checkCockpitOptions,
+  jobPartIssues,
 } from './cockpit-options.js';
 import { confinementReader, givenAndRealPaths, holdsRuleSyntax } from './confinement.js';
 import { createFailureReport, type FailureReport, type InternalFailure } from './failures.js';
 import { createHandler } from './http/handler.js';
 import { carriesAppToken, type RequestHeaders } from './http/request-token.js';
-import { type Job, launchOfJob } from './jobs.js';
+import { type Job, jobOf, launchOfJob } from './jobs.js';
 import type { SessionHost } from './session-host/session-host.js';
 import { createTmuxSessionHost } from './session-host/tmux-session-host.js';
 import { createSessions, type Sessions } from './sessions/sessions.js';
@@ -44,13 +45,21 @@ export interface Cockpit {
    * @param jobId - The job's id.
    * @param args - The job's arguments.
    * @returns `{ action: 'started', state }`: `busy` once the agent took the
-   * prompt, `idle` for a job without one, `ended` when the agent exited
-   * before it reported anything.
+   * prompt, `idle` for a job without one, `waiting` while a start-up dialog
+   * waits for the person in the terminal, `ended` when the agent exited
+   * before it reported anything (`declined` when the person left a dialog).
    * @throws `CockpitError` `unknown-job`, `invalid-arguments`;
-   * `wrong-state` when the key has a session, whatever its state, in this
-   * version; `unobservable` when the agent reported nothing and its session
-   * was ended; `no-app-port` when no port of the app's browser-facing
-   * server is known, so the session's sandbox could not be kept from it.
+   * `invalid-options` when the job's driver part does not fit, or opens the
+   * network of a cockpit opened beyond loopback that the app did not
+   * accept; `wrong-state` when the key has a session, whatever its state,
+   * in this version; `agent-not-found` when no agent is found on the
+   * launch's `PATH`; `agent-too-old` when it is older than the driver's
+   * tested range (a newer one runs, and `untested-version` tells it once);
+   * `sandbox-unavailable` when the app asked for the agent's sandbox and
+   * it cannot run; `unobservable` when the agent reported nothing and its
+   * session was ended; `no-app-port` when no port of the app's
+   * browser-facing server is known, so the session's sandbox could not be
+   * kept from it.
    * An `Error` with no code when the cockpit is closed before the
    * run settles, or was closed before it (500 on the wire): an agent
    * already started goes on in tmux.
@@ -118,8 +127,9 @@ export interface Cockpit {
    */
   on(event: 'untested-version', handler: (event: UntestedVersion) => void): () => void;
   /**
-   * Tells the agent's version as last read, whether the driver was tested
-   * on it, and the driver's tested range.
+   * Tells the agent's version as last read — when the cockpit was created,
+   * then at each launch — whether the driver was tested on it, and the
+   * driver's tested range. No agent found leaves no version.
    *
    * @returns The status now.
    */
@@ -164,7 +174,9 @@ export interface Cockpit {
 /**
  * Creates the cockpit: checks the options and the machine, opens the state
  * folder, takes the app's lock (waiting a few seconds for a predecessor to
- * exit), opens the app's token and the agent-facing listener, then resolves.
+ * exit), opens the app's token and the agent-facing listener, reads the
+ * agent's version for `status()` (no agent is no failure here: a launch
+ * refuses it), then resolves.
  *
  * @param options - See {@link CockpitOptions}.
  * @returns The cockpit.
@@ -207,6 +219,8 @@ async function openCockpit(
     const appToken = await openAppToken(folder.path);
     const failures = createFailureReport();
     const agentStatus = createAgentStatus(checked.driver.testedRange);
+    const environment = () => serverEnvironment(checked.hiddenEnv);
+    await readAgentVersion(checked.driver, environment(), agentStatus);
     // The listener takes hooks only with a session's token, and none is
     // granted before the sessions exist: nothing reaches `receive` early.
     const receiver: { sessions?: Sessions } = {};
@@ -222,7 +236,9 @@ async function openCockpit(
       driver: checked.driver,
       hooks: listener.hooks,
       folders: folder.sessions,
-      environment: serverEnvironment,
+      environment,
+      admitAgent: async (launchEnvironment) =>
+        agentStatus.admit(await checked.driver.agentVersion(launchEnvironment)),
       confinement: confinementReader({
         stateRoots: stateRootsOf(checked, folder.path),
         appPorts: appPorts.current,
@@ -232,9 +248,12 @@ async function openCockpit(
     receiver.sessions = sessions;
     const jobs = new Map<string, Job>(checked.jobs.map((job) => [job.id, job]));
     const run = (jobId: string, args: unknown): Promise<RunResult> =>
-      Promise.resolve().then(() =>
-        sessions.run({ ...launchOfJob(jobs, jobId, args), directory: checked.directory }),
-      );
+      Promise.resolve().then(() => {
+        const job = jobOf(jobs, jobId);
+        const launch = launchOfJob(job, args);
+        refuseUnfitPart(checked, job);
+        return sessions.run({ ...launch, directory: checked.directory });
+      });
     const handler = createHandler({
       tokenMatches: appToken.matches,
       run,
@@ -286,6 +305,38 @@ async function openCockpit(
   } catch (error) {
     await lock.release();
     throw error;
+  }
+}
+
+/**
+ * Refuses a run of a job whose driver part, read as it is launched, does
+ * not fit: `createCockpit` checked it, but the part is the app's object,
+ * and what is launched is what is checked.
+ */
+function refuseUnfitPart(checked: CheckedCockpitOptions, job: Job): void {
+  const issues = jobPartIssues(checked, job);
+  if (issues.length === 0) return;
+  throw new CockpitError(
+    'invalid-options',
+    `The driver part of the job ${JSON.stringify(job.id)} does not fit.`,
+    { issues },
+  );
+}
+
+/**
+ * Reads the agent's version as the cockpit is created, for `status()`. A
+ * read that fails leaves the status unread: the cockpit runs no agent yet,
+ * and a launch reads it again, failing then.
+ */
+async function readAgentVersion(
+  driver: CheckedCockpitOptions['driver'],
+  environment: Readonly<Record<string, string>>,
+  agentStatus: AgentStatus,
+): Promise<void> {
+  try {
+    agentStatus.record(await driver.agentVersion(environment));
+  } catch {
+    // Left unread: the first launch reads it, and rejects with the failure.
   }
 }
 
@@ -382,13 +433,14 @@ export function checkPlatform(platform: NodeJS.Platform): void {
 }
 
 /**
- * The environment a launch starts from: the server's, read at each launch.
- * The driver removes what its agent must not inherit.
+ * The environment a launch starts from: the server's, read at each launch,
+ * without the variables the app hides. The driver removes what its agent
+ * must not inherit.
  */
-function serverEnvironment(): Record<string, string> {
+function serverEnvironment(hidden: readonly string[]): Record<string, string> {
   return Object.fromEntries(
     Object.entries(process.env).filter(
-      (entry): entry is [string, string] => entry[1] !== undefined,
+      (entry): entry is [string, string] => entry[1] !== undefined && !hidden.includes(entry[0]),
     ),
   );
 }

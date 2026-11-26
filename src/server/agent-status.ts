@@ -1,10 +1,13 @@
 /**
  * The agent's version as the cockpit knows it: the last one read, how it
- * stands against the driver's tested range, and the notice an app gets
- * once per version that is newer than any tested (ADR-0054).
+ * stands against the driver's tested range, the notice an app gets once
+ * per version that is newer than any tested, and the refusal of a launch
+ * whose agent is missing or older than tested (ADR-0054).
  *
  * @packageDocumentation
  */
+
+import { CockpitError } from '../shared/cockpit-error.js';
 
 /** The oldest and the newest versions of the agent a driver's contract tests ran on. */
 export interface TestedRange {
@@ -54,12 +57,23 @@ export interface AgentStatus {
   /** @returns The status now. */
   current(): CockpitStatus;
   /**
-   * Records a reading: the status follows it, and a version newer than the
-   * range is told to the handlers the first time it is read in the process.
+   * Records a reading taken with no launch, as the cockpit is created: the
+   * status follows it, and nothing is told, since no app could listen yet.
    *
    * @param reading - What the driver read.
    */
   record(reading: AgentVersion): void;
+  /**
+   * Admits the agent a launch would run: records the reading, tells the
+   * handlers of a version newer than the range the first time a launch runs
+   * it, and refuses an agent that is missing or older than the range.
+   *
+   * @param reading - What the driver read for the launch.
+   * @throws `CockpitError` `agent-not-found` (`command`) when no agent was
+   * found; `agent-too-old` (`found`, `oldestTested`) when it is older than
+   * the range.
+   */
+  admit(reading: AgentVersion): void;
   /**
    * Adds a handler of untested versions.
    *
@@ -97,16 +111,32 @@ export function createAgentStatus(
     }
   }
 
+  function record(reading: AgentVersion): void {
+    status = reading.found
+      ? { agentVersion: reading.version, tested: reading.standing === 'tested', testedRange }
+      : { tested: false, testedRange };
+  }
+
   return {
     current: () => status,
-    record(reading) {
+    record,
+    admit(reading) {
+      record(reading);
       if (!reading.found) {
-        status = { tested: false, testedRange };
-        return;
+        throw new CockpitError(
+          'agent-not-found',
+          `The agent's command ${reading.command} is not found on the PATH it is launched with.`,
+          { command: reading.command },
+        );
       }
-      const { version, standing } = reading;
-      status = { agentVersion: version, tested: standing === 'tested', testedRange };
-      if (standing === 'newer') tell(version);
+      if (reading.standing === 'older') {
+        throw new CockpitError(
+          'agent-too-old',
+          `The agent's version ${reading.version} is older than the oldest the driver was tested on, ${testedRange.oldest}: update the agent.`,
+          { found: reading.version, oldestTested: testedRange.oldest },
+        );
+      }
+      if (reading.standing === 'newer') tell(reading.version);
     },
     onUntested(handler) {
       // A handler given twice is two subscriptions, each removed by its own function.
