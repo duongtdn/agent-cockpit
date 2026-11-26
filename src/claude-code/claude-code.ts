@@ -20,8 +20,6 @@ import {
   AGENT_COMMAND,
   agentArguments,
   agentEnvironment,
-  missingPrograms,
-  SANDBOX_PROGRAMS,
   sessionStartCommand,
 } from './launching.js';
 import {
@@ -33,6 +31,7 @@ import {
   laidOver,
   type PermissionMode,
 } from './options.js';
+import { sandboxChecker } from './sandbox-check.js';
 import { readScreen } from './screen-reading.js';
 import { settingsDocument } from './settings-document.js';
 import { TESTED_RANGE } from './tested-range.js';
@@ -114,8 +113,10 @@ function namedHostsReason(mode: PermissionMode): string {
  *
  * A launch with the sandbox asked for rejects with `CockpitError`
  * `sandbox-unavailable` when the agent would not find what the sandbox
- * needs (on Linux, `bwrap` and `socat` on its `PATH`): it never runs
- * unsandboxed instead.
+ * needs (on Linux, `bwrap` and `socat` on its `PATH`), or `bwrap` cannot
+ * make what it must (probed once per driver, nested as the agent's sandbox
+ * does: an AppArmor-confined `bwrap` is caught here, not seen as a session
+ * that ends at once): it never runs unsandboxed instead.
  *
  * `claudeCode.job(…)` builds a job's driver part.
  *
@@ -144,6 +145,7 @@ export const claudeCode: {
 
 function createDriver(options?: ClaudeCodeOptions): Driver {
   const checked = checkOptions(options);
+  const checkSandbox = sandboxChecker();
   return {
     terminalKeys: TERMINAL_KEYS,
     silentStartCause: SILENT_START_CAUSE,
@@ -152,7 +154,10 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
     checkPart: checkJobPart,
     networkOf: (part) => networkOf(checked, part),
     readScreen,
-    launch: (launch) => launchSession(launch, checked),
+    launch: async (launch) => {
+      if (checked.sandbox !== undefined) await checkSandbox(launch.environment);
+      return launchSession(launch, checked);
+    },
     readHook,
     follow: (conversation, report) => followTranscript(lookupOf(conversation), report).stop,
     canResume: (conversation) => keepsConversation(lookupOf(conversation)),
@@ -187,7 +192,6 @@ function networkOf(options: CheckedOptions, part?: DriverPart): SessionNetwork {
 }
 
 async function launchSession(launch: Launch, options: CheckedOptions): Promise<LaunchCommand> {
-  if (options.sandbox !== undefined) await checkSandboxCanRun(launch.environment);
   const session = laidOver(options, launch.part as ClaudeCodeJobPart | undefined);
   const address: HookAddress = { url: hookUrl(launch.hooks.url), token: launch.hooks.token };
   const addressFile = join(launch.files, ADDRESS_FILE);
@@ -222,25 +226,6 @@ async function launchSession(launch: Launch, options: CheckedOptions): Promise<L
     }),
     environment: agentEnvironment(launch.environment),
   };
-}
-
-/**
- * Refuses a launch whose agent would not find what its sandbox needs. The
- * agent would start, then exit with nothing on its screen to say why
- * (`failIfUnavailable` stays the check of what this one cannot see).
- */
-async function checkSandboxCanRun(environment: Readonly<Record<string, string>>): Promise<void> {
-  const missing = await missingPrograms(SANDBOX_PROGRAMS[process.platform] ?? [], environment);
-  if (missing.length === 0) return;
-  throw new CockpitError(
-    'sandbox-unavailable',
-    "The app asked for Claude Code's sandbox, which cannot run here: the session is not started.",
-    {
-      cause:
-        `${missing.join(' and ')} not found on the PATH the agent is launched with; the ` +
-        'sandbox needs bubblewrap (bwrap) and socat (on Debian or Ubuntu: apt install bubblewrap socat).',
-    },
-  );
 }
 
 /** The person's own settings file, by the path the agent would read it at and by its real path. */

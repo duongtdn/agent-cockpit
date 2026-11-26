@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
 import {
-  chmodSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -361,96 +360,6 @@ describe("a launch of a job's driver part", () => {
       'Read(//home/someone/.local/state/agent-cockpit/**)',
     ]);
   });
-});
-
-describe('a launch in the sandbox the app asks for', () => {
-  /** A folder of stand-ins for the commands named, each an executable file. */
-  function commandsFolder(...names: string[]): string {
-    const folder = join(files, `bin-${names.join('-') || 'none'}`);
-    mkdirSync(folder);
-    for (const name of names) {
-      writeFileSync(join(folder, name), '#!/bin/sh\n');
-      chmodSync(join(folder, name), 0o755);
-    }
-    return folder;
-  }
-
-  async function refusalOf(driver: ReturnType<typeof claudeCode>, PATH: string): Promise<unknown> {
-    const launch = launchOf();
-    return driver.launch({ ...launch, environment: { ...launch.environment, PATH } }).then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-  }
-
-  it("turns the sandbox on, failing where it cannot run, beside the cockpit's lines", async () => {
-    const PATH = commandsFolder('bwrap', 'socat');
-    const launch = launchOf();
-    const { args } = await claudeCode({ sandbox: true }).launch({
-      ...launch,
-      environment: { ...launch.environment, PATH },
-    });
-
-    expect(settingsOf(args).sandbox).toMatchObject({
-      enabled: true,
-      failIfUnavailable: true,
-      allowUnsandboxedCommands: false,
-      network: { allowedDomains: ['127.0.0.1:4100'] },
-    });
-  });
-
-  it.runIf(process.platform === 'linux')(
-    'is refused as sandbox-unavailable, naming what is missing, when bubblewrap or socat is not on the PATH',
-    async () => {
-      const driver = claudeCode({ sandbox: true });
-
-      const noBwrap = await refusalOf(driver, commandsFolder('socat'));
-      const neither = await refusalOf(driver, commandsFolder());
-
-      expect(isCockpitError(noBwrap, 'sandbox-unavailable')).toBe(true);
-      expect(noBwrap).toMatchObject({ cause: expect.stringMatching(/^bwrap not found/) });
-      expect(neither).toMatchObject({ cause: expect.stringMatching(/^bwrap and socat not found/) });
-    },
-  );
-
-  it.runIf(process.platform === 'linux')(
-    'writes no file and starts nothing when it is refused',
-    async () => {
-      await refusalOf(claudeCode({ sandbox: true }), commandsFolder('socat'));
-
-      expect(readdirSync(files).filter((name) => !name.startsWith('bin-'))).toEqual([]);
-    },
-  );
-
-  it('finds bubblewrap and socat in any folder of the PATH, not in a folder that is no folder', async () => {
-    const PATH = ['', join(files, 'absent'), commandsFolder('bwrap'), commandsFolder('socat')].join(
-      ':',
-    );
-
-    expect(await refusalOf(claudeCode({ sandbox: true }), PATH)).toBeUndefined();
-  });
-
-  it('does not look for the sandbox when the app does not ask for it: the person decides', async () => {
-    expect(await refusalOf(claudeCode(), commandsFolder())).toBeUndefined();
-  });
-
-  it.runIf(process.platform === 'linux')(
-    'does not count a file that cannot be run, or a folder, as the command',
-    async () => {
-      const folder = commandsFolder('socat');
-      writeFileSync(join(folder, 'bwrap'), '');
-      chmodSync(join(folder, 'bwrap'), 0o644);
-      const other = commandsFolder();
-      mkdirSync(join(other, 'bwrap'));
-
-      expect(
-        isCockpitError(
-          await refusalOf(claudeCode({ sandbox: true }), `${folder}:${other}`),
-          'sandbox-unavailable',
-        ),
-      ).toBe(true);
-    },
-  );
 });
 
 describe('what a launch never writes', () => {

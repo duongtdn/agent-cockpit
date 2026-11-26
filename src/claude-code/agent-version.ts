@@ -1,9 +1,7 @@
-import { constants } from 'node:fs';
-import { access, realpath, stat } from 'node:fs/promises';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { realpath, stat } from 'node:fs/promises';
 import type { AgentFailure, AgentVersion, TestedRange } from '../server/agent-status.js';
 import { runBounded } from './bounded-run.js';
-import { AGENT_COMMAND } from './launching.js';
+import { AGENT_COMMAND, findProgram } from './launching.js';
 
 /**
  * A version as Claude Code prints it, first on its `--version` line: three
@@ -61,7 +59,7 @@ export function agentVersionReader(
   const versions = new Map<string, { readonly identity: string; readonly version: string }>();
 
   return async (environment) => {
-    const program = await findOnPath(AGENT_COMMAND, environment.PATH);
+    const program = await findProgram(AGENT_COMMAND, environment.PATH);
     if (program === undefined) return { found: false, command: AGENT_COMMAND };
     const file = await executableFile(program);
     let known = versions.get(file.realPath);
@@ -75,29 +73,6 @@ export function agentVersionReader(
     }
     return { found: true, version: known.version, standing: standingOf(known.version, range) };
   };
-}
-
-/**
- * Finds a program as a launch would: in the first folder of the `PATH` that
- * holds an executable file of that name. Only absolute folders count: a
- * relative one would depend on the folder the server runs in.
- */
-async function findOnPath(name: string, path: string | undefined): Promise<string | undefined> {
-  for (const folder of (path ?? '').split(delimiter)) {
-    if (!isAbsolute(folder)) continue;
-    const candidate = join(folder, name);
-    if (await isExecutableFile(candidate)) return candidate;
-  }
-  return undefined;
-}
-
-async function isExecutableFile(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.X_OK);
-    return (await stat(path)).isFile();
-  } catch {
-    return false;
-  }
 }
 
 async function executableFile(program: string): Promise<ExecutableFile> {

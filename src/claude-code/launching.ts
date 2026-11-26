@@ -61,36 +61,24 @@ function optionWithValue(option: string, value: string | undefined): string[] {
 }
 
 /**
- * The programs the agent's sandbox needs, by platform: on Linux,
- * bubblewrap and socat, found on the agent's `PATH`. Without one the agent
- * starts, then exits with nothing on its screen to say why, so the driver
- * looks first. Elsewhere the agent's own refusal (`failIfUnavailable`) is
- * the check.
- */
-export const SANDBOX_PROGRAMS: Partial<Record<NodeJS.Platform, readonly string[]>> = {
-  linux: ['bwrap', 'socat'],
-};
-
-/**
- * Tells which programs a launch with this environment would not find: those
- * no folder of its `PATH` holds as a file that can be run.
+ * Finds a program as a launch would: in the first folder of the `PATH`
+ * that holds a file of that name that can be run. Only absolute folders
+ * count: a relative one is relative to wherever the agent runs.
  *
- * @param programs - The programs' names.
- * @param environment - The launch's environment.
- * @returns The programs missing, in the order given.
+ * @param name - The program's name.
+ * @param path - The launch's `PATH`.
+ * @returns The program's path; `undefined` when no folder holds it.
  */
-export async function missingPrograms(
-  programs: readonly string[],
-  environment: Readonly<Record<string, string>>,
-): Promise<string[]> {
-  // A relative folder of the PATH is relative to wherever the agent runs: not looked in.
-  const folders = (environment.PATH ?? '').split(delimiter).filter((folder) => isAbsolute(folder));
-  const found = await Promise.all(
-    programs.map(async (program) =>
-      (await Promise.all(folders.map((folder) => canRun(join(folder, program))))).includes(true),
-    ),
-  );
-  return programs.filter((_, index) => !found[index]);
+export async function findProgram(
+  name: string,
+  path: string | undefined,
+): Promise<string | undefined> {
+  for (const folder of (path ?? '').split(delimiter)) {
+    if (!isAbsolute(folder)) continue;
+    const candidate = join(folder, name);
+    if (await canRun(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 async function canRun(path: string): Promise<boolean> {
