@@ -319,7 +319,7 @@ async function answerUntilTheTurnEnds(
     } else {
       await approveTheCommand(terminal);
     }
-    await untilChanged(terminal, screen);
+    await untilAnswered(terminal, screen);
   }
   throw new Error(`The turn did not end: the terminal shows\n${await terminal.screen()}`);
 }
@@ -380,12 +380,31 @@ function dialogOn(screen: string): Dialog | undefined {
   return undefined;
 }
 
-async function untilChanged(
+/**
+ * Waits until the dialog answered is gone. Not until the screen merely
+ * changes: the keys of the answer change it (a selection moved), and a
+ * dialog draws its selection late, so the same dialog would be answered
+ * twice, the second key landing on the dialog after it.
+ */
+async function untilAnswered(
   terminal: { screen(): Promise<string> },
   answered: string,
 ): Promise<void> {
+  const dialog = dialogShown(answered);
   const deadline = Date.now() + ANSWER_PATIENCE_MS;
-  while (Date.now() < deadline && (await terminal.screen()) === answered) await pause(POLL_MS);
+  while (Date.now() < deadline && dialogShown(await terminal.screen()) === dialog) {
+    await pause(POLL_MS);
+  }
+}
+
+/** A dialog's text, below the rule that tops it, whichever of its options is selected. */
+function dialogShown(screen: string): string {
+  const lines = screen.split('\n');
+  const top = lines.findLastIndex((line) => /^─+$/u.test(line.trim()));
+  return lines
+    .slice(top + 1)
+    .join('\n')
+    .replaceAll('❯', ' ');
 }
 
 async function waitForHook(
