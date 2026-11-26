@@ -144,12 +144,18 @@ function inState<S extends Session['state']>(cockpit: Cockpit, key: string, stat
   });
 }
 
-/** Records every change of a session, each state once in a row. */
+/**
+ * Records every state a session goes through, each once in a row: a
+ * change within a state (its record written) replaces the last.
+ */
 function statesOf(cockpit: Cockpit, key: string): Session[] {
   const seen: Session[] = [];
   const stop = cockpit.sessions.follow((sessions) => {
     const session = sessions.find((each) => each.key === key);
-    if (session !== undefined && seen.at(-1) !== session) seen.push(session);
+    if (session === undefined) return;
+    const last = seen.at(-1);
+    if (last?.state === session.state && last.since === session.since) seen.pop();
+    seen.push(session);
   });
   cleanups.push(async () => stop());
   return seen;

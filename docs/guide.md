@@ -322,19 +322,30 @@ meet again.
 ## Run, send and open
 
 Starting or resuming a session with a job, sending it a prompt, and opening
-it with none. Built so far: a run on a key with no session, which launches
-the agent with the job's prompt and resolves once the session leaves
+it with none. A job's key names a unit of work: its conversation, the
+earlier ones, and the history of its runs and opens, kept in the state
+folder and listed with its session. A run acts by the state of its key's
+session: it starts one, resumes an ended one with the prompt, types the
+prompt into an `idle` one (restarting it, conversation kept, when the run's
+settings differ), and is refused while the session is starting, busy or
+waiting. A send continues a unit of work with a prompt; an open resumes it
+to type in the terminal; `fresh` starts a new conversation. Calls on one
+key run one at a time. A launch resolves once the session leaves
 `starting`: `busy`; `idle` for a job without a prompt, or one the agent
 takes without a turn (a local command such as `/clear`); `waiting` at a
-start-up dialog; `ended` when the agent was gone first. A launch prompt no
-hook says was taken leaves the session `starting` until its screen or a
-hook tells what became of it. A launch is refused
-when the agent is missing or cannot be run (`agent-not-found`), older than the driver was
-tested on (`agent-too-old`), or cannot be sandboxed as the app asked
-(`sandbox-unavailable`), and ended with `unobservable` when the agent
-neither reports nor shows a dialog in time. A run on a key
-that has a session is refused with `wrong-state`; the
-[API reference](api.md#operations) lists what else is refused for now.
+start-up dialog; `ended` when the agent was gone first. A launch is refused
+when the agent is missing or cannot be run (`agent-not-found`), older than
+the driver was tested on (`agent-too-old`), or cannot be sandboxed as the
+app asked (`sandbox-unavailable`), and ended with `unobservable` when the
+agent neither reports nor shows a dialog in time.
+
+A prompt typed into a session keeps what the person left in its input box:
+the draft is put back after, and the page's terminal holds the person's keys
+meanwhile. Should anything but the box show up while it types (a turn the
+agent began by itself, a dialog), the send stops; the draft is put back
+while the box still shows, else the error says where it is. A page draws a
+launcher from `jobs()` and fills each field with a source from
+`options(…)`. The [API reference](api.md#units-of-work) has the tables.
 
 ## Interrupt, end and remove
 

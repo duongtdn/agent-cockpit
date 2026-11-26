@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHandler, type Handler, MAX_BODY_BYTES } from '../../src/server/http/handler.ts';
 import type { Attachment, TerminalSize } from '../../src/server/session-host/session-host.ts';
 import { CockpitError } from '../../src/shared/cockpit-error.ts';
+import type { JobDescription } from '../../src/shared/job.ts';
 import type { RunResult, Session } from '../../src/shared/session.ts';
 import { SESSION_ENDED_CLOSE_CODE } from '../../src/shared/wire.ts';
 import { eventually } from '../support/eventually.ts';
@@ -24,7 +25,9 @@ const idle: Session = { key: 'explain-a', state: 'idle', since: '2026-11-26T00:0
 let server: Server;
 let handler: Handler;
 let base: string;
-let runs: { jobId: string; args: unknown }[];
+let runs: { jobId: string; args: unknown; options?: unknown }[];
+/** Every other operation the handler asked for, with what it was given. */
+let asked: { operation: string; given: unknown[] }[];
 let runOutcome: () => Promise<RunResult>;
 let followers: Set<(sessions: readonly Session[]) => void>;
 let attachOutcome: () => Promise<Attachment | undefined>;
@@ -32,8 +35,17 @@ let attachedSizes: TerminalSize[];
 let live: boolean;
 let failures: { where: string; cause: unknown }[];
 
+const explainJob: JobDescription = {
+  id: 'explain',
+  title: 'Explain a file',
+  schema: { type: 'object', properties: { file: { type: 'string' } } },
+  options: { file: 'choices' },
+  hasPrompt: true,
+};
+
 beforeEach(async () => {
   runs = [];
+  asked = [];
   runOutcome = async () => ({ action: 'started', state: 'busy' });
   followers = new Set();
   attachedSizes = [];
@@ -42,9 +54,24 @@ beforeEach(async () => {
   attachOutcome = async () => new FakeAttachment();
   handler = createHandler({
     tokenMatches: (candidate) => candidate === TOKEN,
-    run: (jobId, args) => {
-      runs.push({ jobId, args });
-      return runOutcome();
+    operations: {
+      run: (jobId, args, options) => {
+        runs.push({ jobId, args, options });
+        return runOutcome();
+      },
+      async send(...given) {
+        asked.push({ operation: 'send', given });
+        return { action: 'sent', state: 'busy' };
+      },
+      async open(...given) {
+        asked.push({ operation: 'open', given });
+        return { action: 'resumed', state: 'idle' };
+      },
+      jobs: () => [explainJob],
+      async options(...given) {
+        asked.push({ operation: 'options', given });
+        return [{ value: 'a.md', label: 'A' }];
+      },
     },
     sessions: {
       list: () => [idle],
@@ -147,7 +174,7 @@ describe('the handler’s routes', () => {
     expect(reply.status).toBe(200);
     expect(reply.headers['cache-control']).toBe('no-store');
     expect(JSON.parse(reply.body)).toEqual({ action: 'started', state: 'busy' });
-    expect(runs).toEqual([{ jobId: 'explain', args: { file: 'a' } }]);
+    expect(runs).toEqual([{ jobId: 'explain', args: { file: 'a' }, options: {} }]);
   });
 
   it('answers a refused run with the error and its status', async () => {
@@ -202,6 +229,78 @@ describe('the handler’s routes', () => {
     expect(errorOf(reply.body)).toMatchObject({ code: 'invalid-arguments' });
     expect(runs).toEqual([]);
   });
+
+  it('runs a job afresh when the body asks', async () => {
+    await post(`${base}/run`, { jobId: 'explain', args: {}, fresh: true }, { token: TOKEN });
+
+    expect(runs).toEqual([{ jobId: 'explain', args: {}, options: { fresh: true } }]);
+  });
+
+  it('sends a prompt to a unit of work and answers what the send did', async () => {
+    const reply = await post(
+      `${base}/send`,
+      { key: 'explain-a', prompt: 'Go on.' },
+      { token: TOKEN },
+    );
+
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toEqual({ action: 'sent', state: 'busy' });
+    expect(asked).toEqual([{ operation: 'send', given: ['explain-a', 'Go on.'] }]);
+  });
+
+  it('opens a unit of work, afresh when the body asks, and answers what the open did', async () => {
+    const reply = await post(`${base}/open`, { key: 'explain-a' }, { token: TOKEN });
+    await post(`${base}/open`, { key: 'explain-a', fresh: true }, { token: TOKEN });
+
+    expect(JSON.parse(reply.body)).toEqual({ action: 'resumed', state: 'idle' });
+    expect(asked).toEqual([
+      { operation: 'open', given: ['explain-a', {}] },
+      { operation: 'open', given: ['explain-a', { fresh: true }] },
+    ]);
+  });
+
+  it('describes the jobs', async () => {
+    const reply = await call(`${base}/jobs`, { token: TOKEN });
+
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toEqual({ jobs: [explainJob] });
+  });
+
+  it('reads a field’s choices, given the arguments filled so far', async () => {
+    const reply = await post(
+      `${base}/options`,
+      { jobId: 'explain', field: 'file', args: { folder: 'docs' } },
+      { token: TOKEN },
+    );
+
+    expect(JSON.parse(reply.body)).toEqual({ choices: [{ value: 'a.md', label: 'A' }] });
+    expect(asked).toEqual([
+      { operation: 'options', given: ['explain', 'file', { folder: 'docs' }] },
+    ]);
+  });
+
+  it.each([
+    ['/run', '{"jobId":"explain","args":{},"fresh":"yes"}', ['fresh']],
+    ['/send', '{"prompt":"Go on."}', ['key']],
+    ['/send', '{"key":"explain-a","prompt":3}', ['prompt']],
+    ['/open', '{}', ['key']],
+    ['/open', '{"key":"explain-a","fresh":1}', ['fresh']],
+    ['/options', '{"field":"file","args":{}}', ['jobId']],
+    ['/options', '{"jobId":"explain","args":{}}', ['field']],
+    ['/send', 'not json', []],
+  ])(
+    'refuses a body of %s that does not fit, at its field: invalid-arguments',
+    async (path, body, at) => {
+      const reply = await call(`${base}${path}`, { method: 'POST', body, token: TOKEN });
+
+      expect(reply.status).toBe(400);
+      expect(errorOf(reply.body)).toMatchObject({
+        code: 'invalid-arguments',
+        issues: [{ path: at }],
+      });
+      expect([...runs, ...asked]).toEqual([]);
+    },
+  );
 
   it('refuses a body over the limit, 413', async () => {
     const body = JSON.stringify({ jobId: 'explain', args: 'x'.repeat(MAX_BODY_BYTES) });

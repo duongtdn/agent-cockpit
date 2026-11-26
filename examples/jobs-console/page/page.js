@@ -43,7 +43,9 @@ runForm.addEventListener('submit', async (event) => {
   runResult.textContent = `Running the job on ${file}…`;
   try {
     const result = await client.run(JOB_ID, { file });
-    runResult.textContent = `Started a session on ${file}: it is ${result.state}.`;
+    const done =
+      result.action === 'sent' ? 'Sent the prompt to the session of' : 'Started a session on';
+    runResult.textContent = `${done} ${file}: it is ${result.state}.`;
   } catch (error) {
     runResult.textContent = explain(error);
   } finally {

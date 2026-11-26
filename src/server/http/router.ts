@@ -1,14 +1,20 @@
 import {
   FOLLOW_SESSIONS_PATH,
+  JOBS_PATH,
   keyOfTerminalPath,
+  OPEN_PATH,
+  OPTIONS_PATH,
   RUN_PATH,
+  SEND_PATH,
   SESSIONS_PATH,
 } from '../../shared/wire.js';
 
+/** The HTTP routes of the cockpit's operations, each on a path of its own. */
+type OperationRoute = 'run' | 'send' | 'open' | 'jobs' | 'options' | 'sessions';
+
 /** Where an HTTP request under the mount goes. */
 export type RequestRoute =
-  | { readonly route: 'run' }
-  | { readonly route: 'sessions' }
+  | { readonly route: OperationRoute }
   /** A known path asked with another method: `allow` is the one it takes. */
   | { readonly route: 'wrong-method'; readonly allow: string }
   /** A WebSocket's path asked as a plain request. */
@@ -27,8 +33,12 @@ export type SocketRoute =
   | { readonly route: 'terminal'; readonly key: string };
 
 /** The HTTP paths, each with the one method it takes. */
-const REQUEST_PATHS: Readonly<Record<string, { method: string; route: 'run' | 'sessions' }>> = {
+const REQUEST_PATHS: Readonly<Record<string, { method: string; route: OperationRoute }>> = {
   [RUN_PATH]: { method: 'POST', route: 'run' },
+  [SEND_PATH]: { method: 'POST', route: 'send' },
+  [OPEN_PATH]: { method: 'POST', route: 'open' },
+  [JOBS_PATH]: { method: 'GET', route: 'jobs' },
+  [OPTIONS_PATH]: { method: 'POST', route: 'options' },
   [SESSIONS_PATH]: { method: 'GET', route: 'sessions' },
 };
 

@@ -6,6 +6,17 @@ describe('the routes of HTTP requests, under the mount', () => {
     expect(requestRouteOf('POST', '/run')).toEqual({ route: 'run' });
   });
 
+  it('sends a prompt on POST /send, opens a unit of work on POST /open', () => {
+    expect(requestRouteOf('POST', '/send')).toEqual({ route: 'send' });
+    expect(requestRouteOf('POST', '/open')).toEqual({ route: 'open' });
+  });
+
+  it('describes the jobs on GET /jobs, reads a field’s choices on POST /options', () => {
+    expect(requestRouteOf('GET', '/jobs')).toEqual({ route: 'jobs' });
+    expect(requestRouteOf('POST', '/options')).toEqual({ route: 'options' });
+    expect(requestRouteOf('GET', '/options')).toEqual({ route: 'wrong-method', allow: 'POST' });
+  });
+
   it('lists the sessions on GET /sessions, a query or not', () => {
     expect(requestRouteOf('GET', '/sessions')).toEqual({ route: 'sessions' });
     expect(requestRouteOf('GET', '/sessions?x=1')).toEqual({ route: 'sessions' });

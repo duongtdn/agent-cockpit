@@ -229,16 +229,55 @@ Nothing is published yet.
   session to the `idle` it left; an
   interruption the agent recorded before the next prompt was taken leaves
   the new turn `busy`.
-- The shapes of units of work, declared ahead of their behavior: a job's
-  `options` (option sources, `{ choices, suggestions: true }` for one that
-  only suggests), `directory(args)` and `fresh`; the types `Choice`,
-  `JobDescription`, `SessionRecord`, `HistoryEntry` (a session's
-  `record`), `RunOptions`, `OpenOptions`, `SendResult` and `OpenResult`
-  (from `.` and `./client`); a run's `stoppedTasks`. The cockpit declares
-  `send(key, prompt)`, `open(key, options?)`, `jobs()`, `options(jobId,
-  field, argsSoFar?)` and `run`'s `{ fresh }`; the client calls them
-  (`/send`, `/open`, `/jobs`, `/options`), which the handler does not
-  serve yet.
+- Units of work. A job may carry `options` (option sources, `{ choices,
+  suggestions: true }` for one that only suggests), `directory(args)` and
+  `fresh`, checked at `createCockpit` (`invalid-options`: `args` an object
+  schema JSON Schema can describe, each source for a field of it); the
+  types `Choice`, `JobDescription`, `SessionRecord`, `HistoryEntry`,
+  `RunOptions`, `OpenOptions`, `SendResult` and `OpenResult` (from `.` and
+  `./client`). `run(jobId, args, { fresh? })` acts by the state of the
+  key's unit of work: no record → `started`; `ended` → `resumed` with the
+  prompt, or `started` (`fresh` for a fresh job, `conversation-gone` when
+  the agent no longer keeps the conversation); `idle` → `sent` (typed, the
+  person's draft kept), or, launched with other settings, ended
+  (`restarted`) and `resumed` with `settings-changed`; `starting`, `busy`,
+  `waiting` → `wrong-state`; a job with no prompt starts or resumes at
+  `idle`, and on a live session has `nothing-to-send`. With `fresh`, a new
+  conversation (`fresh-on-request`), a live session ended first, its
+  stopped background tasks listed in `stoppedTasks`. `send(key, prompt)`
+  types into `idle`, resumes `ended` with the settings of the key's last
+  run, `unknown-key` with no record. `open(key, { fresh? })` resumes
+  `ended` with no prompt, `nothing-to-open` on a live session or no
+  record. An open or a send re-checks the last run's job as defined now
+  (`unknown-job` when it is gone) and its recorded arguments. A value not
+  among its field's choices is refused `not-a-choice`; a folder outside
+  the app's `folder-outside-app`, created when missing, the agent launched
+  in its real path; another folder than the one the key's record keeps
+  `folder-changed`; a prompt over 100,000 characters `prompt-too-long`.
+  Calls on one key run one at a time. `jobs()` describes the jobs (their
+  schema as JSON Schema, which fields have choices, whether there is a
+  prompt; never a key, prompt, folder or driver part); `options(jobId,
+  field, argsSoFar?)` reads a field's choices. The handler serves `POST
+  /send`, `POST /open`, `GET /jobs` and `POST /options`, and `run`'s
+  `fresh`.
+- Records per key in the state folder (`records/<key>.json`, 0600),
+  loaded at `createCockpit`: each listed session carries its `record` (its
+  conversation, the earlier ones, the history of its runs and opens); a
+  recorded key with no live session is listed `ended` (`lost` when it was
+  recorded before the server started). A record that is not the cockpit's
+  own (a link, another user's, torn) is refused `invalid-options`.
+- `createCockpit({ maxSessions })`: a cap on live sessions, off by
+  default. At the cap a launch ends the `idle` session idle longest with
+  no background task and no terminal attached (`ended`, `session-cap`),
+  else is refused `session-cap-reached` (`cap`, `live`).
+- A prompt is typed keeping the person's draft: stashed in the input
+  box's kill ring, put back after. A send stopped by anything but the
+  input box (a turn the agent began by itself, a dialog) fails
+  `wrong-state`; what was typed is cleared and the draft put back while
+  the box still shows and the agent has used no tool (one may ask, its
+  dialog drawn over the box a moment later); otherwise nothing more is
+  typed (a key could answer the dialog) and the error's message says the draft is in the kill ring
+  and which keys bring it back.
 - Every Claude Code session's settings set the input box's editor to the
   standard one (`editorMode: "normal"`): the person's vim mode is off in the
   cockpit's sessions, where the cockpit types prompts.
@@ -254,18 +293,13 @@ Nothing is published yet.
 
 - `createCockpit` refuses every option but `name`, `directory`, `driver`,
   `jobs`, `hiddenEnv`, `stateDirectory`, `agentPort`, `authorize`,
-  `origins`, `terminal` and `port`, and every job field but `id`, `title`,
-  `description`, `args`, `key`, `prompt` and `driver`, with
-  `invalid-options`.
-- A run on a key that has a session, whatever its state, is refused with
-  `wrong-state`: there is no resume, send, open, interrupt, end or remove.
+  `origins`, `terminal`, `port` and `maxSessions`, and every job field but
+  `id`, `title`, `description`, `args`, `key`, `prompt`, `driver`,
+  `options`, `directory` and `fresh`, with `invalid-options`.
+- There is no interrupt, end or remove, and no idle timeout.
 - A key whose tmux session an earlier process of the app left cannot be run:
   the run rejects with an error that is not a `CockpitError` (500 on the
-  wire, `unreachable` in the client). Such sessions are not listed, and a
-  restarted server lists none of the earlier ones.
-- `cockpit.send`, `open`, `jobs` and `options` are declared, not done:
-  each rejects (`jobs` throws) with an `Error` with no code, and the handler
-  answers their paths 404. `run`'s `fresh` changes nothing yet: a run on a
-  key with a session is refused, and one on a key without starts.
+  wire, `unreachable` in the client). Such sessions are not listed as
+  live: a restarted server lists the recorded keys `ended`.
 - `createCockpit` checks the platform and tmux, not Node's version.
 - The client has no `sessions.list()`; no events are built.

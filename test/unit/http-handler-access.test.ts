@@ -117,7 +117,13 @@ async function serve(
   let token = TOKEN;
   handler = createHandler({
     tokenMatches: (candidate) => candidate === token,
-    run: async () => ({ action: 'started', state: 'busy' }),
+    operations: {
+      run: async () => ({ action: 'started', state: 'busy' }),
+      send: async () => ({ action: 'sent', state: 'busy' }),
+      open: async () => ({ action: 'nothing-to-open' }),
+      jobs: () => [],
+      options: async () => [],
+    },
     sessions: {
       list: () => [idle],
       follow(listener) {

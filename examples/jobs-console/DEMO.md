@@ -52,9 +52,9 @@ Open http://127.0.0.1:4310/#cockpit=…
    session's terminal shows Claude Code's own screen, `(open)` beside its
    name: the prompt you ran and the scripted answer. Type in it — another
    question gets the same answer, and the row goes `busy`, then `idle` again.
-4. **Run it again on the same file**: the page says the session already
-   exists (`wrong-state`). This version runs a job only on a file with no
-   session; another file name gets a session of its own.
+4. **Run it again on the same file** once it is `idle`: the page says
+   "Sent the prompt to the session of README.md", and the row goes `busy`,
+   then `idle` again; another file name gets a session of its own.
 5. **Reload the page** (no link needed): the sessions come back, and the
    terminal of the session you chose (its key is in the address, `?session=…`)
    reconnects and shows the same screen.

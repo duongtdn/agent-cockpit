@@ -81,7 +81,7 @@ describe("createCockpit's options", () => {
     );
   });
 
-  it.each(['channel', 'idleTimeout', 'maxSessions', 'elicitations', 'typo'])(
+  it.each(['channel', 'idleTimeout', 'elicitations', 'typo'])(
     'refuse %s, an option this version does not take, rather than ignore it',
     async (name) => {
       expect(await optionIssues({ ...valid(), [name]: undefined })).toEqual([
@@ -303,14 +303,60 @@ describe("createCockpit's options", () => {
     ).toEqual([{ path: ['driver'], message: expect.stringContaining('acceptOpenNetwork') }]);
   });
 
-  it.each(['options', 'directory', 'fresh'])(
-    'refuse a job’s %s, a field this version does not take',
-    async (field) => {
-      expect(await optionIssues({ ...valid(), jobs: [{ ...explain, [field]: true }] })).toEqual([
-        { path: ['jobs', 0, field], message: 'Not a job field of this version of the cockpit.' },
+  it('take a job’s option sources, folder and fresh', async () => {
+    const job = {
+      ...explain,
+      options: { file: () => [{ value: 'a.md' }] },
+      directory: () => 'docs',
+      fresh: true as const,
+    };
+
+    const checked = await checkCockpitOptions({ ...valid(), jobs: [job] });
+
+    expect(checked.jobs[0]).toBe(job);
+  });
+
+  it('refuse a job’s option sources, folder and fresh that do not fit, each issue with its path from the options', async () => {
+    const issues = await optionIssues({
+      ...valid(),
+      jobs: [
+        explain,
+        { ...explain, id: 'other', options: { nothing: () => [] }, directory: 'docs', fresh: 1 },
+      ],
+    });
+
+    expect(issues.map(({ path }) => path)).toEqual([
+      ['jobs', 1, 'options', 'nothing'],
+      ['jobs', 1, 'directory'],
+      ['jobs', 1, 'fresh'],
+    ]);
+  });
+
+  it('refuse a job whose arguments JSON Schema cannot describe, or are no object', async () => {
+    const issues = await optionIssues({
+      ...valid(),
+      jobs: [
+        { ...explain, args: z.object({ when: z.date() }) },
+        { ...explain, id: 'other', args: z.string() },
+      ],
+    });
+
+    expect(issues).toEqual([
+      { path: ['jobs', 0, 'args'], message: expect.stringContaining('JSON Schema') },
+      { path: ['jobs', 1, 'args'], message: expect.stringContaining('object schema') },
+    ]);
+  });
+
+  it('take a cap on live sessions, a whole number from 1', async () => {
+    expect(await checkCockpitOptions({ ...valid(), maxSessions: 2 })).toMatchObject({
+      maxSessions: 2,
+    });
+    for (const maxSessions of [0, 1.5, '2']) {
+      expect(await optionIssues({ ...valid(), maxSessions })).toEqual([
+        { path: ['maxSessions'], message: expect.any(String) },
       ]);
-    },
-  );
+    }
+  });
 
   it('refuse two jobs of one id', async () => {
     expect(await optionIssues({ ...valid(), jobs: [explain, { ...explain }] })).toEqual([

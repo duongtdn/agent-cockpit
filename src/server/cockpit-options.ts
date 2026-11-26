@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { z } from 'zod';
 import { CockpitError, type Issue } from '../shared/cockpit-error.js';
 import type { Driver, SessionNetwork } from './driver.js';
+import { jobDefinitionIssues } from './job-definitions.js';
 import { issuesOf, type Job } from './jobs.js';
 
 /** What `createCockpit` takes. */
@@ -96,6 +97,13 @@ export interface CockpitOptions {
    * (`no-app-port`). The Fastify adapter reads it once the server listens.
    */
   readonly port?: number | readonly number[];
+  /**
+   * The most sessions live at once, a whole number from 1; no cap when
+   * left out. At the cap, a launch first ends the `idle` session idle
+   * longest that has no background task and no terminal attached (its
+   * `reason` `session-cap`), else is refused `session-cap-reached`.
+   */
+  readonly maxSessions?: number;
 }
 
 /** The options once checked: the app's folder absolute, the access options with their values. */
@@ -118,6 +126,9 @@ const JOB_FIELDS: readonly string[] = [
   'key',
   'prompt',
   'driver',
+  'options',
+  'directory',
+  'fresh',
 ];
 
 const OPTION_NAMES: readonly string[] = [
@@ -132,6 +143,7 @@ const OPTION_NAMES: readonly string[] = [
   'origins',
   'terminal',
   'port',
+  'maxSessions',
 ];
 
 const isFunction = (value: unknown): boolean => typeof value === 'function';
@@ -164,6 +176,10 @@ const job = z.object({
   prompt: z.custom(isFunction, 'Expected a function from the arguments to the prompt.').optional(),
   // Its own driver checks it: the core does not know its shape.
   driver: z.unknown().optional(),
+  // Checked against the job's schema once it is known to be one.
+  options: z.unknown().optional(),
+  directory: z.unknown().optional(),
+  fresh: z.unknown().optional(),
 });
 
 const driver = z.custom<Driver>(
@@ -206,11 +222,15 @@ const options = z.object({
   origins: z.array(origin).optional(),
   terminal: z.enum(['on', 'loopback', 'off']).optional(),
   port: z.union([port, z.array(port).min(1)]).optional(),
+  maxSessions: z.int().min(1).optional(),
 });
 
 /**
  * Checks `createCockpit`'s options: what this version takes, of the right
- * kinds, the jobs' ids unique, each job's driver part fitting the driver,
+ * kinds, the jobs' ids unique, each job's arguments an object schema that
+ * JSON Schema can describe, its option sources for its fields, its
+ * `directory` a function and its `fresh` `true`, each job's driver part
+ * fitting the driver,
  * the app's folder an existing folder, and no cockpit opened beyond
  * loopback with a driver, or a job, whose sessions are open (their network,
  * or their unasked writes) and the app did not accept it. An option or a job's field that a later version
@@ -233,8 +253,12 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
   ];
   if (!parsed.success || issues.length > 0) throw invalidOptions(issues);
   const checked = given as CockpitOptions;
-  const driverIssues = [...openNetworkIssues(checked), ...jobsPartIssues(checked)];
-  if (driverIssues.length > 0) throw invalidOptions(driverIssues);
+  const jobsIssues = [
+    ...jobsDefinitionIssues(checked),
+    ...openNetworkIssues(checked),
+    ...jobsPartIssues(checked),
+  ];
+  if (jobsIssues.length > 0) throw invalidOptions(jobsIssues);
   const directory = resolve(checked.directory);
   if (!(await isFolder(directory))) {
     throw invalidOptions([{ path: ['directory'], message: `No folder at ${directory}.` }]);
@@ -264,6 +288,16 @@ function openNetworkIssues({ authorize, driver }: CockpitOptions): Issue[] {
       message: `The cockpit is opened beyond loopback (authorize), and the driver's sessions act beyond the cockpit's lines without asking the person. ${refusal}`,
     },
   ];
+}
+
+/** Each job's definition issues, their paths from the options. */
+function jobsDefinitionIssues(options: CockpitOptions): Issue[] {
+  return options.jobs.flatMap((job, index) =>
+    jobDefinitionIssues(job).map(({ path, message }) => ({
+      path: ['jobs', index, ...path],
+      message,
+    })),
+  );
 }
 
 /** Each job's part issues, their paths from the options. */

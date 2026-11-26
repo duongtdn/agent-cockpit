@@ -1,19 +1,34 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { type WebSocket, WebSocketServer } from 'ws';
+import { z } from 'zod';
 import { CockpitError, isCockpitError } from '../../shared/cockpit-error.js';
-import type { RunResult, Session } from '../../shared/session.js';
+import type { Choice, JobDescription } from '../../shared/job.js';
+import type {
+  OpenOptions,
+  OpenResult,
+  RunOptions,
+  RunResult,
+  SendResult,
+  Session,
+} from '../../shared/session.js';
 import {
+  type JobsResponse,
   type KeyRule,
+  type OpenRequest,
+  type OptionsRequest,
+  type OptionsResponse,
   RETRY_AFTER_SECONDS,
   type RetryResponse,
   type RunRequest,
+  type SendRequest,
   type SessionsMessage,
   type SessionsResponse,
   WIRE_SUBPROTOCOL,
 } from '../../shared/wire.js';
 import type { CockpitOptions } from '../cockpit-options.js';
 import type { FailureSite } from '../failures.js';
+import { issuesOf } from '../jobs.js';
 import { readBodyWithin } from './body.js';
 import { type BridgedSessions, bridgeTerminal } from './pty-bridge.js';
 import {
@@ -45,12 +60,26 @@ export const MAX_BODY_BYTES = 1024 * 1024;
  */
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 
+/** The operations the browser asks for, as the cockpit's own do them. */
+export interface Operations {
+  /** Runs a job, as `cockpit.run` does. */
+  run(jobId: string, args: unknown, options?: RunOptions): Promise<RunResult>;
+  /** Sends a prompt to a unit of work, as `cockpit.send` does. */
+  send(key: string, prompt: string): Promise<SendResult>;
+  /** Opens a unit of work, as `cockpit.open` does. */
+  open(key: string, options?: OpenOptions): Promise<OpenResult>;
+  /** Describes the jobs, as `cockpit.jobs` does. */
+  jobs(): readonly JobDescription[];
+  /** Reads a field's choices, as `cockpit.options` does. */
+  options(jobId: string, field: string, argsSoFar?: unknown): Promise<readonly Choice[]>;
+}
+
 /** What the handler serves the browser's requests with. */
 export interface HandlerOptions {
   /** The app's token's constant-time comparison: a local request needs the token. */
   readonly tokenMatches: (candidate: string | undefined) => boolean;
-  /** Runs a job, as `cockpit.run` does. */
-  readonly run: (jobId: string, args: unknown) => Promise<RunResult>;
+  /** The operations each route asks for. */
+  readonly operations: Operations;
   /** The sessions, to list and follow. */
   readonly sessions: {
     list(): readonly Session[];
@@ -294,9 +323,29 @@ async function serve(
   options: HandlerOptions,
 ): Promise<WireAnswer> {
   const route = requestRouteOf(request.method ?? '', request.url ?? '');
+  const { operations } = options;
   switch (route.route) {
     case 'run':
-      return await runJob(request, options);
+      return await answered(request, RUN_BODY, ({ jobId, args, fresh }) =>
+        operations.run(jobId, args, freshOf(fresh)),
+      );
+    case 'send':
+      return await answered(request, SEND_BODY, ({ key, prompt }) => operations.send(key, prompt));
+    case 'open':
+      return await answered(request, OPEN_BODY, ({ key, fresh }) =>
+        operations.open(key, freshOf(fresh)),
+      );
+    case 'options':
+      return await answered(request, OPTIONS_BODY, async ({ jobId, field, args }) => {
+        const answer: OptionsResponse = {
+          choices: await operations.options(jobId, field, args),
+        };
+        return answer;
+      });
+    case 'jobs': {
+      const answer: JobsResponse = { jobs: operations.jobs() };
+      return json(answer);
+    }
     case 'sessions': {
       const answer: SessionsResponse = { sessions: options.sessions.list() };
       return json(answer);
@@ -314,27 +363,63 @@ async function serve(
   }
 }
 
-async function runJob(request: IncomingMessage, options: HandlerOptions): Promise<WireAnswer> {
+/** The body of a run, as the wire carries it. */
+const RUN_BODY: z.ZodType<RunRequest> = z.object({
+  jobId: z.string(),
+  args: z.unknown(),
+  fresh: z.boolean().optional(),
+}) as z.ZodType<RunRequest>;
+
+const SEND_BODY: z.ZodType<SendRequest> = z.object({ key: z.string(), prompt: z.string() });
+
+const OPEN_BODY: z.ZodType<OpenRequest> = z.object({
+  key: z.string(),
+  fresh: z.boolean().optional(),
+}) as z.ZodType<OpenRequest>;
+
+const OPTIONS_BODY: z.ZodType<OptionsRequest> = z.object({
+  jobId: z.string(),
+  field: z.string(),
+  args: z.unknown(),
+});
+
+/**
+ * Reads a request's body as its route takes it, then answers with what the
+ * operation gives.
+ */
+async function answered<Body>(
+  request: IncomingMessage,
+  shape: z.ZodType<Body>,
+  operation: (body: Body) => Promise<unknown>,
+): Promise<WireAnswer> {
   const text = await readBodyWithin(request, MAX_BODY_BYTES);
   if (text === undefined) return { status: 413 };
-  const { jobId, args } = runRequestOf(text);
-  return json(await options.run(jobId, args));
+  return json(await operation(bodyOf(text, shape)));
 }
 
-/** Reads the body of a run; what does not fit is refused as the job's arguments. */
-function runRequestOf(text: string): RunRequest {
+/**
+ * Reads a body; one that does not fit is refused as the operation's
+ * arguments are.
+ *
+ * @throws `CockpitError` `invalid-arguments`, with each issue.
+ */
+function bodyOf<Body>(text: string, shape: z.ZodType<Body>): Body {
   let body: unknown;
   try {
     body = JSON.parse(text);
   } catch {
     body = undefined;
   }
-  if (typeof body !== 'object' || body === null || typeof (body as RunRequest).jobId !== 'string') {
-    throw new CockpitError('invalid-arguments', 'The run carries no job id and arguments.', {
-      issues: [{ path: ['jobId'], message: 'Expected a JSON body { jobId, args }.' }],
-    });
-  }
-  return body as RunRequest;
+  const parsed = shape.safeParse(body);
+  if (parsed.success) return parsed.data;
+  throw new CockpitError('invalid-arguments', 'The request’s body does not fit.', {
+    issues: issuesOf(parsed.error.issues),
+  });
+}
+
+/** The options of a run or an open: `fresh` when the body asks, none else. */
+function freshOf(fresh: boolean | undefined): { fresh?: boolean } {
+  return fresh === undefined ? {} : { fresh };
 }
 
 const UPGRADE_REQUIRED: WireAnswer = { status: 426, headers: { upgrade: 'websocket' } };
