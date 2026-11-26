@@ -14,9 +14,12 @@ A small app on Fastify that shows who may reach its cockpit, and how:
   own sign-in: a page of the network signs in with a password the server
   prints, and gets a cookie (a browser sends it on WebSocket handshakes too,
   where a page can set no header) that lasts 8 hours, or until the page
-  signs out. `origins` lists the addresses the app listens on at its port
-  (with `--host ::`, the machine's IPv6 ones too), and any `--origin` you
-  add.
+  signs out. Neither the sign-out nor the end of the 8 hours closes a
+  WebSocket already open (the sessions followed, a terminal): `authorize`
+  is asked when a request or a handshake is admitted, and only renewing
+  the token closes every socket. `origins` lists the addresses the app
+  listens on at its port (with `--host ::`, the machine's IPv6 ones too),
+  and any `--origin` you add.
 - **The app's routes that change something** (`/api/renew-token`,
   `/api/sign-in`, `/api/sign-out`) refuse a page of another origin than the
   app's own, port included: a cookie is sent to every port of its host, so

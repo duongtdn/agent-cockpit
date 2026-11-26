@@ -171,7 +171,9 @@ const xtermFolder = dirname(fromCockpit.resolve('@xterm/xterm/package.json'));
 The person opens the link the server printed:
 `http://127.0.0.1:4310/#cockpit=<token>`. The client takes the token from
 the fragment, removes it from the address bar and keeps it in the page's
-local storage, so a reload needs no link. A page without the token is
+local storage, so a reload needs no link. A link pasted into a tab that
+already shows the page is taken too, and the page reconnects with it. A
+page without the token is
 refused with `no-token`: the app tells the person to open the link. The
 token stays the same from one start of the app to the next.
 
@@ -203,7 +205,8 @@ never load.
 `await cockpit.renewToken()` replaces the token: the old link stops working
 at once, every page's WebSockets are closed (its terminals too), and each
 page needs the new link, which `cockpit.link(…)` now gives. An app offers it
-when a link may have leaked.
+when a link may have leaked. It is the only act that closes every open
+socket: an app's sign-out ends no WebSocket a page already holds.
 
 ### Opening beyond loopback
 
@@ -223,14 +226,22 @@ cockpit.on('error', (failure) => log(failure.where, failure.cause)); // an autho
 A request from another address, or one a proxy forwarded, is served only
 when `authorize` resolves `true`; a local request still needs the token.
 `authorize: (request) => cockpit.verify(request)` opens it by the link
-alone. `authorize` should check a proof the person holds, never a header a
+alone. `authorize` must settle, as the request waits for it and the cockpit
+sets no time limit on it; one still pending when the cockpit closes is
+answered 503. `authorize` should check a proof the person holds, never a header a
 client sets itself, and with a browser's WebSockets it receives no header of
 the page's: a cookie of the app's sign-in reaches it. TLS, accounts and
 sign-in are the app's. A cockpit opened this way is refused with a Claude
 Code driver in `plan`, `auto` or `bypassPermissions`, whose sessions reach
 the network without asking, unless the app accepts it with
-`claudeCode({ acceptOpenNetwork: true })`. [Security](security.md#opening-beyond-loopback)
-has the details.
+`claudeCode({ acceptOpenNetwork: true })`.
+
+A sign-in's cookie reaches every port of its host, so a page of any other
+server on the machine sends it too. The app's own routes that change
+something (signing in or out, renewing the token) refuse a request whose
+`Origin`, when it has one, is not exactly one of the app's own, port
+included, as `examples/translate-and-access` does.
+[Security](security.md#opening-beyond-loopback) has the details.
 
 ## Jobs
 
@@ -317,7 +328,9 @@ are listed in the [API reference](api.md#errors). A call of the client
 rejects with the error the server raised, rebuilt with its code and fields;
 `unreachable` when the server cannot be reached. Why one of the client's live
 streams cannot connect goes to `client.on('error', handler)`, once per failed
-attempt, while the stream goes on trying.
+attempt, while the stream goes on trying. A handler of the app's that
+throws, there or on a terminal, stops neither the other handlers nor the
+reconnecting: what it threw goes to `console.error`.
 
 On the server, a failure the cockpit cannot tell a page of — its handler's
 own 500, an `authorize` that threw, the agent-facing listener's 500 — goes

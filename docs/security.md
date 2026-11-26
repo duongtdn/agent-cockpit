@@ -86,6 +86,10 @@ An app opens the cockpit to other machines with two options of
   `cockpit.on('error')` as `internal-failure` (`where: 'authorize'`). A
   remote request admitted this way needs no token: `authorize` is its
   proof. A local request never reaches `authorize`: it needs the token.
+  `authorize` must settle: the request waits for it, and the cockpit sets
+  no time limit on it (bounding it, a lookup that may hang among others, is
+  the app's); one still pending when the cockpit closes is answered 503, so
+  it holds nothing open. It is asked once a request.
 - `origins: ['https://app.example', 'http://10.0.0.5:8765']` lists the
   origins, beyond `127.0.0.1` and `localhost`, that a page may come from
   (`Origin`) and that a request may name (`Host`, the origin's host and
@@ -107,9 +111,18 @@ only when that proxy removes the one the client sent. A browser sets no
 header of a page's on a WebSocket handshake; it does send the page's
 cookies, so a cookie (`HttpOnly`, `SameSite=Strict`) is what an app's
 sign-in reaches the terminal and the live sessions with. The `Origin` check
-keeps another site's pages out, cookie or not. Accounts, sign-in and TLS
-are the app's: over plain HTTP, a password and a cookie cross the network in
-clear.
+keeps another site's pages out, cookie or not.
+
+A cookie is no proof of which page sent it: a browser sends it to every
+port of its host, and `SameSite` counts every port of a host as one site,
+so a page of any other server on the machine (another user's included)
+carries the app's sign-in. The cockpit's own `Origin` check holds for what
+it is given; the app's own routes that change something (signing in or
+out, renewing the token) are the app's to guard: refuse a request whose
+`Origin`, when it has one, is not exactly one of the app's own, port
+included, as `examples/translate-and-access` does. Accounts, sign-in and
+TLS are the app's: over plain HTTP, a password and a cookie cross the
+network in clear.
 
 The terminal has a switch of its own, the `terminal` option:
 
@@ -155,8 +168,14 @@ local request also carries the app's token, or is refused with `no-token`.
   included: another app on the same host keeps its own. Where the browser
   refuses the page its storage, the token stays in the page's memory. A
   link pasted into a tab that already shows the page changes only the
-  fragment, which does not reload it: the page keeps the token it had until
-  it is reloaded.
+  fragment, which does not reload it: the page takes its token then
+  (`hashchange`), removes it from the address bar as before, and its
+  streams and terminals reconnect with it at once. So a window related to
+  the tab (its opener, or one it opened) can set `#cockpit=…` and overwrite
+  the stored token, cutting the origin's tabs off until the person reopens
+  the app's link, as a full-page link to `#cockpit=…` could already do. It
+  fixes no session on the person: each app has one token, and a wrong one
+  opens nothing.
 - **On the wire.** They send it in the `cockpit-token` header of every
   request and, on a WebSocket, as a subprotocol; never in a URL, where logs
   and the browser's history would keep it. It is not a cookie: a cookie for
@@ -178,10 +197,18 @@ local request also carries the app's token, or is refused with `no-token`.
   the old token stays open; each page that reconnects is checked again and,
   without the new token, is told `no-token`. The person opens the new link,
   which `link` now gives; a page of the same origin that retries then finds
-  the new token in the origin's storage. A remote page admitted by
-  `authorize` reconnects as before, unless its `authorize` relied on the
-  token. Nothing else changes: the sessions go on, and their own tokens
-  with them. When the new token cannot be written, `renewToken` rejects with
+  the new token in the origin's storage. A request or a WebSocket handshake
+  whose admission overlapped a renewal is refused with 503, which is
+  retryable: it is made again as a new request (the client's streams and
+  terminals reconnect by themselves), checked against the token now in
+  force, and `authorize` is asked once for each request, never twice for
+  one. A remote page admitted by `authorize` reconnects as before, unless
+  its `authorize` relied on the token. Renewing is the only act that cuts
+  every open socket: an app's sign-out, or a sign-in that expires, ends no
+  follow or terminal WebSocket already open, since `authorize` is asked
+  only when a request or a handshake is admitted; such a socket ends when
+  it drops, at a renewal, or when the cockpit closes. Nothing else
+  changes: the sessions go on, and their own tokens with them. When the new token cannot be written, `renewToken` rejects with
   the file system's error, the token in force stays, and no socket is
   closed. Renew when the link may have leaked: a screenshot, a shared log,
   a browser profile someone else could read.
@@ -240,9 +267,10 @@ Fastify adapter reads them from the server at each launch; with the neutral
 handler the app gives `port` (one or several). A launch while none is known
 is refused with `no-app-port`, since its sandbox could not be kept from the
 app. The machine's addresses are read at each launch too. A state root
-whose path holds a character a permission rule reads as a pattern (`*`,
-`?`, `[`, `]`, `{`, `}`) could be missed by its denies: `createCockpit`
-refuses it (`invalid-options`).
+whose path holds a character a permission rule reads as its own (a
+pattern's `*`, `?`, `[`, `]`, `{`, `}`; the rule's brackets `(`, `)`; its
+escape `\`; a control character) could be missed by its denies:
+`createCockpit` refuses it (`invalid-options`).
 
 Another `127.x` address of the app's port is refused by the handler itself
 (`local-address`), with the sandbox or without it.
@@ -257,8 +285,8 @@ Claude Code they run ([machines](machines.md#the-agents-tested-range)):
 
 | Mode                | A reach beyond the allow-list (another local port, another address of the machine's)                                                                                             | The session's network |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `default`           | Asked of the person, whatever the command names                                                                                                                                  | Confined              |
-| `acceptEdits`       | Asked of the person, whatever the command names                                                                                                                                  | Confined              |
+| `default`           | Asked of the person or refused, never reached, whatever the command names                                                                                                        | Confined              |
+| `acceptEdits`       | Asked of the person or refused, never reached, whatever the command names                                                                                                        | Confined              |
 | `dontAsk`           | Refused, with no ask                                                                                                                                                             | Confined              |
 | `plan`              | Asked; but reached with no ask once the command that names the host in its `allowed_domains` is approved, which `auto`'s own check, run in `plan` too, may do without the person | Open                  |
 | `auto`              | Refused; but reached with no ask once the command that names the host in its `allowed_domains` is approved, which `auto`'s own check does without the person                     | Open                  |
@@ -327,7 +355,8 @@ person.
   put a folder of theirs in its place; the start is refused
   (`invalid-options`) and nothing is created. The missing folders above it
   are then created with rights `0755`, whatever the umask.
-- A state root whose path holds a pattern character is refused (above).
+- A state root whose path holds a character a permission rule reads as
+  its own is refused (above).
 - On WSL2, a folder of the Windows drives (`/mnt/c/…`) shows rights `0777`
   without the sticky bit, so a state folder there is refused: keep it on
   the Linux file system (the default, under `~/.local/state`, is).

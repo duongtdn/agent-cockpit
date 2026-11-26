@@ -36,8 +36,9 @@ Nothing is published yet.
   else `invalid-options` with nothing created; the missing ones are created
   `0755` whatever the umask. On WSL2, a state folder on a Windows drive is
   refused. A state root (the default one, or `stateDirectory`, as given or
-  resolved) whose path holds `*`, `?`, `[`, `]`, `{` or `}` is refused
-  (`invalid-options`): a permission rule would read it as a pattern.
+  resolved) whose path holds `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `\` or
+  a control character is refused (`invalid-options`): a permission rule
+  would read it as its own.
 - The app's lock: a Linux abstract unix socket named from an id in the state
   folder. A second process of the app waits 5 seconds, then rejects with
   `cockpit-locked`, whose `holder` is the holding process's id or
@@ -53,7 +54,10 @@ Nothing is published yet.
   `origins`; then `no-token` without the app's token.
 - Opening beyond loopback: `authorize(request)` alone admits a remote
   request (from another address, or with a forwarding header), with no
-  token; a throw or a rejection refuses it and is reported. `origins` lists
+  token; a throw or a rejection refuses it and is reported. It must settle:
+  the cockpit sets no time limit on it, and answers 503 a request still
+  waiting on it when the cockpit closes. It is asked once a request.
+  `origins` lists
   the origins allowed beyond `127.0.0.1` and `localhost`. `terminal: 'on' |
   'loopback' | 'off'` switches the terminal (`refused`, `'terminal-off'`).
   `createCockpit` refuses `authorize` with a driver whose sessions reach an
@@ -61,7 +65,9 @@ Nothing is published yet.
 - `cockpit.verify(request)`, for the app's own API routes, and
   `cockpitHeaders()` from `./client`, the header a page sends them.
 - `cockpit.renewToken()`: a new token in force, the old one refused at once,
-  every browser-facing WebSocket closed.
+  every browser-facing WebSocket closed; a request or a handshake whose
+  admission overlapped the renewal is refused with a retryable 503 and
+  made again as a new request, `authorize` asked once for each.
 - `cockpit.on('error', handler)` and the code `internal-failure` (`where`:
   `'handler'`, `'authorize'` or `'agent-listener'`; `cause`): the
   failures the cockpit answered with a bare 500, and an `authorize` that
@@ -90,12 +96,16 @@ Nothing is published yet.
   `CockpitClient`, `CockpitClientOptions`, `RunResult`, `Session` and
   `EndReason`: takes the app's token from the link's fragment, removes it
   from the address bar and keeps it in the origin's local storage, and sends
-  it in a header and a WebSocket subprotocol, never in a URL. `run(jobId,
-  args)` rejects with the server's `CockpitError`, or `unreachable`;
+  it in a header and a WebSocket subprotocol, never in a URL; a link
+  opened later in the same tab (`hashchange`) is taken the same way.
+  `run(jobId, args)` rejects with the server's `CockpitError`, or
+  `unreachable` (an answer that breaks off included);
   `sessions.follow(handler)` reconnects by itself after a drop (0.5 s,
-  doubling up to 10 s); `on('error', handler)` tells why a stream could not
-  connect (`no-token`, `refused`, `unreachable`). `invalid-options` for a
-  `baseUrl` that is not a path or an HTTP URL.
+  doubling up to 10 s), and at once with a new link's token;
+  `on('error', handler)` tells why a stream could not connect (`no-token`,
+  `refused`, `unreachable`). A handler that throws stops neither the other
+  handlers nor the stream: what it threw goes to `console.error`.
+  `invalid-options` for a `baseUrl` that is not a path or an HTTP URL.
 - `claudeCode({ permissionMode?, permissions?, acceptOpenNetwork? })` from
   `./claude-code`, with the types `ClaudeCodeOptions`, `PermissionMode` and
   `PermissionRules`: the Claude Code driver, which launches `claude` with settings of its own in the
@@ -108,10 +118,13 @@ Nothing is published yet.
 - `mountTerminal(element, key, { baseUrl, theme?, fontFamily?, fontSize? })`
   from `./terminal`: a session's terminal (xterm.js) in the app's element,
   fitted to it, attached over a WebSocket with the app's token, reconnecting
-  after a drop, `ended` once the session is gone; the driver's key rules;
+  after a drop and at once with a new link's token, `ended` once the
+  session is gone; the driver's key rules;
   copy through OSC 52 and Ctrl+C on the terminal's own selection; status
   events; `on('error', handler)`, which tells why it could not connect
   (`no-token`, `refused`, `unreachable`), and stops it on `terminal-off`;
+  a `status` or `error` handler that throws stops neither the others nor
+  the terminal, and goes to `console.error`;
   `focus()` and `dispose()`, with the types `MountedTerminal`,
   `MountTerminalOptions` and `TerminalStatus`. Any program in a session can
   write the person's clipboard through OSC 52; none can read it.
@@ -134,7 +147,5 @@ Nothing is published yet.
   the run rejects with an error that is not a `CockpitError` (500 on the
   wire, `unreachable` in the client). Such sessions are not listed, and a
   restarted server lists none of the earlier ones.
-- A link pasted into a tab that already shows the page is not read until
-  the page is reloaded: the page keeps the token it had.
 - `createCockpit` checks the platform and tmux, not Node's version.
 - The client has no `sessions.list()`; no events are built.

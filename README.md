@@ -57,7 +57,8 @@ a terminal. It runs with no login against a scripted API.
 [examples/translate-and-access](examples/translate-and-access/DEMO.md) shows
 access: the link and its token, the app's own API checking it, a page of
 the network refused, then served once the app opens itself with
-`authorize`, the terminal kept to the machine, and the token renewed.
+`authorize`, the app's routes that change something refusing pages of
+other origins, the terminal kept to the machine, and the token renewed.
 
 ## Documents
 

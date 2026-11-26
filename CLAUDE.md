@@ -95,7 +95,12 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   in the work folder or above it, the machine's managed one). The rules are
   three tables in
   `test/support/real-agent/launch-rules.ts`; a feature that needs one more
-  option or setting adds its rule there.
+  option or setting adds its rule there. One setting exists to keep tests
+  off Anthropic: `skipWebFetchPreflight` passes only as `true` (WebFetch
+  otherwise asks `api.anthropic.com` about each host before it fetches,
+  whatever the API's address); a test whose agent fetches sets it in
+  `personsSettings`, as row 54 (WebFetch forces HTTPS and sends no header
+  of the caller's) does.
 - **The driver's own launch** is tested with `test/contract/cockpit-harness.ts`:
   `startContractCockpit()` makes a cockpit with `claudeCode()`, whose
   `claude` is a shim first on the server's `PATH`
@@ -133,7 +138,9 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   the terminal approves each command `auto`'s server-side check would judge
   (the scripted API cannot stand in for it) and answers every network ask
   "No"; the driver counts a mode as confined only where rows 80–81 show
-  every reach asked about or refused.
+  no reach made: row 80 (`default`, `acceptEdits`) takes each as asked
+  about or refused, the results recording which; row 81 (`dontAsk`) as
+  refused.
 - Each run writes `test-results/contract.json` (git-ignored; CI keeps it as
   an artifact): the agent's version, the date, each behavior's number, title
   and outcome, every Enter the agent lost in a submit (`lostEnters`: the
