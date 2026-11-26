@@ -29,8 +29,12 @@ export interface CockpitErrorFields {
   };
   /** Another process of the app already runs a cockpit with sessions. */
   'cockpit-locked': {
-    /** The id of the process that holds the lock. */
-    holder: number;
+    /**
+     * The id of the process that holds the lock, as the system tells it; or
+     * `another-user` when the holder is none of the user's processes, whose
+     * id the cockpit cannot learn.
+     */
+    holder: number | 'another-user';
   };
   /** The app has no job of that id (any more). */
   'unknown-job': {
