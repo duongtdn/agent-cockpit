@@ -8,13 +8,17 @@ and their states live, and shows a session's terminal.
 - `page/` — the page: plain HTML and JavaScript. The browser loads the
   package's `client` and `terminal` entries, as built, and xterm.js's ESM
   build through an import map; the app serves exactly those files. No bundler.
-- `scripted-agent.js` — the default agent: the Claude Code this repository
-  pins, against a scripted fake of Anthropic's API (no model, no login, no
-  network). Every question gets the same scripted answer. It is development
-  support, not part of the package.
+- The default agent is the repository's `test/support/scripted-agent.ts`:
+  the Claude Code this repository pins, against a scripted fake of
+  Anthropic's API (no model, no login, no network). Every question gets the
+  same scripted answer. Each launch passes the contract suite's guard first
+  (a settings file, a file of MCP servers, a variable that could take the
+  agent elsewhere stops it). It is development support, not part of the
+  package: an app runs the person's own `claude`.
 
-The end-to-end test (`test/e2e/jobs-console.test.ts`) follows these steps in
-a browser.
+The end-to-end tests (`test/e2e/jobs-console.test.ts`) follow these steps in
+a browser; `test/e2e/jobs-console-ends.test.ts` checks that it leaves
+nothing behind however it ends.
 
 ## Start it
 
@@ -30,7 +34,7 @@ node examples/jobs-console/server.js    # --port <n> for another port than 4310
 It prints where the scripted agent keeps its files, then the link:
 
 ```
-The scripted agent: the pinned Claude Code against a fake API, in /tmp/jobs-console-AbC123.
+The scripted agent: the pinned Claude Code against a fake API, in /tmp/cockpit-real-agent-AbC123.
 Open http://127.0.0.1:4310/#cockpit=…
 ```
 
@@ -54,8 +58,10 @@ Open http://127.0.0.1:4310/#cockpit=…
 5. **Reload the page** (no link needed): the sessions come back, and the
    terminal of the session you chose (its key is in the address, `?session=…`)
    reconnects and shows the same screen.
-6. **Stop the server** with Ctrl+C. It prints "Stopped.", ends the sessions
-   and their tmux server, stops the fake API and removes its folder. The
+6. **Stop the server** with Ctrl+C (or close its terminal). It prints
+   "Stopped.", ends the sessions and their tmux server, stops the fake API
+   and removes its folder; one that cannot start (its port taken) removes
+   them too. The
    page says the server cannot be reached and keeps trying; the terminal
    shows `(closed)`, then `(connecting)` as it retries.
 

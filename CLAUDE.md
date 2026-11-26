@@ -27,7 +27,8 @@ test/
   support/      fake-api/ (a scripted Messages API), fake-agent/ (a program
                 run in place of Claude Code), real-agent/ (the pinned
                 agent's runner), hooks/ (a hook receiver, for both agents),
-                parity/ (how the hooks of the two agents are compared)
+                parity/ (how the hooks of the two agents are compared),
+                scripted-agent.ts (the examples' default agent, below)
 examples/       example apps: the demos and the end-to-end fixtures
 docs/           guide.md, api.md, security.md, machines.md
 ```
@@ -58,7 +59,13 @@ Packages: `server/` `node-pty`, `ws` and `zod`; `fastify/` `fastify`;
   example app of `examples/`, started as its `DEMO.md` says
   (`test/support/example-app.ts`), on the built package, against the
   scripted API. Each example imports the package by its name (the package's
-  self-reference), never `src/`, and is not in the package.
+  self-reference), never `src/`, and is not in the package. An example's
+  default agent is `test/support/scripted-agent.ts`: the pinned agent
+  against the scripted API, through the contract suite's shim and guard
+  (`agent.driver(claudeCode())`), so that every launch of a demo or of an
+  end-to-end test is checked as the contract suite's are. It lives in
+  `test/support/` with the guard it is built on, never copied into an
+  example.
 - `pnpm build`, `pnpm typecheck`, `pnpm lint` (Biome, which also formats).
 
 ## The contract suite

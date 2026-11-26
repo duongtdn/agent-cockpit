@@ -51,72 +51,88 @@ const { values: options } = parseArgs({
 // The default is a stand-in for the agent's model, so that the example runs
 // with no login and costs nothing. It is the example's, not the package's.
 const agent = options.real ? yourOwnAgent() : await scriptedAgent();
-
-const cockpit = await createCockpit({
-  name: APP_NAME,
-  directory: agent.directory,
-  driver: claudeCode(),
-  jobs: [explainAFile],
-  ...(agent.stateDirectory === undefined ? {} : { stateDirectory: agent.stateDirectory }),
-});
-
-const app = Fastify();
-await app.register(cockpitFastify(cockpit), { prefix: '/cockpit' });
-for (const [path, file] of pageFiles()) {
-  app.get(path, async (_request, reply) =>
-    reply.type(CONTENT_TYPES[extname(file)]).send(await readFile(file)),
-  );
-}
-await app.listen({ host: '127.0.0.1', port: Number(options.port) });
-
 console.log(agent.description);
+
+let cockpit;
+let app;
+try {
+  cockpit = await createCockpit({
+    name: APP_NAME,
+    directory: agent.directory,
+    driver: agent.driver(claudeCode()),
+    jobs: [explainAFile],
+    ...(agent.stateDirectory === undefined ? {} : { stateDirectory: agent.stateDirectory }),
+  });
+  app = Fastify();
+  await app.register(cockpitFastify(cockpit), { prefix: '/cockpit' });
+  for (const [path, file] of pageFiles()) {
+    app.get(path, async (_request, reply) =>
+      reply.type(CONTENT_TYPES[extname(file)]).send(await readFile(file)),
+    );
+  }
+  await app.listen({ host: '127.0.0.1', port: Number(options.port) });
+} catch (error) {
+  // What started before the failure is stopped; the failure is what is told.
+  await stop().catch(() => {});
+  throw error;
+}
+
 console.log(`Open ${cockpit.link(`http://127.0.0.1:${app.server.address().port}/`)}`);
 
-// A second Ctrl+C while stopping changes nothing: the first one's stop goes on.
+// Ctrl+C, a `kill`, or the terminal closing. A second signal while stopping
+// changes nothing: the first one's stop goes on.
 let stopRequested = false;
-for (const signal of ['SIGINT', 'SIGTERM']) {
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
     if (stopRequested) return;
     stopRequested = true;
-    stop().catch((error) => {
-      console.error(error);
-      process.exitCode = 1;
-    });
+    stop().then(
+      () => console.log('Stopped.'),
+      (error) => {
+        console.error(error);
+        // What failed to stop may hold the process open.
+        process.exit(1);
+      },
+    );
   });
 }
 
 /**
  * Stops in order: the cockpit first (it closes the page's WebSockets, which
  * would hold the server open), then the server, then what the agent's mode
- * started. The sessions of your own agent go on in tmux; the scripted ones
- * end with their stand-in.
+ * started. Each step is tried, whatever the one before did. The sessions of
+ * your own agent go on in tmux; the scripted ones end with their stand-in.
  */
 async function stop() {
   try {
-    await cockpit.close();
-    await app.close();
+    await cockpit?.close();
   } finally {
-    await agent.close();
+    try {
+      await app?.close();
+    } finally {
+      await agent.close();
+    }
   }
-  console.log('Stopped.');
 }
 
 function yourOwnAgent() {
   return {
     description: `Your own agent: \`claude\` from your PATH, with your login, in ${process.cwd()}.`,
     directory: process.cwd(),
+    driver: (driver) => driver,
     close: async () => {},
   };
 }
 
 async function scriptedAgent() {
-  // Loaded only in this mode: it needs the repository's development install.
-  const { startScriptedAgent } = await import('./scripted-agent.js');
+  // Loaded only in this mode: it is the repository's test support, run from its development install.
+  const { startScriptedAgent } = await import('../../test/support/scripted-agent.ts');
   const scripted = await startScriptedAgent(APP_NAME);
   return {
     description: `The scripted agent: the pinned Claude Code against a fake API, in ${scripted.root}.`,
     directory: scripted.workFolder,
     stateDirectory: scripted.stateFolder,
+    driver: (driver) => scripted.driver(driver),
     close: () => scripted.close(),
   };
 }
