@@ -224,6 +224,19 @@ describe('a session that an earlier run left on the host', () => {
 });
 
 describe('a launch that fails', () => {
+  it('rejects when the host cannot tell whether an earlier session holds the key; the key stays free', async () => {
+    host.failIsLive(true);
+
+    await expect(
+      sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' }),
+    ).rejects.toMatchObject({ reason: 'host-failed' });
+    expect(sessions.list()).toEqual([]);
+
+    host.failIsLive(false);
+    await launched();
+    expect(sessionOf()?.state).toBe('starting');
+  });
+
   it('rejects with what the host said; the session is no longer listed, its token revoked', async () => {
     const failure = new SessionHostError('no-folder', 'No such folder.');
     host.failNextStart(failure);
@@ -546,6 +559,42 @@ describe('a terminal attached to a session', () => {
     expect(attachment).toBeDefined();
     expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'lost' });
     expect(host.listings).toBe(0);
+  });
+
+  it('rejects when the host fails to attach', async () => {
+    await launched();
+    const failure = new SessionHostError('host-failed', 'tmux failed.');
+    host.failNextAttach(failure);
+
+    await expect(sessions.attach(KEY, { columns: 80, rows: 24 })).rejects.toBe(failure);
+    expect(sessionOf()?.state).toBe('starting');
+  });
+
+  it('leaves the end to the periodic list when the host cannot tell at the end of a terminal', async () => {
+    await launched();
+    await sessions.attach(KEY, { columns: 80, rows: 24 });
+    host.failIsLive(true);
+
+    host.exit(KEY);
+    host.attachments[0]?.end();
+    await settle();
+    expect(sessionOf()?.state).toBe('starting');
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    expect(sessionOf()?.state).toBe('ended');
+  });
+
+  it('asks nothing at the end of a terminal whose session already ended', async () => {
+    await launched();
+    await sessions.attach(KEY, { columns: 80, rows: 24 });
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    host.failIsLive(true);
+
+    host.attachments[0]?.end();
+    await settle();
+
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'lost' });
   });
 
   it('leaves the session live when only the terminal was detached', async () => {

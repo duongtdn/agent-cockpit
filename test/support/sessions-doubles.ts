@@ -88,6 +88,10 @@ export interface FakeHost extends SessionHost {
   failLists(failing: boolean): void;
   /** Makes the next kill fail with the error. */
   failNextKill(error: unknown): void;
+  /** Makes every question whether a session lives fail, or work again. */
+  failIsLive(failing: boolean): void;
+  /** Makes the next attach fail with the error. */
+  failNextAttach(error: unknown): void;
 }
 
 export function createFakeHost(): FakeHost {
@@ -100,6 +104,8 @@ export function createFakeHost(): FakeHost {
   let nextList: Gate | undefined;
   let listsFail = false;
   let nextKillError: unknown;
+  let isLiveFails = false;
+  let nextAttachError: unknown;
   const unused = () => Promise.reject(new Error('The sessions core does not use this.'));
 
   return {
@@ -129,6 +135,12 @@ export function createFakeHost(): FakeHost {
     failNextKill(error) {
       nextKillError = error;
     },
+    failIsLive(failing) {
+      isLiveFails = failing;
+    },
+    failNextAttach(error) {
+      nextAttachError = error;
+    },
     checkMachine: unused,
     async start(options) {
       const { error, gate: held } = nextStart;
@@ -150,13 +162,19 @@ export function createFakeHost(): FakeHost {
       if (listsFail) throw new SessionHostError('host-failed', 'tmux failed.');
       return seen;
     },
-    isLive: async (name) => live.has(name),
+    async isLive(name) {
+      if (isLiveFails) throw new SessionHostError('host-failed', 'tmux failed.');
+      return live.has(name);
+    },
     processOf: unused,
     sendText: unused,
     sendKeys: unused,
     sendBytes: unused,
     readScreen: unused,
     async attach(name: string, _size: TerminalSize) {
+      const error = nextAttachError;
+      nextAttachError = undefined;
+      if (error !== undefined) throw error;
       if (!live.has(name)) throw new SessionHostError('no-session', `${name} does not live.`);
       const attachment = fakeAttachment();
       attachments.push(attachment);
