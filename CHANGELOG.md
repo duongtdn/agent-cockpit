@@ -229,6 +229,16 @@ Nothing is published yet.
   session to the `idle` it left; an
   interruption the agent recorded before the next prompt was taken leaves
   the new turn `busy`.
+- The shapes of units of work, declared ahead of their behavior: a job's
+  `options` (option sources, `{ choices, suggestions: true }` for one that
+  only suggests), `directory(args)` and `fresh`; the types `Choice`,
+  `JobDescription`, `SessionRecord`, `HistoryEntry` (a session's
+  `record`), `RunOptions`, `OpenOptions`, `SendResult` and `OpenResult`
+  (from `.` and `./client`); a run's `stoppedTasks`. The cockpit declares
+  `send(key, prompt)`, `open(key, options?)`, `jobs()`, `options(jobId,
+  field, argsSoFar?)` and `run`'s `{ fresh }`; the client calls them
+  (`/send`, `/open`, `/jobs`, `/options`), which the handler does not
+  serve yet.
 
 ### Not yet: refused or missing in this version
 
@@ -243,5 +253,9 @@ Nothing is published yet.
   the run rejects with an error that is not a `CockpitError` (500 on the
   wire, `unreachable` in the client). Such sessions are not listed, and a
   restarted server lists none of the earlier ones.
+- `cockpit.send`, `open`, `jobs` and `options` are declared, not done:
+  each rejects (`jobs` throws) with an `Error` with no code, and the handler
+  answers their paths 404. `run`'s `fresh` changes nothing yet: a run on a
+  key with a session is refused, and one on a key without starts.
 - `createCockpit` checks the platform and tmux, not Node's version.
 - The client has no `sessions.list()`; no events are built.

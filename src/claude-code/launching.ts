@@ -7,6 +7,14 @@ import type { PermissionMode, SettingSource } from './options.js';
 /** The agent's program, looked up on the session's `PATH`. */
 export const AGENT_COMMAND = 'claude';
 
+/**
+ * The most UTF-8 bytes of a first prompt passed on the command line. Linux
+ * refuses one argument of 128 KiB or more, with its NUL; the margin below
+ * it keeps the bound clear of the system's. A longer prompt is typed once
+ * the agent is ready.
+ */
+export const MAX_LAUNCH_PROMPT_BYTES = 120_000;
+
 /** What a launch's arguments are made of. */
 export interface ArgumentParts {
   /** The conversation's id, which the core minted. */

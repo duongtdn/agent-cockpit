@@ -1,6 +1,26 @@
 import type { CockpitError } from '../shared/cockpit-error.js';
-import type { RunResult, Session } from '../shared/session.js';
-import { RUN_PATH, type RunRequest } from '../shared/wire.js';
+import type { Choice, JobDescription } from '../shared/job.js';
+import type {
+  OpenOptions,
+  OpenResult,
+  RunOptions,
+  RunResult,
+  SendResult,
+  Session,
+} from '../shared/session.js';
+import {
+  JOBS_PATH,
+  type JobsResponse,
+  OPEN_PATH,
+  OPTIONS_PATH,
+  type OpenRequest,
+  type OptionsRequest,
+  type OptionsResponse,
+  RUN_PATH,
+  type RunRequest,
+  SEND_PATH,
+  type SendRequest,
+} from '../shared/wire.js';
 import { callEach } from './app-handlers.js';
 import { createConnection } from './connection.js';
 import { followSessions } from './follow-sessions.js';
@@ -29,6 +49,7 @@ export interface CockpitClient {
    * @param jobId - The job's id.
    * @param args - The job's arguments, which the server checks against the
    * job's schema.
+   * @param options - `fresh`: start a new conversation for the key.
    * @returns What the run did and the state it left the session in.
    * @throws `CockpitError` as the server's `run` throws it (`unknown-job`,
    * `invalid-arguments`, `wrong-state`, …); `refused` or `no-token` from the
@@ -36,7 +57,51 @@ export interface CockpitClient {
    * answers is not the cockpit, or a renewal overlapped the run made again
    * too.
    */
-  run(jobId: string, args: unknown): Promise<RunResult>;
+  run(jobId: string, args: unknown, options?: RunOptions): Promise<RunResult>;
+  /**
+   * Sends a prompt to a unit of work, as the server's `cockpit.send` does;
+   * made again once, as a run is, when a renewal of the token overlapped it.
+   *
+   * @param key - The unit of work's key.
+   * @param prompt - The prompt.
+   * @returns What the send did and the state it left the session in.
+   * @throws `CockpitError` as the server's `send` throws it, and as `run`
+   * says for the request checks and `unreachable`.
+   */
+  send(key: string, prompt: string): Promise<SendResult>;
+  /**
+   * Opens a unit of work to type in, as the server's `cockpit.open` does;
+   * made again once, as a run is, when a renewal of the token overlapped it.
+   *
+   * @param key - The unit of work's key.
+   * @param options - `fresh`: start a new conversation for the key.
+   * @returns What the open did and the state it left the session in.
+   * @throws `CockpitError` as the server's `open` throws it, and as `run`
+   * says for the request checks and `unreachable`.
+   */
+  open(key: string, options?: OpenOptions): Promise<OpenResult>;
+  /**
+   * Describes the app's jobs, as the server's `cockpit.jobs()` does: each
+   * one's schema as JSON Schema, to draw its form from.
+   *
+   * @returns The jobs, in the order the app gave them.
+   * @throws `CockpitError` as `run` says for the request checks and
+   * `unreachable`.
+   */
+  jobs(): Promise<readonly JobDescription[]>;
+  /**
+   * Reads a field's choices from its option source, as the server's
+   * `cockpit.options` does.
+   *
+   * @param jobId - The job's id.
+   * @param field - The field.
+   * @param argsSoFar - The arguments filled so far; none when left out.
+   * @returns The choices.
+   * @throws `CockpitError` as the server's `options` throws it
+   * (`unknown-job`, `invalid-arguments`), and as `run` says for the
+   * request checks and `unreachable`.
+   */
+  options(jobId: string, field: string, argsSoFar?: unknown): Promise<readonly Choice[]>;
   /** The sessions. */
   readonly sessions: {
     /**
@@ -91,9 +156,23 @@ export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitC
   const errorHandlers = new Set<(error: CockpitError) => void>();
   const report = (error: CockpitError): void => callEach(errorHandlers, error);
   return {
-    run: async (jobId, args) => {
-      const body: RunRequest = { jobId, args };
+    run: async (jobId, args, options) => {
+      const body: RunRequest = { jobId, args, ...freshOf(options) };
       return (await connection.request(RUN_PATH, { method: 'POST', body })) as RunResult;
+    },
+    send: async (key, prompt) => {
+      const body: SendRequest = { key, prompt };
+      return (await connection.request(SEND_PATH, { method: 'POST', body })) as SendResult;
+    },
+    open: async (key, options) => {
+      const body: OpenRequest = { key, ...freshOf(options) };
+      return (await connection.request(OPEN_PATH, { method: 'POST', body })) as OpenResult;
+    },
+    jobs: async () => ((await connection.request(JOBS_PATH)) as JobsResponse).jobs,
+    options: async (jobId, field, argsSoFar = {}) => {
+      const body: OptionsRequest = { jobId, field, args: argsSoFar };
+      const answer = await connection.request(OPTIONS_PATH, { method: 'POST', body });
+      return (answer as OptionsResponse).choices;
     },
     sessions: {
       follow: (handler) => followSessions(connection, handler, report),
@@ -107,4 +186,9 @@ export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitC
       };
     },
   };
+}
+
+/** The `fresh` a request carries: only when the caller gave it. */
+function freshOf(options: RunOptions | OpenOptions | undefined): { fresh?: boolean } {
+  return options?.fresh === undefined ? {} : { fresh: options.fresh };
 }

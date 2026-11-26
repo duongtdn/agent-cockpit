@@ -1,4 +1,4 @@
-import type { ScreenReading } from '../server/driver.js';
+import type { InputBox, ScreenReading } from '../server/driver.js';
 import type { StartupDialog } from '../shared/session.js';
 
 /**
@@ -71,4 +71,16 @@ function footerOfInputBox(rows: readonly string[]): string | undefined {
   if (opening === undefined || closing === undefined) return undefined;
   if (!rows[opening + 1]?.startsWith(PROMPT_ARROW)) return undefined;
   return rows.slice(closing + 1).join('\n');
+}
+
+/**
+ * Reads Claude Code's input box from its screen, while a prompt is typed.
+ * This version recognizes no input box yet: every screen shows none, so
+ * the core types nothing.
+ *
+ * @param _text - The screen, line by line.
+ * @returns The box; `undefined` when the screen shows none.
+ */
+export function readInputBox(_text: string): InputBox | undefined {
+  return undefined;
 }

@@ -211,6 +211,11 @@ export type DriverEvent =
   | {
       /** The agent took a prompt and started a turn: `busy`. */
       readonly type: 'prompt-taken';
+      /**
+       * The prompt as the agent took it, when it says: what confirms that a
+       * prompt the driver typed was the one taken.
+       */
+      readonly prompt?: string;
     }
   | {
       /** The agent works on its turn, a tool started or finished: `busy`. */
@@ -316,6 +321,87 @@ export type ScreenReading =
       readonly shows: 'nothing';
     };
 
+/** A value JSON writes and reads back the same: what the cockpit keeps in its files. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly JsonValue[]
+  | { readonly [name: string]: JsonValue };
+
+/**
+ * What of the driver's reaches a launch with a job's part, as data: the
+ * app's options with the part laid over them. The core records it for each
+ * session and compares it as a whole: a run whose settings differ restarts
+ * an `idle` session with its own.
+ */
+export type DriverSettings = JsonValue;
+
+/** How the core ends a live session gracefully, the agent keeping its conversation. */
+export interface SessionEnding {
+  /** The signal the agent's process is sent: it exits, its conversation resumable. */
+  readonly signal: NodeJS.Signals;
+  /**
+   * How long the core waits for the session to be gone from the host,
+   * in milliseconds, before it kills the session there.
+   */
+  readonly boundMs: number;
+}
+
+/** The agent's input box, as its screen shows it. */
+export interface InputBox {
+  /** The text in the box, its lines joined by `\n`: empty when the box is. */
+  readonly text: string;
+}
+
+/** What became of a prompt a driver typed. */
+export type TypingOutcome =
+  /** The agent took it: a hook carried it. */
+  | 'taken'
+  /** It did not, the box cleared and the person's draft put back: `prompt-not-taken`. */
+  | 'not-taken';
+
+/**
+ * A live session's terminal, as a driver types a prompt into it through the
+ * core. The core holds the keys of the page's terminals for that session
+ * while the driver types, and checks before every write that the session
+ * still shows its input box and nothing waits for a person (no ask, no
+ * dialog): once a check fails, the write and every later one reject and
+ * write nothing, and the core fails the send with the state the session
+ * is in.
+ */
+export interface TypingTerminal {
+  /**
+   * Types text literally, in one write: never read as the names of keys.
+   *
+   * @param text - The text; a driver keeps each write small enough that the
+   * agent reads it as typing, not as a paste.
+   */
+  typeText(text: string): Promise<void>;
+  /**
+   * Presses named keys, in order, in one write.
+   *
+   * @param keys - Key names as the session host takes them (`Enter`,
+   * `Down`, `C-e`, `C-u`, `C-y`, `BSpace`, `Escape`).
+   */
+  pressKeys(keys: readonly string[]): Promise<void>;
+  /**
+   * Reads what the terminal shows, as text, row by row; a person's
+   * scrolling back is left first.
+   */
+  readScreen(): Promise<string>;
+  /**
+   * Waits for the agent to take a prompt.
+   *
+   * @param prompt - The text it must take, exactly as the driver typed it.
+   * @param withinMs - How long to wait, in milliseconds.
+   * @returns `true` once the agent took that prompt; `false` when it took
+   * none within the time.
+   */
+  promptTaken(prompt: string, withinMs: number): Promise<boolean>;
+}
+
 /**
  * The driver of one coding agent, as the core sees it. The app builds one
  * with the driver's own entry (`claudeCode(…)`) and gives it to
@@ -382,6 +468,45 @@ export interface Driver {
    * @returns What it shows.
    */
   readScreen(text: string): ScreenReading;
+  /**
+   * Reads the agent's input box from its screen, while a prompt is typed:
+   * the core checks it before every write.
+   *
+   * @param text - The screen, line by line.
+   * @returns The box and its text; `undefined` when the screen shows
+   * anything else over it (a dialog, a menu, an ask) or none.
+   */
+  readInputBox(text: string): InputBox | undefined;
+  /**
+   * Types a prompt into the input box of a live session, keeping the
+   * person's draft: stashed before, put back after. Each write goes through
+   * the terminal, which the core checks; the driver awaits the agent's
+   * confirmation, pressing Enter again as its agent needs.
+   *
+   * @param prompt - The prompt, at most the cockpit's limit.
+   * @param terminal - The session's terminal, through the core.
+   * @returns Whether the agent took it.
+   * @throws What the terminal rejects with: the typing stops there.
+   */
+  typePrompt(prompt: string, terminal: TypingTerminal): Promise<TypingOutcome>;
+  /**
+   * Tells whether a first prompt can be passed at launch: else the core
+   * launches the agent with none and types the prompt once it is ready.
+   *
+   * @param prompt - The prompt, at most the cockpit's limit.
+   * @returns `true` when it fits the agent's command line.
+   */
+  promptFitsLaunch(prompt: string): boolean;
+  /**
+   * Gives what of the driver's would reach a launch with a job's part, as
+   * data the core records and compares.
+   *
+   * @param part - The job's driver part, checked; none for the app's own options.
+   * @returns The settings.
+   */
+  launchSettings(part?: DriverPart): DriverSettings;
+  /** How the core ends one of the driver's sessions gracefully. */
+  readonly ending: SessionEnding;
   /**
    * Prepares a launch: writes the files it needs in the session's folder and
    * says how to run the agent.

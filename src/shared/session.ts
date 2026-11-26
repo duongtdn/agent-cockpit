@@ -56,6 +56,49 @@ interface SessionBase {
    * across the wire.
    */
   readonly since: string;
+  /**
+   * What the cockpit keeps of its unit of work: the conversation a resume
+   * takes up, the earlier ones, the history of its runs and opens.
+   */
+  readonly record?: SessionRecord;
+}
+
+/**
+ * One run or open of a unit of work, as its record keeps it: what was
+ * asked, with which job and arguments, when, and what it did.
+ */
+export interface HistoryEntry {
+  /** What the app asked: a run of a job, or an open of the key. */
+  readonly operation: 'run' | 'open';
+  /** The job: the run's own, or for an open the last run's, whose settings it launched with. */
+  readonly jobId: string;
+  /** The job's arguments, as its schema gave them. */
+  readonly args: unknown;
+  /** When it was asked, as an ISO 8601 date and time in UTC. */
+  readonly at: string;
+  /** What it did. */
+  readonly action: 'started' | 'resumed' | 'sent';
+  /** Why, when the action has a reason: those of {@link RunResult} and {@link OpenResult}. */
+  readonly reason?: 'fresh' | 'fresh-on-request' | 'conversation-gone' | 'settings-changed';
+  /** The conversation it acted in. */
+  readonly conversationId: string;
+}
+
+/**
+ * What the cockpit keeps of a unit of work until the app removes it: the
+ * conversation it continues, those it worked in before, and its history.
+ */
+export interface SessionRecord {
+  /** The conversation a resume takes up: the last one the agent worked in. */
+  readonly conversationId: string;
+  /**
+   * The conversations it worked in before, oldest first: left by a fresh
+   * start, a conversation the agent no longer kept, or the agent's own move
+   * to a new one (Claude Code's `/clear`).
+   */
+  readonly earlierConversations: readonly string[];
+  /** Its runs and opens that did something, oldest first. */
+  readonly history: readonly HistoryEntry[];
 }
 
 /** A session whose agent was launched and cannot take input yet. */
@@ -139,23 +182,39 @@ export interface EndedSession extends SessionBase {
  */
 export type Session = StartingSession | BusySession | WaitingSession | IdleSession | EndedSession;
 
+/** A new conversation was started for the key. */
+interface StartedResult<Reason extends string> {
+  /** A new conversation was started. */
+  readonly action: 'started';
+  /**
+   * Why a new one, when the key had a conversation: the job asks for a
+   * fresh start (`fresh`), the caller did (`fresh-on-request`), or the
+   * agent no longer keeps it (`conversation-gone`).
+   */
+  readonly reason?: Reason;
+  /** The state the session left `starting` for. */
+  readonly state: SessionState;
+  /**
+   * The background tasks stopped with the live session a fresh start on
+   * request ended first; absent when none ran.
+   */
+  readonly stoppedTasks?: readonly BackgroundTask[];
+}
+
+/** A live session took the prompt. */
+interface SentResult {
+  /** The prompt was typed into the live session, which took it. */
+  readonly action: 'sent';
+  /** The state the session is in. */
+  readonly state: SessionState;
+}
+
 /**
  * What a run did, and the state it left the session in. A union on
  * `action`: each action has only the reasons that can come with it.
  */
 export type RunResult =
-  | {
-      /** A new conversation was started. */
-      readonly action: 'started';
-      /**
-       * Why a new one, when the key had a conversation: the job asks for a
-       * fresh start (`fresh`), the caller did (`fresh-on-request`), or the
-       * agent no longer keeps it (`conversation-gone`).
-       */
-      readonly reason?: 'fresh' | 'fresh-on-request' | 'conversation-gone';
-      /** The state the session left `starting` for. */
-      readonly state: SessionState;
-    }
+  | StartedResult<'fresh' | 'fresh-on-request' | 'conversation-gone'>
   | {
       /** The key's conversation was resumed with the run's prompt. */
       readonly action: 'resumed';
@@ -164,18 +223,71 @@ export type RunResult =
       /** The state the session left `starting` for. */
       readonly state: SessionState;
     }
-  | {
-      /** The prompt was sent to the live session, which took it. */
-      readonly action: 'sent';
-      /** The state the session is in. */
-      readonly state: SessionState;
-    }
+  | SentResult
   | {
       /** A job without a prompt, on a live session: there was nothing to send. */
       readonly action: 'nothing-to-send';
       /** The state the session is in. */
       readonly state: SessionState;
     };
+
+/**
+ * What a send did, and the state it left the session in: typed into an
+ * `idle` session (`sent`), or an `ended` one resumed with the prompt
+ * (`resumed`), or started anew when the agent no longer kept its
+ * conversation (`started`, `conversation-gone`).
+ */
+export type SendResult =
+  | SentResult
+  | {
+      /** The key's conversation was resumed with the prompt. */
+      readonly action: 'resumed';
+      /** The state the session left `starting` for. */
+      readonly state: SessionState;
+    }
+  | (StartedResult<'conversation-gone'> & { readonly reason: 'conversation-gone' });
+
+/**
+ * What an open did: an `ended` session resumed with no prompt
+ * (`resumed`), a new conversation started (`started`: on request, or the
+ * agent no longer kept the last), or nothing to open (`nothing-to-open`).
+ */
+export type OpenResult =
+  | {
+      /** The key's conversation was resumed, with no prompt. */
+      readonly action: 'resumed';
+      /** The state the session left `starting` for. */
+      readonly state: SessionState;
+    }
+  | (StartedResult<'fresh-on-request' | 'conversation-gone'> & {
+      readonly reason: 'fresh-on-request' | 'conversation-gone';
+    })
+  | {
+      /** The session is live, or the key has no record: there was nothing to open. */
+      readonly action: 'nothing-to-open';
+      /** The state of the live session; absent for a key with no record. */
+      readonly state?: SessionState;
+    };
+
+/** What a run takes beside its job and arguments. */
+export interface RunOptions {
+  /**
+   * Starts a new conversation for the key, with the job's prompt, ending
+   * its live session first; the old conversation stays in the record.
+   * Without it, the job's own `fresh` decides on an `ended` session.
+   */
+  readonly fresh?: boolean;
+}
+
+/** What an open takes beside the key. */
+export interface OpenOptions {
+  /**
+   * Starts a new conversation for the key, with no prompt and the settings
+   * of its last run, ending its live session first; the old conversation
+   * stays in the record.
+   */
+  readonly fresh?: boolean;
+}
 
 /** A key: lower-case ASCII letters, digits and `-`, at least one. */
 const SESSION_KEY = /^[a-z0-9-]+$/;

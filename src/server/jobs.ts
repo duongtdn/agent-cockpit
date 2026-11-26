@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import { CockpitError, type Issue } from '../shared/cockpit-error.js';
+import type { Choice } from '../shared/job.js';
 import type { DriverPart } from './driver.js';
 
 /**
@@ -33,6 +34,26 @@ export interface Job<Args extends z.ZodType = z.ZodType> {
    */
   prompt?(args: z.output<Args>): string;
   /**
+   * The fields whose values come from the app's data, by name: a source
+   * gives a field's choices from the arguments filled so far (dependent
+   * choices), and a run's value must be one of them; a source given as
+   * `{ choices, suggestions: true }` only suggests, and any value fits.
+   */
+  readonly options?: JobOptions<Args>;
+  /**
+   * Gives the folder the agent works in, relative to the app's folder and
+   * inside it; without it, the app's folder. The first start of a key
+   * records it, and a later run that gives another is refused.
+   *
+   * @param args - The arguments, as the schema gave them.
+   */
+  directory?(args: z.output<Args>): string;
+  /**
+   * Starts a new conversation when a run finds the key's session `ended`,
+   * rather than resuming it (the default).
+   */
+  readonly fresh?: true;
+  /**
    * The job's driver part, built by the driver's factory
    * (`claudeCode.job(…)`): the agent's own options for the job's sessions,
    * laid over the app's. The driver checks it, at `createCockpit` and at
@@ -40,6 +61,25 @@ export interface Job<Args extends z.ZodType = z.ZodType> {
    */
   readonly driver?: DriverPart;
 }
+
+/**
+ * Gives a field's choices from the app's data, given the arguments filled so
+ * far, each checked against the schema: none, some or all of them. A
+ * method's signature, so that a job of any schema is a `Job`.
+ */
+export type OptionSource<Args extends z.ZodType = z.ZodType> = {
+  source(argsSoFar: Partial<z.output<Args>>): readonly Choice[] | Promise<readonly Choice[]>;
+}['source'];
+
+/** A field's option source: one whose choices bind, or one that only suggests. */
+export type FieldOptions<Args extends z.ZodType = z.ZodType> =
+  | OptionSource<Args>
+  | { readonly choices: OptionSource<Args>; readonly suggestions: true };
+
+/** A job's option sources, by the name of the field each gives the choices of. */
+export type JobOptions<Args extends z.ZodType = z.ZodType> = {
+  readonly [Field in keyof z.output<Args> & string]?: FieldOptions<Args>;
+};
 
 /** What a job's run asks of the sessions: its key, its first prompt and its driver part. */
 export interface JobLaunch {

@@ -130,8 +130,20 @@ describe("what Claude Code's hooks tell the core", () => {
     expect(eventsOfPayload(body)).toEqual([{ type: 'ready' }]);
   });
 
-  it('UserPromptSubmit: a prompt was taken', () => {
-    expect(eventsOf(userPromptSubmit('Explain a.ts'))).toEqual([{ type: 'prompt-taken' }]);
+  it('UserPromptSubmit: a prompt was taken, as the agent took it', () => {
+    expect(eventsOf(userPromptSubmit('Explain a.ts\nthen b.ts'))).toEqual([
+      { type: 'prompt-taken', prompt: 'Explain a.ts\nthen b.ts' },
+    ]);
+  });
+
+  it('UserPromptSubmit with no prompt of text: a prompt was taken, its text untold', () => {
+    const { prompt: _, ...body } = payloadOf(session, userPromptSubmit('Explain a.ts')) as Record<
+      string,
+      unknown
+    >;
+
+    expect(eventsOfPayload(body)).toEqual([{ type: 'prompt-taken' }]);
+    expect(eventsOfPayload({ ...body, prompt: 42 })).toEqual([{ type: 'prompt-taken' }]);
   });
 
   it('PreToolUse and PostToolUse of the session: it works on its turn', () => {

@@ -59,7 +59,7 @@ function eventsOf(event: string, body: unknown): DriverEvent[] {
     case 'SessionStart':
       return [{ type: 'ready' }];
     case 'UserPromptSubmit':
-      return [{ type: 'prompt-taken' }];
+      return [{ type: 'prompt-taken', prompt: payload.prompt as string }];
     case 'PreToolUse':
     case 'PostToolUse':
       return [{ type: 'working' }];

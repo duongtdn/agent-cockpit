@@ -3,6 +3,7 @@ import {
   type Conversation,
   type Driver,
   type DriverPart,
+  type DriverSettings,
   HOOKS_PATH,
   type HookAddress,
   type Launch,
@@ -19,6 +20,7 @@ import {
   AGENT_COMMAND,
   agentArguments,
   agentEnvironment,
+  MAX_LAUNCH_PROMPT_BYTES,
   sessionStartCommand,
 } from './launching.js';
 import {
@@ -32,10 +34,19 @@ import {
 } from './options.js';
 import { personsFolderIssues, personsStartUpFiles } from './persons-files.js';
 import { sandboxChecker } from './sandbox-check.js';
-import { readScreen } from './screen-reading.js';
+import { readInputBox, readScreen } from './screen-reading.js';
 import { settingsDocument } from './settings-document.js';
 import { TESTED_RANGE } from './tested-range.js';
 import { followTranscript } from './transcript-watch.js';
+import { typePrompt } from './typing.js';
+
+/**
+ * How a session is ended: SIGTERM, never `/exit`, which a person's draft
+ * would turn into a prompt and background tasks into a dialog. The agent
+ * exits within 0.6–1.4 s, its conversation resumable; the bound leaves it
+ * room under load.
+ */
+const ENDING = { signal: 'SIGTERM', boundMs: 5_000 } as const;
 
 /** The session's settings, which carry the token in the HTTP hooks' header. */
 const SETTINGS_FILE = 'settings.json';
@@ -200,6 +211,11 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
     environmentIssues: personsFolderIssues,
     networkOf: (part) => networkOf(checked, part),
     readScreen,
+    readInputBox,
+    typePrompt,
+    promptFitsLaunch: (prompt) => Buffer.byteLength(prompt) <= MAX_LAUNCH_PROMPT_BYTES,
+    launchSettings: (part) => launchSettingsOf(checked, part),
+    ending: ENDING,
     launch: async (launch) => {
       await refuseUnconfinableEnvironment(launch.environment);
       if (checked.sandbox !== undefined) await checkSandbox(launch.environment);
@@ -218,6 +234,31 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
  */
 function lookupOf({ conversationId, directory, environment }: Conversation): TranscriptLookup {
   return { configFolder: agentConfigFolder(environment), conversationId, directory };
+}
+
+/**
+ * What reaches a launch: the mode, the rules and the model with the job's
+ * part laid over the app's, and the app's plugin, sources of settings,
+ * MCP servers and sandbox. An option left out is left out here too, so
+ * that the settings read back from JSON as they were.
+ */
+function launchSettingsOf(options: CheckedOptions, part?: DriverPart): DriverSettings {
+  const { permissionMode, permissions, model } = laidOver(
+    options,
+    part as ClaudeCodeJobPart | undefined,
+  );
+  const { pluginDir, settingSources, otherMcpServers, sandbox } = options;
+  return JSON.parse(
+    JSON.stringify({
+      permissionMode,
+      permissions,
+      model,
+      pluginDir,
+      settingSources,
+      otherMcpServers,
+      sandbox,
+    }),
+  ) as DriverSettings;
 }
 
 function jobPart(part: ClaudeCodeJobPart): ClaudeCodeJobPart {

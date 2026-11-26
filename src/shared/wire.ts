@@ -14,7 +14,14 @@
  */
 
 import type { CockpitErrorCode, CockpitErrorFields } from './cockpit-error.js';
-import { isSessionKey, type RunResult, type Session } from './session.js';
+import type { Choice, JobDescription } from './job.js';
+import {
+  isSessionKey,
+  type OpenResult,
+  type RunResult,
+  type SendResult,
+  type Session,
+} from './session.js';
 
 /**
  * The header that carries the app's token on an HTTP request. A header of the
@@ -91,6 +98,22 @@ export function tokenOfSubprotocols(header: string | undefined): string | undefi
 /** `POST`: runs a job. The body is a {@link RunRequest}; the answer a {@link RunResponse}. */
 export const RUN_PATH = '/run';
 
+/** `POST`: sends a prompt to a unit of work. The body is a {@link SendRequest}; the answer a {@link SendResponse}. */
+export const SEND_PATH = '/send';
+
+/** `POST`: opens a unit of work. The body is an {@link OpenRequest}; the answer an {@link OpenResponse}. */
+export const OPEN_PATH = '/open';
+
+/** `GET`: describes the jobs. The answer is a {@link JobsResponse}. */
+export const JOBS_PATH = '/jobs';
+
+/**
+ * `POST`: reads a field's option source. The body is an
+ * {@link OptionsRequest}; the answer an {@link OptionsResponse}. A `POST`,
+ * since the arguments filled so far are an object of any shape.
+ */
+export const OPTIONS_PATH = '/options';
+
 /** `GET`: lists the sessions. The answer is a {@link SessionsResponse}. */
 export const SESSIONS_PATH = '/sessions';
 
@@ -137,10 +160,56 @@ export interface RunRequest {
   readonly jobId: string;
   /** The job's arguments, which the server checks against the job's schema. */
   readonly args: unknown;
+  /** Whether to start a new conversation for the key; left out, the job decides. */
+  readonly fresh?: boolean;
 }
 
 /** The answer to a {@link RUN_PATH} request that succeeded: what the run did. */
 export type RunResponse = RunResult;
+
+/** The body of a {@link SEND_PATH} request. */
+export interface SendRequest {
+  /** The key of the unit of work. */
+  readonly key: string;
+  /** The prompt. */
+  readonly prompt: string;
+}
+
+/** The answer to a {@link SEND_PATH} request that succeeded: what the send did. */
+export type SendResponse = SendResult;
+
+/** The body of an {@link OPEN_PATH} request. */
+export interface OpenRequest {
+  /** The key of the unit of work. */
+  readonly key: string;
+  /** Whether to start a new conversation for the key. */
+  readonly fresh?: boolean;
+}
+
+/** The answer to an {@link OPEN_PATH} request that succeeded: what the open did. */
+export type OpenResponse = OpenResult;
+
+/** The answer to a {@link JOBS_PATH} request. */
+export interface JobsResponse {
+  /** Every job the app offers, in the order the app gave them. */
+  readonly jobs: readonly JobDescription[];
+}
+
+/** The body of an {@link OPTIONS_PATH} request. */
+export interface OptionsRequest {
+  /** The job's id. */
+  readonly jobId: string;
+  /** The field whose choices are read. */
+  readonly field: string;
+  /** The arguments filled so far, which the server checks against the job's schema made partial. */
+  readonly args: unknown;
+}
+
+/** The answer to an {@link OPTIONS_PATH} request. */
+export interface OptionsResponse {
+  /** The field's choices, as its source gave them. */
+  readonly choices: readonly Choice[];
+}
 
 /** The answer to a {@link SESSIONS_PATH} request. */
 export interface SessionsResponse {

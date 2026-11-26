@@ -153,7 +153,7 @@ describe('the Claude Code driver, with the fake agent in tmux', () => {
       expect(listener.events).toEqual([
         { type: 'ready' },
         { type: 'conversation', conversationId: launch.conversationId },
-        { type: 'prompt-taken' },
+        { type: 'prompt-taken', prompt: 'Touch a.txt' },
         { type: 'working' },
         { type: 'working' },
         { type: 'turn-ended', lastMessage: 'Done.' },
@@ -175,7 +175,7 @@ describe('the Claude Code driver, with the fake agent in tmux', () => {
       expect(listener.events).toEqual([
         { type: 'ready' },
         { type: 'conversation', conversationId: launch.conversationId },
-        { type: 'prompt-taken' },
+        { type: 'prompt-taken', prompt: 'Leave' },
         { type: 'ending', reason: 'agent-exit' },
       ]),
     );

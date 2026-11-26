@@ -1,7 +1,15 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { CockpitError } from '../shared/cockpit-error.js';
-import type { RunResult, Session } from '../shared/session.js';
+import type { Choice, JobDescription } from '../shared/job.js';
+import type {
+  OpenOptions,
+  OpenResult,
+  RunOptions,
+  RunResult,
+  SendResult,
+  Session,
+} from '../shared/session.js';
 import { openAgentListener } from './agent-listener/agent-listener.js';
 import {
   type AgentStatus,
@@ -44,6 +52,8 @@ export interface Cockpit {
    *
    * @param jobId - The job's id.
    * @param args - The job's arguments.
+   * @param options - `fresh`: start a new conversation for the key; on a key
+   * with no session, the run starts as it does without it.
    * @returns `{ action: 'started', state }`: `busy` once the agent took the
    * prompt, `idle` for a job without one, `waiting` while a start-up dialog
    * waits for the person in the terminal, `ended` when the agent exited
@@ -70,7 +80,65 @@ export interface Cockpit {
    * run settles, or was closed before it (500 on the wire): an agent
    * already started goes on in tmux.
    */
-  run(jobId: string, args: unknown): Promise<RunResult>;
+  run(jobId: string, args: unknown, options?: RunOptions): Promise<RunResult>;
+  /**
+   * Sends a prompt to a unit of work: typed into its `idle` session, the
+   * person's draft kept; an `ended` one resumed with the prompt at launch
+   * and the settings of the key's last run. A send never begins a unit of
+   * work.   *
+   * Declared, not done in this version: it rejects with an `Error` with no
+   * code.
+   *
+   * @param key - The unit of work's key.
+   * @param prompt - The prompt, at most 100,000 characters.
+   * @returns What the send did and the state it left the session in.
+   * @throws `CockpitError` `prompt-too-long`; `unknown-key` for a key with
+   * no record; `unknown-job` when the job of its last run is gone;
+   * `wrong-state` on `starting`, `busy` or `waiting`; `prompt-not-taken`;
+   * and what any launch throws.
+   */
+  send(key: string, prompt: string): Promise<SendResult>;
+  /**
+   * Opens a unit of work to type in: its `ended` session resumed with no
+   * prompt and the settings of its last run. A live session, or a key with
+   * no record, has nothing to open.   *
+   * Declared, not done in this version: it rejects with an `Error` with no
+   * code.
+   *
+   * @param key - The unit of work's key.
+   * @param options - `fresh`: start a new conversation for the key, ending
+   * its live session first.
+   * @returns What the open did and the state it left the session in.
+   * @throws `CockpitError` `unknown-job` when the job of its last run is
+   * gone; `wrong-state` with `fresh` on `starting`; and what any launch
+   * throws.
+   */
+  open(key: string, options?: OpenOptions): Promise<OpenResult>;
+  /**
+   * Describes the app's jobs for the browser: each one's id, title,
+   * description, schema as JSON Schema, which fields have choices, and
+   * whether it has a prompt.
+   *
+   * Declared, not done in this version: it throws an `Error` with no code.
+   *
+   * @returns The jobs, in the order the app gave them.
+   */
+  jobs(): readonly JobDescription[];
+  /**
+   * Reads a field's choices from its job's option source, given the
+   * arguments filled so far.   *
+   * Declared, not done in this version: it rejects with an `Error` with no
+   * code.
+   *
+   * @param jobId - The job's id.
+   * @param field - The field.
+   * @param argsSoFar - The arguments filled so far, checked against the
+   * job's schema made partial; none when left out.
+   * @returns The choices.
+   * @throws `CockpitError` `unknown-job`; `invalid-arguments` for a field
+   * with no source, or arguments that do not fit.
+   */
+  options(jobId: string, field: string, argsSoFar?: unknown): Promise<readonly Choice[]>;
   /** The sessions the cockpit launched. */
   readonly sessions: {
     /**
@@ -262,7 +330,9 @@ async function openCockpit(
     });
     receiver.sessions = sessions;
     const jobs = new Map<string, Job>(checked.jobs.map((job) => [job.id, job]));
-    const run = (jobId: string, args: unknown): Promise<RunResult> =>
+    // `fresh` changes nothing yet: a run on a key with a session is refused
+    // whatever its state, and on one without, it starts as without `fresh`.
+    const run = (jobId: string, args: unknown, _options?: RunOptions): Promise<RunResult> =>
       Promise.resolve().then(() => {
         const job = jobOf(jobs, jobId);
         const launch = launchOfJob(job, args);
@@ -292,6 +362,12 @@ async function openCockpit(
     };
     return {
       run,
+      send: () => Promise.reject(notBuiltYet('send')),
+      open: () => Promise.reject(notBuiltYet('open')),
+      jobs: () => {
+        throw notBuiltYet('jobs');
+      },
+      options: () => Promise.reject(notBuiltYet('options')),
       sessions: { list: () => sessions.list(), follow: (handler) => sessions.follow(handler) },
       link: (pageUrl) => linkTo(pageUrl, appToken.value),
       verify: (request) => carriesAppToken(request, appToken.matches),
@@ -321,6 +397,11 @@ async function openCockpit(
     await lock.release();
     throw error;
   }
+}
+
+/** The failure of an operation this version declares and does not do yet. */
+function notBuiltYet(operation: string): Error {
+  return new Error(`The cockpit does not ${operation} in this version.`);
 }
 
 /**

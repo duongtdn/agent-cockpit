@@ -78,7 +78,7 @@ function eventsOf(payload: Record<string, unknown>): DriverEvent[] {
         ...conversation(payload.session_id),
       ];
     case 'UserPromptSubmit':
-      return [{ type: 'prompt-taken' }];
+      return [promptTaken(payload.prompt)];
     case 'PreToolUse':
     case 'PostToolUse':
       return [{ type: 'working' }];
@@ -103,6 +103,11 @@ function eventsOf(payload: Record<string, unknown>): DriverEvent[] {
  */
 function conversation(id: unknown): DriverEvent[] {
   return isText(id) ? [{ type: 'conversation', conversationId: id }] : [];
+}
+
+/** A prompt taken, with its text when the payload carries it: what confirms a typed prompt. */
+function promptTaken(prompt: unknown): DriverEvent {
+  return typeof prompt === 'string' ? { type: 'prompt-taken', prompt } : { type: 'prompt-taken' };
 }
 
 function turnEnded(lastMessage: unknown): DriverEvent {
