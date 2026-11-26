@@ -4,8 +4,8 @@ import { ScreenWatch } from './screen-watch.js';
 
 /**
  * How long a launched agent may show neither a hook, nor a dialog, nor its
- * input box before the cockpit ends it as one it cannot observe
- * (ADR-0035). Claude Code draws one or the other within 0.45 s of its
+ * input box before the cockpit ends it as one it cannot observe: a
+ * session whose state no hook tells is never left running. Claude Code draws one or the other within 0.45 s of its
  * launch, and the slowest start seen on a loaded machine took 2.2 s: this
  * leaves more than four times that. The wait starts again when a dialog
  * leaves the screen, since a person may answer it at any time.

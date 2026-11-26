@@ -35,7 +35,7 @@ const REQUEST_PATHS: Readonly<Record<string, { method: string; route: 'run' | 's
 /**
  * Routes an HTTP request the app gave the handler: every path under the
  * mount is the cockpit's, so one it does not know is `unknown`, never the
- * app's (ADR-0077).
+ * app's.
  *
  * @param method - The request's method.
  * @param url - The request's URL under the mount, the mount's prefix removed.

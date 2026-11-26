@@ -7,8 +7,8 @@ import { createPrivateFileOnce } from './private-files.js';
 import { abstractSocketOwner } from './socket-owner.js';
 
 /**
- * How long a newcomer waits for the lock's holder to exit (ADR-0056's "a few
- * seconds"). A watcher's restart passes: the old process exits, a graceful
+ * How long a newcomer waits for the lock's holder to exit: a few seconds.
+ * A watcher's restart passes: the old process exits, a graceful
  * close of its server included, well within it, and the newcomer takes the
  * lock within 50 ms of that exit. A second server started by mistake learns
  * why it cannot start soon enough to read the error at once.

@@ -2,7 +2,7 @@
  * The agent's version as the cockpit knows it: the last one read, how it
  * stands against the driver's tested range, the notice an app gets once
  * per version that is newer than any tested, and the refusal of a launch
- * whose agent is missing or older than tested (ADR-0054).
+ * whose agent is missing or older than tested.
  *
  * @packageDocumentation
  */

@@ -445,8 +445,8 @@ function untrustedState(
 }
 
 /**
- * Checks that the machine is one the cockpit runs on: Linux, WSL2 included
- * (ADR-0053). macOS comes once its tests pass.
+ * Checks that the machine is one the cockpit runs on: Linux, WSL2 included,
+ * where its tests run. macOS comes once its tests pass.
  *
  * @param platform - The machine's platform, as Node names it.
  * @throws `CockpitError` `unsupported-machine` on any other.

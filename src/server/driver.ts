@@ -97,7 +97,7 @@ export type SessionNetwork =
     };
 
 /**
- * A job's driver part (ADR-0051): what a job sets of the agent's own
+ * A job's driver part: what a job sets of the agent's own
  * options — for Claude Code its permission mode, rules and model — built by
  * the driver's factory (`claudeCode.job(…)`) and carried by the job as
  * `driver`. Opaque to the core, which only hands it back to the driver: to

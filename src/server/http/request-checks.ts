@@ -29,7 +29,8 @@ export type Admission =
 
 /**
  * The headers a proxy or tunnel adds to a request it forwards: a request
- * that carries one is remote, whatever address it comes from (ADR-0040).
+ * that carries one is remote, whatever address it comes from: the proxy
+ * itself is the loopback peer.
  */
 const FORWARDING_HEADERS = ['forwarded', 'x-forwarded-for', 'x-real-ip'] as const;
 
@@ -46,8 +47,9 @@ const LOOPBACK_PEER = /^(::ffff:)?127(\.\d{1,3}){3}$|^::1$/;
 const HOST_HEADER = /^([^:]+)(:\d{1,5})?$/;
 
 /**
- * Checks a browser-facing request, HTTP or WebSocket handshake alike
- * (ADR-0016, ADR-0037, ADR-0038, ADR-0040). In order:
+ * Checks a browser-facing request, HTTP or WebSocket handshake alike, so
+ * that only the person's own browser, or one the app admits, drives a
+ * session. In order:
  *
  * 1. A remote request — from beyond the loopback (`remote`) or carrying a
  *    forwarding header (`forwarded`) — is refused when the app gave no
@@ -90,9 +92,8 @@ export async function admissionOf(
 }
 
 /**
- * Applies the terminal's switch to a request the checks admitted
- * (ADR-0016): `'on'` lets every one through, `'loopback'` only a local
- * one, `'off'` none.
+ * Applies the terminal's switch to a request the checks admitted: `'on'`
+ * lets every one through, `'loopback'` only a local one, `'off'` none.
  *
  * @param terminal - The switch.
  * @param reach - Where the admitted request comes from.

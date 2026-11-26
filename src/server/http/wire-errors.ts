@@ -10,8 +10,8 @@ import type { ErrorResponse } from '../../shared/wire.js';
 
 /**
  * The HTTP status that carries each code on the wire. The client reads the
- * error from the body alone (ADR-0058), so the status is for what stands
- * between — logs, proxies, a developer's network panel — and says the
+ * error from the body alone, its code and fields, so the status is for
+ * what stands between — logs, proxies, a developer's network panel — and says the
  * kind of failure in HTTP's terms:
  *
  * - 400: the request does not fit (its arguments, its answer, its prompt);

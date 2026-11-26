@@ -4,7 +4,7 @@ import type { DriverPart } from './driver.js';
 
 /**
  * A job: one kind of work the app offers, whose run starts the agent on a
- * unit of work named by its arguments (ADR-0011, ADR-0012).
+ * unit of work named by its arguments.
  *
  * @typeParam Args - The job's argument schema, zod 4.
  */

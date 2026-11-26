@@ -278,7 +278,7 @@ function jobsPartIssues(options: CockpitOptions): Issue[] {
  * Checks a job's driver part, as the cockpit launches it: the driver's
  * check of its shape, then the network its sessions reach — refused, as
  * the driver's own options are, when the cockpit is opened beyond loopback
- * and the app did not accept it (ADR-0081).
+ * and the app did not accept it.
  *
  * @param options - The cockpit's options: its driver and its `authorize`.
  * @param job - The job, its `driver` unchecked.
