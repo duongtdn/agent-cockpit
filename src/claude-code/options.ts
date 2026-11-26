@@ -38,13 +38,16 @@ export interface ClaudeCodeOptions {
   /** Rules every session's settings carry, above the person's and the project's. */
   readonly permissions?: PermissionRules;
   /**
-   * Accepts that a session in a mode other than `default` reaches the
-   * network beyond the cockpit's allow-list without asking — other local
-   * ports, the internet, the person's files — even when the app opens the
-   * cockpit beyond loopback (it gives `authorize`), where such a session
-   * could read a token that works from afar. `bypassPermissions` was seen
-   * to; the other modes count as open until shown otherwise. `false` when
-   * left out: `createCockpit` then refuses that pair.
+   * Accepts that a session in `plan`, `auto` or `bypassPermissions` reaches
+   * the network beyond the cockpit's allow-list without asking the person —
+   * other local ports, the internet, the person's files — even when the
+   * app opens the cockpit beyond loopback (it gives `authorize`), where
+   * such a session could read a token that works from afar. Each was seen
+   * to: `bypassPermissions` always, `plan` and `auto` for the hosts an
+   * approved command names in its `allowed_domains`. `default`,
+   * `acceptEdits` and `dontAsk` ask or refuse, and need no acceptance.
+   * `false` when left out: `createCockpit` then refuses an open mode with
+   * `authorize`.
    */
   readonly acceptOpenNetwork?: boolean;
 }

@@ -59,16 +59,25 @@ const BYPASS_REASON =
   ACCEPTANCE;
 
 /**
- * Why a mode not yet measured counts as open: a mode is held to the
- * allow-list only once the agent was seen to ask there before reaching
- * beyond it, and only `default` was.
+ * The modes whose sandboxed commands were seen to ask, or to be refused,
+ * before each reach beyond the allow-list — whatever a command names in
+ * its `allowed_domains`.
  */
-function unmeasuredReason(mode: PermissionMode): string {
+const CONFINED_MODES: ReadonlySet<PermissionMode> = new Set(['default', 'acceptEdits', 'dontAsk']);
+
+/**
+ * Why a session in `plan` or `auto` reaches the network beyond the
+ * allow-list: a command may name hosts in its `allowed_domains`, and once
+ * the command is approved — by `auto`'s server-side check, with no person
+ * asked — they are reached with no ask of the network.
+ */
+function namedHostsReason(mode: PermissionMode): string {
   return (
-    `In ${mode}, Claude Code is not known to ask before a sandboxed command reaches the ` +
-    "network beyond the cockpit's allow-list (only default is), so its sessions count as " +
-    "reaching other local ports, the internet, and the person's files, a browser's stored " +
-    `token among them. ${ACCEPTANCE}`
+    `In ${mode}, a sandboxed command of Claude Code was measured reaching hosts beyond the ` +
+    "cockpit's allow-list with no ask of the network once the command naming them in its " +
+    'allowed_domains is approved, which the server-side check of auto mode (run in plan too) ' +
+    "does without asking the person: other local ports, the internet, and the person's files, a " +
+    `browser's stored token among them. ${ACCEPTANCE}`
   );
 }
 
@@ -80,13 +89,16 @@ function unmeasuredReason(mode: PermissionMode): string {
  * app's permission rules, and the lines that keep the agent from the
  * cockpit's state and the app's ports.
  *
- * Only a session in `default` counts as keeping its network to the
- * cockpit's allow-list; any other mode counts as open, which an app opened
- * beyond loopback must accept.
+ * A session in `default`, `acceptEdits` or `dontAsk` counts as keeping
+ * its network to the cockpit's allow-list (its sandboxed commands were
+ * seen to ask, or to be refused, beyond it); one in `plan`, `auto` or
+ * `bypassPermissions` counts as open, which an app opened beyond loopback
+ * must accept.
  *
  * @param options - The permission mode every session is launched in
  * (`default` when left out), the permission rules its settings carry, and
- * whether the app accepts the open network of a mode other than `default`.
+ * whether the app accepts the open network of `plan`, `auto` or
+ * `bypassPermissions`.
  * @returns The driver.
  * @throws `CockpitError` `invalid-options` when the options do not fit,
  * any option other than these three among them.
@@ -105,9 +117,9 @@ export function claudeCode(options?: ClaudeCodeOptions): Driver {
 }
 
 function networkOf({ permissionMode, acceptOpenNetwork }: CheckedOptions): SessionNetwork {
-  if (permissionMode === 'default') return { reach: 'confined' };
+  if (CONFINED_MODES.has(permissionMode)) return { reach: 'confined' };
   const reason =
-    permissionMode === 'bypassPermissions' ? BYPASS_REASON : unmeasuredReason(permissionMode);
+    permissionMode === 'bypassPermissions' ? BYPASS_REASON : namedHostsReason(permissionMode);
   return { reach: 'open', accepted: acceptOpenNetwork, reason };
 }
 

@@ -257,12 +257,21 @@ describe("the driver's other parts", () => {
     expect(claudeCode().silentStartCause).toMatch(/SessionStart hook/);
   });
 
-  it('keeps the network of a session in default to the allow-list: it asks beyond it', () => {
-    expect(claudeCode({ permissionMode: 'default' }).network).toEqual({ reach: 'confined' });
+  it.each(['default', 'acceptEdits', 'dontAsk'] as const)(
+    'keeps the network of a session in %s to the allow-list: it asks or refuses beyond it (contract 80, 81)',
+    (permissionMode) => {
+      expect(claudeCode({ permissionMode }).network).toEqual({ reach: 'confined' });
+      expect(claudeCode({ permissionMode, acceptOpenNetwork: true }).network).toEqual({
+        reach: 'confined',
+      });
+    },
+  );
+
+  it('keeps the network of a session in the default mode to the allow-list', () => {
     expect(claudeCode().network).toEqual({ reach: 'confined' });
   });
 
-  it.each(['acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'] as const)(
+  it.each(['plan', 'auto', 'bypassPermissions'] as const)(
     'counts the network of a session in %s as open, naming the mode, accepted only when the app says so',
     (permissionMode) => {
       const refused = claudeCode({ permissionMode }).network;
@@ -275,6 +284,17 @@ describe("the driver's other parts", () => {
       });
       expect(refused).toMatchObject({ reason: expect.stringContaining('acceptOpenNetwork') });
       expect(accepted).toEqual({ ...refused, accepted: true });
+    },
+  );
+
+  it.each(['plan', 'auto'] as const)(
+    'says what was measured of a session in %s: a command that names a host in allowed_domains reaches it once approved, with no ask of the network (contract 82)',
+    (permissionMode) => {
+      const { reason } = claudeCode({ permissionMode }).network as { reason: string };
+
+      expect(reason).toMatch(/allowed_domains/);
+      expect(reason).toMatch(/measured|seen/);
+      expect(reason).not.toMatch(/not known/);
     },
   );
 });
