@@ -259,6 +259,34 @@ describe("the guard of the real agent's settings", () => {
     );
   });
 
+  it("lets the sandbox's lines pass, which only narrow what a sandboxed command reaches", () => {
+    const sandbox = {
+      network: {
+        deniedDomains: ['localhost:8765', '[::1]:8765', '172.28.119.214:8765'],
+        allowedDomains: ['127.0.0.1:4100'],
+      },
+      allowUnsandboxedCommands: false,
+    };
+
+    expect(withSettings({ ...settings, sandbox })).not.toThrow();
+  });
+
+  it.each([
+    ['no object', true, /"sandbox", no object/],
+    ['commands let out of it', { allowUnsandboxedCommands: true }, /let out of the sandbox/],
+    ['turned on', { enabled: true }, /"sandbox".*"enabled" has no rule/],
+    [
+      'a domain allowed off 127.0.0.1',
+      { network: { allowedDomains: ['example.com'] } },
+      /"example\.com", off 127\.0\.0\.1/,
+    ],
+    ['localhost allowed', { network: { allowedDomains: ['localhost:4100'] } }, /"localhost:4100"/],
+    ['another network line', { network: { httpProxyPort: 8080 } }, /"httpProxyPort"/],
+    ['denied domains that are no list', { network: { deniedDomains: 'x' } }, /denied domains/],
+  ])('refuses a sandbox with %s', (_what, sandbox, problem) => {
+    expect(withSettings({ ...settings, sandbox })).toThrow(problem);
+  });
+
   it('refuses a setting that has no rule, and says where a rule is added', () => {
     expect(withSettings({ ...settings, forceLoginMethod: 'claudeai' })).toThrow(
       /settings.*"forceLoginMethod".*SETTINGS_RULES.*launch-rules\.ts/,

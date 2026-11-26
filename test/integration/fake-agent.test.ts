@@ -474,7 +474,7 @@ describe('the fake agent: what it cannot play', () => {
     [
       'permissions it does not play',
       JSON.stringify({ permissions: { deny: ['Bash'] } }),
-      /the "deny" of the permissions/,
+      /the deny rule "Bash"/,
     ],
   ])(
     'refuses to start on %s, with the status of what it cannot play and no stack',

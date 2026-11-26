@@ -28,6 +28,8 @@ export interface Playing {
   readonly withoutHooksFor?: readonly string[];
   /** The rules the settings allow tool calls by; none by default. */
   readonly allowRules?: readonly string[];
+  /** The folders the settings deny to `Read` and `Edit`; none by default. */
+  readonly deniedFolders?: readonly string[];
   /** Whether the agent resumes a conversation, and how long ago it last answered in it; a new one by default. */
   readonly resumedAfterSeconds?: number;
 }
@@ -48,6 +50,7 @@ export async function playFakeAgent({
   hookAnswers = {},
   withoutHooksFor = [],
   allowRules = [],
+  deniedFolders = [],
   resumedAfterSeconds,
 }: Playing): Promise<Played> {
   const events: HookEvent[] = [];
@@ -84,6 +87,7 @@ export async function playFakeAgent({
     secondsSinceLastResponse: resumedAfterSeconds,
     workFolder: WORK_FOLDER,
     allowRules,
+    deniedFolders,
     startReleased: async () => {},
     readScript: typeof script === 'function' ? script : () => script,
     show: (view) => views.push(view),

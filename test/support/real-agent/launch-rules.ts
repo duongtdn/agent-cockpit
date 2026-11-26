@@ -156,6 +156,37 @@ const hooksThatStayLocal: Check<unknown> = (hooks) => {
   return problems.find((problem) => problem !== undefined);
 };
 
+/** A domain of the sandbox's allow-list that stays local: a port of `127.0.0.1`. */
+const LOOPBACK_DOMAIN = /^127\.0\.0\.1:\d{1,5}$/;
+
+function sandboxNetworkProblem(network: unknown): string | undefined {
+  if (!isRecord(network)) return 'a network that is no object';
+  const { deniedDomains = [], allowedDomains = [], ...others } = network;
+  const [other] = Object.keys(others);
+  if (other !== undefined) return `the network's ${JSON.stringify(other)}`;
+  if (!isTextList(deniedDomains)) return 'denied domains that are no list of texts';
+  if (!isTextList(allowedDomains)) return 'allowed domains that are no list of texts';
+  const away = allowedDomains.find((domain) => !LOOPBACK_DOMAIN.test(domain));
+  return away === undefined
+    ? undefined
+    : `the allowed domain ${JSON.stringify(away)}, off 127.0.0.1`;
+}
+
+/**
+ * The sandbox's lines may only narrow what a sandboxed command reaches:
+ * any domain denied, a port of `127.0.0.1` allowed, no command let out of
+ * the sandbox. Turning the sandbox on is no line of the driver's, and is
+ * refused until a test needs it.
+ */
+const sandboxThatOnlyNarrows: Check<unknown> = (sandbox) => {
+  if (!isRecord(sandbox)) return 'no object';
+  const { network = {}, allowUnsandboxedCommands = false, ...others } = sandbox;
+  const [other] = Object.keys(others);
+  if (other !== undefined) return `refused: its ${JSON.stringify(other)} has no rule here`;
+  if (allowUnsandboxedCommands !== false) return 'commands let out of the sandbox';
+  return sandboxNetworkProblem(network);
+};
+
 /**
  * The settings the agent may be given, in every source it reads them from.
  * A setting with no rule is refused: what it does is not known here.
@@ -163,6 +194,7 @@ const hooksThatStayLocal: Check<unknown> = (hooks) => {
 export const SETTINGS_RULES: Readonly<Record<string, Check<unknown>>> = {
   hooks: hooksThatStayLocal,
   permissions: allowedAsIs,
+  sandbox: sandboxThatOnlyNarrows,
   env: refused('it would replace the variables checked here'),
   apiKeyHelper: refused('it would run a program for a key'),
 };
@@ -325,4 +357,8 @@ export function ruleIn<Rule>(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isTextList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }

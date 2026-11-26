@@ -5,7 +5,7 @@ import { type CommandLine, parseCommandLine } from './command-line.ts';
 import { createHookRunner } from './hook-runner.ts';
 import { type HookSettings, parseHookSettings } from './hook-settings.ts';
 import { createKeyDecoder, type Key } from './keys.ts';
-import { parseAllowRules } from './permission-settings.ts';
+import { type PlayedPermissions, parsePermissions } from './permission-settings.ts';
 import { renderScreen, type ScreenView } from './screen.ts';
 import { readScript } from './script.ts';
 import { startReleased } from './start-gate.ts';
@@ -65,16 +65,16 @@ function refuseToPlay(error: unknown): never {
 }
 
 /** What the fake agent plays of a settings file. */
-interface PlayedSettings {
+interface PlayedSettings extends PlayedPermissions {
   readonly hooks: HookSettings;
-  readonly allowRules: readonly string[];
 }
 
 function settingsOf(commandLine: CommandLine): PlayedSettings {
-  if (commandLine.settingsFile === undefined) return { hooks: {}, allowRules: [] };
+  if (commandLine.settingsFile === undefined)
+    return { hooks: {}, allowRules: [], deniedFolders: [] };
   try {
     const text = readFileSync(commandLine.settingsFile, 'utf8');
-    return { hooks: parseHookSettings(text), allowRules: parseAllowRules(text) };
+    return { hooks: parseHookSettings(text), ...parsePermissions(text) };
   } catch (error) {
     refuseToPlay(error);
   }
@@ -116,6 +116,7 @@ const agent = createFakeAgent({
   secondsSinceLastResponse: secondsSinceLastResponse(transcriptPath, new Date()),
   workFolder: cwd,
   allowRules: settings.allowRules,
+  deniedFolders: settings.deniedFolders,
   startReleased: () => startReleased(cwd),
   readScript: () => readScript(cwd),
   show,
