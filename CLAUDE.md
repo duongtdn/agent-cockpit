@@ -84,6 +84,14 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   three tables in
   `test/support/real-agent/launch-rules.ts`; a feature that needs one more
   option or setting adds its rule there.
+- **The driver's own launch** is tested with `test/contract/cockpit-harness.ts`:
+  `startContractCockpit()` makes a cockpit with `claudeCode()`, whose
+  `claude` is a shim first on the server's `PATH`
+  (`test/support/real-agent/shim.ts`) that runs the pinned binary with the
+  recipe's variables and no other. Every launch passes the same guard
+  before the cockpit starts it: the command must resolve to the shim, and
+  the driver's settings file is made read-only, then checked (a settings
+  file passes only when nobody can write it).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:

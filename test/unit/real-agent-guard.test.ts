@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -348,11 +349,52 @@ describe("the guard of the real agent's arguments", () => {
     },
   );
 
-  it('refuses settings given as a file: it could change after its check', () => {
+  it('refuses settings given as a file that can be written: it could change after its check', () => {
     const file = writeFile(join(root, 'settings.json'), JSON.stringify(settings));
 
     expect(check({ args: [...SESSION, '--settings', file] })).toThrow(
-      /settings of --settings.*not written out as JSON/,
+      /settings of --settings.*can be written: it could change after its check/,
+    );
+  });
+
+  it('lets settings pass that are a file nobody can write inside the root, under the rules of its settings', () => {
+    const file = writeFile(join(root, 'state', 'settings.json'), JSON.stringify(settings));
+    chmodSync(file, 0o400);
+    const sendingElsewhere = writeFile(
+      join(root, 'state', 'elsewhere.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } }),
+    );
+    chmodSync(sendingElsewhere, 0o400);
+
+    expect(check({ args: [...SESSION, '--settings', file] })).not.toThrow();
+    expect(check({ args: [...SESSION, '--settings', sendingElsewhere] })).toThrow(
+      /settings of --settings: they carry "env"/,
+    );
+  });
+
+  it('refuses a settings file outside the root, or a link to one inside it: what it holds was not checked', () => {
+    const outside = writeFile(join(elsewhere, 'settings.json'), JSON.stringify(settings));
+    chmodSync(outside, 0o400);
+    const link = join(root, 'linked-settings.json');
+    symlinkSync(outside, link);
+    made.push(link);
+
+    for (const file of [outside, link]) {
+      expect(check({ args: [...SESSION, '--settings', file] }), file).toThrow(
+        /settings of --settings.*no real file inside/,
+      );
+    }
+  });
+
+  it('refuses settings that are neither JSON nor a path, and a file that is no JSON', () => {
+    const notJson = writeFile(join(root, 'not-json.json'), 'not json');
+    chmodSync(notJson, 0o400);
+
+    expect(check({ args: [...SESSION, '--settings', 'settings.json'] })).toThrow(
+      /settings of --settings.*neither written out as JSON nor a file nobody can write/,
+    );
+    expect(check({ args: [...SESSION, '--settings', notJson] })).toThrow(
+      /settings of --settings: they cannot be read as JSON/,
     );
   });
 

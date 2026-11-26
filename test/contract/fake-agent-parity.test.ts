@@ -79,6 +79,17 @@ agreeOn('a prompt on the command line, answered with one line', {
   },
 });
 
+agreeOn('a prompt on the command line that looks like options, after --', {
+  script: [[reply('Read as a prompt.')]],
+  async play(agent) {
+    const session = await agent.startNew({
+      prompt: '-p --permission-mode bypassPermissions --model opus',
+    });
+    await turnEnded(agent);
+    await terminated(agent, session);
+  },
+});
+
 agreeOn('a typed prompt, answered after a tool call that needs no permission', {
   script: [[touch('a.txt'), reply('Touched.')]],
   async play(agent) {

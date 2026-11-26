@@ -22,6 +22,7 @@ import {
   TERMINAL_VARIABLES,
 } from '../support/real-agent/environment.ts';
 import { type RealAgentRunner, startRealAgentRunner } from '../support/real-agent/runner.ts';
+import { startRealAgentShim, writeRealAgentShim } from '../support/real-agent/shim.ts';
 
 const LOOPBACK = 'http://127.0.0.1:9';
 /** Another address of this machine, where nothing listens: what a refused launch would have been sent to. */
@@ -191,5 +192,83 @@ describe("the environment of the real agent's process", () => {
     } finally {
       await host.shutDown();
     }
+  });
+});
+
+describe('the shim that runs the real agent in place of the driver’s claude', () => {
+  it("gives its program the recipe's variables and the terminal's own, no other, and the arguments as they are", async () => {
+    const folder = mkdtempSync(join(realpathSync(tmpdir()), 'cockpit-shim-test-'));
+    made.push(folder);
+    const report = join(folder, 'report.json');
+    const program = join(folder, 'report');
+    writeFileSync(
+      program,
+      `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(report)}, JSON.stringify({ names: Object.keys(process.env), args: process.argv.slice(2) }))\n`,
+      { mode: 0o700 },
+    );
+    const folders = {
+      root: folder,
+      home: folder,
+      configFolder: folder,
+      workFolder: folder,
+      temporaryFolder: folder,
+    };
+    const given = agentEnvironment(folders, LOOPBACK);
+    const shim = writeRealAgentShim(folder, given, program);
+    const host = createTmuxSessionHost({ appName: `real-agent-shim-${process.pid}` });
+
+    try {
+      await host.start({
+        name: 'shim',
+        folder,
+        command: shim,
+        args: ['--', "-p it's a prompt"],
+        // Over the test's own variables, what the shim must drop: another API, an agent's own variable.
+        environment: {
+          set: { ANTHROPIC_BASE_URL: 'https://example.com', CLAUDE_CODE_ENTRYPOINT: 'cli' },
+          remove: [],
+        },
+        size: { columns: 80, rows: 24 },
+      });
+      const reported = await eventually(
+        () => JSON.parse(readFileSync(report, 'utf8')) as { names: string[]; args: string[] },
+      );
+
+      expect(reported.names.sort()).toEqual([...Object.keys(given), ...TERMINAL_VARIABLES].sort());
+      expect(reported.args).toEqual(['--', "-p it's a prompt"]);
+    } finally {
+      await host.shutDown();
+    }
+  });
+
+  it("refuses a launch whose claude is not the shim on the launch's PATH, and one that fails the guard", async () => {
+    api = await startFakeApi();
+    const shim = await startRealAgentShim(api.baseUrl);
+    made.push(shim.root);
+    const launching = (environment: Record<string, string>, args: string[] = []) =>
+      shim
+        .guarded({
+          terminalKeys: [],
+          silentStartCause: '',
+          launch: async () => ({ command: 'claude', args, environment }),
+          readHook: () => ({ events: [] }),
+          canResume: async () => false,
+        })
+        .launch({
+          key: 'k',
+          conversationId: SOME_SESSION,
+          directory: shim.workFolder,
+          files: shim.root,
+          hooks: { url: 'http://127.0.0.1:9', token: 't' },
+          environment: {},
+        });
+
+    await expect(launching({ PATH: '/usr/bin:/bin' })).rejects.toThrow(/not the shim/);
+    await expect(
+      launching({ PATH: shim.serverVariables.PATH as string }, ['--dangerously-skip-permissions']),
+    ).rejects.toThrow(/has no rule in OPTION_RULES/);
+    await expect(
+      launching({ PATH: shim.serverVariables.PATH as string }, ['--session-id', SOME_SESSION]),
+    ).resolves.toMatchObject({ command: 'claude' });
   });
 });

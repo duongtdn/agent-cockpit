@@ -1,22 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir, userInfo } from 'node:os';
-import { basename, join } from 'node:path';
-import { setTimeout as pause } from 'node:timers/promises';
-import type { SessionHost } from '../../../src/server/session-host/session-host.ts';
 import { createTmuxSessionHost } from '../../../src/server/session-host/tmux-session-host.ts';
 import { type AgentSession, sessionOf } from '../agent-session.ts';
 import { pinnedAgentBinary } from './binary.ts';
-import {
-  type AgentFolders,
-  agentConfiguration,
-  agentEnvironment,
-  onlyTheseVariables,
-  ROOT_NAME_PREFIX,
-  variablesAfter,
-} from './environment.ts';
+import { agentEnvironment, onlyTheseVariables, variablesAfter } from './environment.ts';
 import { type AgentLaunch, assertStaysLocal, loopbackOrigin } from './guard.ts';
+import { agentFoldersOutside, createAgentFolders, tearDownRun } from './run-root.ts';
 
 export type { AgentSession, SessionEnd, TranscriptEntry } from '../agent-session.ts';
 
@@ -78,9 +66,6 @@ export interface RealAgentRunner {
 }
 
 const TERMINAL_SIZE = { columns: 120, rows: 40 };
-/** How long an agent's process may take to exit once its terminal is gone, before it is killed. */
-const EXIT_TIMEOUT_MS = 5000;
-const EXIT_POLL_MS = 20;
 
 /**
  * Starts a runner: makes its temporary root (the agent's `HOME`, its
@@ -96,7 +81,7 @@ export async function startRealAgentRunner(
   options: RealAgentRunnerOptions,
 ): Promise<RealAgentRunner> {
   const apiOrigin = loopbackOrigin(options.apiBaseUrl);
-  const folders = await createFolders();
+  const folders = await createAgentFolders();
   const environment = agentEnvironment(folders, apiOrigin);
   const host = createTmuxSessionHost({ appName: `real-agent-${randomUUID()}` });
   const processIds: number[] = [];
@@ -155,78 +140,12 @@ export async function startRealAgentRunner(
     startNew: (launchOptions = {}) => launch(['--session-id', randomUUID()], launchOptions),
     resume: (sessionId, launchOptions = {}) => launch(['--resume', sessionId], launchOptions),
     close: () => {
-      closed ??= tearDown(host, processIds, folders.root);
+      closed ??= tearDownRun({
+        endSessions: () => host.shutDown(),
+        processIds,
+        root: folders.root,
+      });
       return closed;
     },
   };
-}
-
-async function createFolders(): Promise<AgentFolders> {
-  // Resolved: the agent looks a folder's trust up by its resolved path.
-  const root = await mkdtemp(join(await realpath(tmpdir()), ROOT_NAME_PREFIX));
-  const inside = {
-    home: join(root, 'home'),
-    configFolder: join(root, 'config'),
-    workFolder: join(root, 'work'),
-    temporaryFolder: join(root, 'tmp'),
-  };
-  for (const folder of Object.values(inside)) await mkdir(folder);
-  const folders = { root, ...inside };
-  await writeFile(
-    join(folders.configFolder, '.claude.json'),
-    JSON.stringify(agentConfiguration(folders)),
-  );
-  return folders;
-}
-
-/**
- * Lists the folders an agent made for sessions under a root in the machine's
- * temporary folder: it names each after the session's working folder, so
- * each carries the root's name.
- */
-function agentFoldersOutside(root: string): string[] {
-  const agentFolder = join(tmpdir(), `claude-${userInfo().uid}`);
-  if (!existsSync(agentFolder)) return [];
-  return readdirSync(agentFolder)
-    .filter((name) => name.includes(basename(root)))
-    .map((name) => join(agentFolder, name));
-}
-
-/** Every step is tried, whatever the one before did: a failed test must leave nothing behind either. */
-async function tearDown(
-  host: SessionHost,
-  processIds: readonly number[],
-  root: string,
-): Promise<void> {
-  try {
-    await host.shutDown();
-  } finally {
-    try {
-      // An agent still writes its files while it exits.
-      await Promise.all(processIds.map(exited));
-    } finally {
-      await rm(root, { recursive: true, force: true, maxRetries: 5 });
-    }
-  }
-}
-
-function isRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Waits for a process to exit, and kills one that does not. */
-async function exited(pid: number): Promise<void> {
-  const deadline = Date.now() + EXIT_TIMEOUT_MS;
-  while (isRunning(pid)) {
-    if (Date.now() > deadline) {
-      process.kill(pid, 'SIGKILL');
-      return;
-    }
-    await pause(EXIT_POLL_MS);
-  }
 }

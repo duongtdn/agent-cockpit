@@ -230,7 +230,14 @@ export function sessionSettings(hooks: HookReceiver, permissions: object): objec
   return { ...hooks.settings(), permissions };
 }
 
-function assertNoUnexpectedPath(api: FakeApi): void {
+/**
+ * Fails when the agent sent a request to a path the API's double does not
+ * know and nobody expects.
+ *
+ * @param api - The API's double.
+ * @throws Error naming each such request.
+ */
+export function assertNoUnexpectedPath(api: FakeApi): void {
   const unexpected = api
     .unknownRequests()
     .map((request) => `${request.method} ${request.path}`)

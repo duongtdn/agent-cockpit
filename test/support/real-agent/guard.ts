@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { ROOT_NAME_PREFIX } from './environment.ts';
@@ -10,7 +10,7 @@ import {
   plainLoopbackOrigin,
   RULES_FILE,
   ruleIn,
-  settingsProblem,
+  settingsInFileProblem,
   VARIABLE_RULES,
 } from './launch-rules.ts';
 import {
@@ -77,7 +77,7 @@ const MANAGED_SETTINGS_FOLDERS = ['/etc/claude-code', '/mnt/c/Program Files/Clau
  * rule, or one missing or holding something else — `ANTHROPIC_BASE_URL`
  * anything but a loopback origin, `HOME`, `CLAUDE_CONFIG_DIR` or `TMPDIR`
  * anything but a real folder inside the root; an argument with no rule, or
- * settings given as a file; a setting with no rule, or one its rule
+ * settings given as a file that can be written; a setting with no rule, or one its rule
  * refuses, on the command line or in any settings file the agent reads; a
  * file of MCP servers the agent would read.
  */
@@ -191,7 +191,7 @@ function environmentProblem(
 /** Every settings file the agent would read passes the rules the settings of the command line pass. */
 function settingsFilesProblem(launch: AgentLaunch, machine: Machine): string | undefined {
   for (const file of settingsFilesOf(settingsFoldersOf(launch, machine))) {
-    const problem = settingsFileProblem(file, launch.root);
+    const problem = settingsInFileProblem(file, launch.root);
     if (problem !== undefined)
       return `the settings of ${file}, which the agent would read: ${problem}`;
   }
@@ -203,16 +203,6 @@ function mcpServerFilesProblem(launch: AgentLaunch, machine: Machine): string | 
   return file === undefined
     ? undefined
     : `the MCP servers of ${file}, which the agent would read: no launch needs them yet, so no rule lets any pass`;
-}
-
-function settingsFileProblem(file: string, root: string): string | undefined {
-  let settings: unknown;
-  try {
-    settings = JSON.parse(readFileSync(file, 'utf8'));
-  } catch {
-    return 'they cannot be read as JSON';
-  }
-  return settingsProblem(settings, root);
 }
 
 function describe(value: string): string {

@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { FAKE_API_KEY, TERMINAL_VARIABLES } from './environment.ts';
 
@@ -186,16 +186,57 @@ export const settingsProblem: Check<unknown> = (settings, root) => {
 };
 
 /**
- * The settings of the command line are written out, never the path of a
- * file: the agent then reads the very text that was checked, which nothing
- * can change between the check and the launch.
+ * The settings of the command line are written out, or are a file nobody
+ * can write: the agent then reads the very text that was checked, which
+ * nothing can change between the check and the launch. A file is the
+ * driver's own, which writes its session's settings in the cockpit's state
+ * folder and names the file; the test that launches it takes the write
+ * permission away before the check.
  */
-const settingsWrittenOut: Check<string> = (value, root) => {
+const checkedSettings: Check<string> = (value, root) =>
+  isAbsolute(value) ? settingsFileProblem(value, root) : settingsTextProblem(value, root);
+
+function settingsTextProblem(text: string, root: string): string | undefined {
   let settings: unknown;
   try {
-    settings = JSON.parse(value);
+    settings = JSON.parse(text);
   } catch {
-    return 'they are not written out as JSON: a file could change after its check';
+    return 'they are neither written out as JSON nor a file nobody can write: a file could change after its check';
+  }
+  return settingsProblem(settings, root);
+}
+
+/** Any write permission, of the owner, the group or the others. */
+const WRITE_PERMISSIONS = 0o222;
+
+function settingsFileProblem(file: string, root: string): string | undefined {
+  const status = lstatSync(file, { throwIfNoEntry: false });
+  if (
+    status?.isFile() !== true ||
+    !isInside(file, root) ||
+    !isInside(realpathSync(file), realpathSync(root))
+  ) {
+    return `${JSON.stringify(file)} is no real file inside ${root}: a link, or a file elsewhere, is not what was checked`;
+  }
+  if ((status.mode & WRITE_PERMISSIONS) !== 0) {
+    return `${JSON.stringify(file)} can be written: it could change after its check`;
+  }
+  return settingsInFileProblem(file, root);
+}
+
+/**
+ * Tells why the settings a file holds are refused, or nothing when every
+ * one of them passes its rule.
+ *
+ * @param file - The settings file.
+ * @param root - The temporary folder the run owns.
+ */
+export const settingsInFileProblem: Check<string> = (file, root) => {
+  let settings: unknown;
+  try {
+    settings = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return 'they cannot be read as JSON';
   }
   return settingsProblem(settings, root);
 };
@@ -221,7 +262,7 @@ function notNeededYet(what: string): Check<string> {
 export const OPTION_RULES: Readonly<Record<string, Check<string>>> = {
   '--session-id': aUuid,
   '--resume': aUuid,
-  '--settings': settingsWrittenOut,
+  '--settings': checkedSettings,
   '--permission-mode': allowedAsIs,
   '--model': allowedAsIs,
   '--mcp-config': notNeededYet('it would give the agent servers to call'),
