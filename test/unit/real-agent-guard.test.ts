@@ -690,6 +690,21 @@ describe('the guard of the settings files the real agent reads', () => {
       join(folders.home, '.claude.json'),
       (servers) => ({ mcpServers: servers }),
     ],
+    [
+      "the configuration folder's legacy .config.json",
+      join(folders.configFolder, '.config.json'),
+      (servers) => ({ mcpServers: servers }),
+    ],
+    [
+      "a suffixed configuration file's, in the configuration folder",
+      join(folders.configFolder, '.claude-custom-oauth.json'),
+      (servers) => ({ mcpServers: servers }),
+    ],
+    [
+      "a suffixed configuration file's, in the home",
+      join(folders.home, '.claude-custom-oauth.json'),
+      (servers) => ({ mcpServers: servers }),
+    ],
   ];
 
   it.each(mcpServerPlaces)(
@@ -794,6 +809,109 @@ describe('the guard of the settings files the real agent reads', () => {
 
       expect(check()).toThrow(/the marketplace "remote"/);
     });
+
+    /** A plugin's MCP servers: one reached at Anthropic, which no test's agent may call. */
+    const ANTHROPIC_SERVER = {
+      mcpServers: { anthropic: { type: 'http', url: 'https://api.anthropic.com/mcp' } },
+    };
+
+    /** Writes a plugin's folder: its manifest, a command, and the files given. */
+    function pluginAt(folder: string, files: Record<string, string> = {}): void {
+      writeFile(join(folder, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'probe' }));
+      writeFile(join(folder, 'commands', 'greet.md'), 'Say hello.');
+      for (const [name, content] of Object.entries(files)) writeFile(join(folder, name), content);
+    }
+
+    function installedAt(installPath: unknown): void {
+      writeFile(
+        join(plugins, 'installed_plugins.json'),
+        JSON.stringify({
+          version: 2,
+          plugins: { 'probe@local': [{ scope: 'user', installPath }] },
+        }),
+      );
+    }
+
+    it("refuse a plugin installed outside the plugins folder, even in the run's root: the agent loads it from there, an http server at Anthropic in its .mcp.json", () => {
+      install();
+      const outside = join(root, 'plugin-elsewhere');
+      pluginAt(outside, { '.mcp.json': JSON.stringify(ANTHROPIC_SERVER) });
+      installedAt(outside);
+
+      expect(check()).toThrow(/installed at .*plugin-elsewhere.*outside .*plugins/);
+    });
+
+    it('refuse an installed plugin whose install path is no real folder in the plugins folder, or a list that is no JSON', () => {
+      install();
+      for (const installPath of [join(plugins, 'cache', 'not-there'), 'cache/local/probe', 7]) {
+        installedAt(installPath);
+        expect(check(), JSON.stringify(installPath)).toThrow(/the plugin "probe@local"/);
+      }
+
+      writeFile(join(plugins, 'installed_plugins.json'), '{ "plugins": ');
+      expect(check()).toThrow(/installed_plugins.json cannot be read as JSON/);
+    });
+
+    it('refuse a plugin in the plugins folder whose .mcp.json names an http server at Anthropic', () => {
+      install();
+      writeFile(join(installed, '.mcp.json'), JSON.stringify(ANTHROPIC_SERVER));
+
+      expect(check()).toThrow(/a plugin holding .mcp.json/);
+    });
+
+    it('check the plugins of a marketplace that is a folder of the run outside the plugins folder: one with an http server at Anthropic is refused', () => {
+      install();
+      const elsewhereMarket = join(root, 'market-elsewhere');
+      writeFile(
+        join(elsewhereMarket, '.claude-plugin', 'marketplace.json'),
+        JSON.stringify({ name: 'near', plugins: [{ name: 'probe', source: './probe' }] }),
+      );
+      pluginAt(join(elsewhereMarket, 'probe'));
+      writeFile(
+        join(plugins, 'known_marketplaces.json'),
+        JSON.stringify({
+          local: { source: { source: 'directory', path: market }, installLocation: market },
+          near: {
+            source: { source: 'directory', path: elsewhereMarket },
+            installLocation: elsewhereMarket,
+          },
+        }),
+      );
+      expect(check()).not.toThrow();
+
+      writeFile(join(elsewhereMarket, 'probe', '.mcp.json'), JSON.stringify(ANTHROPIC_SERVER));
+      expect(check()).toThrow(/a plugin holding .mcp.json/);
+    });
+
+    it('refuse a marketplace installed anywhere but a folder of the run', () => {
+      install();
+      writeFile(
+        join(plugins, 'known_marketplaces.json'),
+        JSON.stringify({
+          local: { source: { source: 'directory', path: market }, installLocation: elsewhere },
+        }),
+      );
+
+      expect(check()).toThrow(/the marketplace "local"/);
+    });
+
+    it.each([
+      ['a repository', { source: 'github', repo: 'someone/probe' }],
+      ['an address', 'https://example.com/probe.git'],
+      ['a folder outside the marketplace', '../probe'],
+      ['an absolute path', '/tmp/probe'],
+    ])(
+      "refuse a marketplace's plugin whose source is %s: only a folder in the marketplace is local",
+      (_, source) => {
+        install();
+        writeFile(
+          join(market, '.claude-plugin', 'marketplace.json'),
+          JSON.stringify({ name: 'local', plugins: [{ name: 'probe', source }] }),
+        );
+
+        expect(check()).toThrow(/marketplace.json gives the plugin "probe" a source/);
+      },
+    );
 
     it('refuse settings that enable plugins with anything but true or false', () => {
       expect(

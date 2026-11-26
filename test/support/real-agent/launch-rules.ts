@@ -607,31 +607,48 @@ function serversOfProject(project: unknown): unknown {
 /** What a marketplace's list may say of a plugin: who it is and where it is, nothing that runs. */
 const MARKETPLACE_PLUGIN_KEYS: readonly string[] = ['name', 'source', 'description', 'version'];
 
+/** A marketplace's list of plugins, from the marketplace's folder. */
+const MARKETPLACE_LIST = '.claude-plugin/marketplace.json';
+
 /**
- * Tells why the person's plugins are refused, or nothing when every
- * marketplace the agent knows is a folder of the run, every plugin it lists
- * says only who it is and where, and every plugin folder in the plugins'
- * folder (installed, or in a marketplace) holds commands and hooks that
- * stay local, nothing else.
+ * Tells why the person's plugins are refused, or nothing when the agent
+ * would load no plugin from anywhere but folders of the run, each checked:
+ * every marketplace it knows is a folder of the run, every plugin it
+ * installed is in the plugins' folder, every plugin a marketplace lists
+ * says only who it is and where, a folder inside the marketplace, and
+ * every plugin folder in the plugins' folder or in a marketplace holds
+ * commands and hooks that stay local, nothing else (no `.mcp.json`).
  *
  * @param folder - The plugins' folder of the agent's configuration folder.
  * @param root - The temporary folder the run owns.
  */
 export const pluginsProblem: Check<string> = (folder, root) => {
   if (!isRealFolder(folder)) return undefined;
-  return (
-    knownMarketplacesProblem(join(folder, 'known_marketplaces.json'), root) ??
-    marketplaceListsProblem(folder) ??
-    pluginFolderProblem(folder, root)
-  );
+  const known = join(folder, 'known_marketplaces.json');
+  const problem =
+    knownMarketplacesProblem(known, root) ??
+    installedPluginsProblem(join(folder, 'installed_plugins.json'), folder, root);
+  if (problem !== undefined) return problem;
+  // A marketplace that is a folder of the run elsewhere is read where it is: its plugins too.
+  for (const scanned of new Set([folder, ...marketplaceFoldersOf(known)])) {
+    const found = marketplaceListsProblem(scanned, root) ?? pluginFolderProblem(scanned, root);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 };
+
+/** The places a marketplace names for itself: where it comes from, and where the agent keeps it. */
+function placesOf(marketplace: unknown): { source: unknown; installLocation: unknown } {
+  if (!isRecord(marketplace)) return { source: undefined, installLocation: undefined };
+  return { source: marketplace.source, installLocation: marketplace.installLocation };
+}
 
 function knownMarketplacesProblem(file: string, root: string): string | undefined {
   if (lstatSync(file, { throwIfNoEntry: false }) === undefined) return undefined;
   const marketplaces = readJson(file);
   if (!isRecord(marketplaces)) return `${file} cannot be read as JSON of an object`;
   for (const [name, marketplace] of Object.entries(marketplaces)) {
-    const source = isRecord(marketplace) ? marketplace.source : undefined;
+    const { source, installLocation } = placesOf(marketplace);
     const isOwnFolder =
       isRecord(source) &&
       source.source === 'directory' &&
@@ -640,25 +657,97 @@ function knownMarketplacesProblem(file: string, root: string): string | undefine
     if (!isOwnFolder) {
       return `the marketplace ${JSON.stringify(name)} is no real folder inside ${root}: the agent would fetch it`;
     }
+    const isKeptInTheRun =
+      installLocation === undefined ||
+      (typeof installLocation === 'string' &&
+        aRealFolderInsideTheRoot(installLocation, root) === undefined);
+    if (!isKeptInTheRun) {
+      return `the marketplace ${JSON.stringify(name)} is installed at ${JSON.stringify(installLocation)}, no real folder inside ${root}`;
+    }
   }
   return undefined;
 }
 
-function marketplaceListsProblem(folder: string): string | undefined {
-  for (const list of entriesIn(folder).filter((entry) =>
-    entry.endsWith('.claude-plugin/marketplace.json'),
-  )) {
+/** The folders of the marketplaces the agent knows, once their file passed its check. */
+function marketplaceFoldersOf(file: string): string[] {
+  const marketplaces = readJson(file);
+  if (!isRecord(marketplaces)) return [];
+  return Object.values(marketplaces).flatMap((marketplace) => {
+    const { source, installLocation } = placesOf(marketplace);
+    const path = isRecord(source) ? source.path : undefined;
+    return [path, installLocation].filter((place): place is string => typeof place === 'string');
+  });
+}
+
+/**
+ * Every plugin the agent installed is in the plugins' folder, a real folder
+ * of the run, where the scan of that folder checks it: the agent loads a
+ * plugin from its `installPath`, wherever that is.
+ */
+function installedPluginsProblem(file: string, folder: string, root: string): string | undefined {
+  if (lstatSync(file, { throwIfNoEntry: false }) === undefined) return undefined;
+  const content = readJson(file);
+  const plugins = isRecord(content) ? content.plugins : undefined;
+  if (!isRecord(plugins)) return `${file} cannot be read as JSON of an object of plugins`;
+  for (const [name, installs] of Object.entries(plugins)) {
+    if (!Array.isArray(installs)) return `${file} gives the plugin ${JSON.stringify(name)} no list`;
+    for (const install of installs) {
+      const problem = installPathProblem(
+        isRecord(install) ? install.installPath : undefined,
+        folder,
+        root,
+      );
+      if (problem !== undefined) return `the plugin ${JSON.stringify(name)} ${problem}`;
+    }
+  }
+  return undefined;
+}
+
+function installPathProblem(
+  installPath: unknown,
+  folder: string,
+  root: string,
+): string | undefined {
+  if (typeof installPath !== 'string') return 'has no install path';
+  const where = `is installed at ${JSON.stringify(installPath)}`;
+  if (!isInside(installPath, folder)) return `${where}, outside ${folder}: it would not be checked`;
+  return aRealFolderInsideTheRoot(installPath, root) === undefined
+    ? undefined
+    : `${where}, no real folder inside ${root}`;
+}
+
+function marketplaceListsProblem(folder: string, root: string): string | undefined {
+  for (const list of entriesIn(folder).filter((entry) => entry.endsWith(MARKETPLACE_LIST))) {
+    const marketplace = dirname(dirname(join(folder, list)));
     const content = readJson(join(folder, list));
     const plugins = isRecord(content) ? content.plugins : undefined;
     if (!Array.isArray(plugins)) return `${list} lists no plugins`;
     for (const plugin of plugins) {
-      const other = isRecord(plugin)
-        ? Object.keys(plugin).find((key) => !MARKETPLACE_PLUGIN_KEYS.includes(key))
-        : 'what is no object';
-      if (other !== undefined) return `${list} says ${JSON.stringify(other)} of a plugin`;
+      const problem = listedPluginProblem(plugin, marketplace, root);
+      if (problem !== undefined) return `${list} ${problem}`;
     }
   }
   return undefined;
+}
+
+/** A plugin a marketplace lists says who it is, and where: a folder inside the marketplace. */
+function listedPluginProblem(
+  plugin: unknown,
+  marketplace: string,
+  root: string,
+): string | undefined {
+  if (!isRecord(plugin)) return 'says what is no object of a plugin';
+  const other = Object.keys(plugin).find((key) => !MARKETPLACE_PLUGIN_KEYS.includes(key));
+  if (other !== undefined) return `says ${JSON.stringify(other)} of a plugin`;
+  const { source } = plugin;
+  const isLocalFolder =
+    typeof source === 'string' &&
+    source.startsWith('./') &&
+    isInside(resolve(marketplace, source), marketplace) &&
+    aRealFolderInsideTheRoot(resolve(marketplace, source), root) === undefined;
+  return isLocalFolder
+    ? undefined
+    : `gives the plugin ${JSON.stringify(plugin.name)} a source ${JSON.stringify(source)}: only a real folder inside the marketplace is local`;
 }
 
 function pluginFolderProblem(folder: string, root: string): string | undefined {

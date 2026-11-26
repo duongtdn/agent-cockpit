@@ -93,14 +93,20 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   worktree (the agent would read the settings of the repository it belongs
   to, elsewhere), and the machine's managed MCP servers (an
   organization's). The MCP servers of a `.mcp.json` in the work folder or
-  above it and of the agent's `.claude.json` (in the configuration folder
-  and in the home, the person's and each project's) pass when each is a
-  program the agent starts (`type` `stdio` or none, `command`, `args`,
-  nothing else), as a command hook is. The person's plugins (`plugins` in
-  the configuration folder) pass when each marketplace is a real folder
-  inside the run's root, each marketplace list says only who a plugin is
-  and where, and each plugin holds only its manifest, `commands/*.md` and
-  hooks that stay local. The rules are
+  above it and of the agent's configuration file under any of its names
+  (`.claude*.json`, in the configuration folder and in the home, the
+  person's and each project's) and of the legacy `.config.json` of the
+  configuration folder pass when each is a program the agent starts
+  (`type` `stdio` or none, `command`, `args`, nothing else), as a command
+  hook is. The person's plugins (`plugins` in the configuration folder)
+  pass when each marketplace is a real folder inside the run's root, kept
+  in one too, each plugin installed (`installed_plugins.json`'s
+  `installPath`) is a real folder inside the plugins folder, each
+  marketplace list says only who a plugin is and where (a real folder
+  inside the marketplace: no repository, no address), and each plugin, in
+  the plugins folder or in a marketplace elsewhere in the root, holds only
+  its manifest, `commands/*.md` and hooks that stay local (no `.mcp.json`).
+  The rules are
   the tables of `test/support/real-agent/launch-rules.ts` (variables,
   options with a value, flags, settings); a settings file's `env` passes
   only when each variable passes the rule a launch's would, and never sets

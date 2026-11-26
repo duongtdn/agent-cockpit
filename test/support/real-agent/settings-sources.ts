@@ -22,8 +22,15 @@ const PROJECT_MCP_SERVERS = '.mcp.json';
 /** The file of a managed settings folder that gives a machine MCP servers. */
 const MANAGED_MCP_SERVERS = 'managed-mcp.json';
 
-/** The agent's configuration file: its own state, and the person's and each project's MCP servers. */
-const CONFIGURATION_FILE = '.claude.json';
+/**
+ * How the agent names its configuration file, its own state and the
+ * person's and each project's MCP servers: `.claude.json`, or a suffixed
+ * one (`.claude-custom-oauth.json`).
+ */
+const CONFIGURATION_FILE = /^\.claude.*\.json$/;
+
+/** The configuration folder's legacy configuration file, read in place of `.claude.json` when it holds anything. */
+const LEGACY_CONFIGURATION_FILE = '.config.json';
 
 /** The folder of the configuration folder that holds the person's plugins. */
 const PLUGINS_FOLDER = 'plugins';
@@ -93,17 +100,21 @@ export function managedMcpServerFilesOf(folders: SettingsFolders): string[] {
 
 /**
  * Lists the agent's configuration files, which hold the person's MCP
- * servers and each project's: `.claude.json` in the configuration folder
- * (which the pinned agent reads when `CLAUDE_CONFIG_DIR` is set) and in the
- * home (which it reads otherwise).
+ * servers and each project's: under any of its names, in the configuration
+ * folder (which the pinned agent reads when `CLAUDE_CONFIG_DIR` is set) and
+ * in the home (which it reads otherwise), and the configuration folder's
+ * legacy `.config.json`.
  *
  * @param folders - Where the launch has the agent read settings.
  * @returns The paths of the files that exist, a link that leads nowhere included.
  */
 export function configurationFilesOf(folders: SettingsFolders): string[] {
-  return [folders.configFolder, folders.homeFolder]
-    .map((folder) => join(folder, CONFIGURATION_FILE))
-    .filter(exists);
+  const named = [folders.configFolder, folders.homeFolder].flatMap((folder) =>
+    namesIn(folder)
+      .filter((name) => CONFIGURATION_FILE.test(name))
+      .map((name) => join(folder, name)),
+  );
+  return [...named, join(folders.configFolder, LEGACY_CONFIGURATION_FILE)].filter(exists);
 }
 
 /**
