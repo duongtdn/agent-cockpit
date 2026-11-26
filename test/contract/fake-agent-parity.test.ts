@@ -130,11 +130,11 @@ function drawnBox({ text, cursor }: TerminalScreen): BoxSeen | undefined {
 function boxShowing(
   agent: ParityAgent,
   session: AgentSession,
-  check: (rows: readonly string[]) => boolean,
+  check: (rows: readonly string[], cursor: BoxSeen['cursor']) => boolean,
 ): Promise<BoxSeen> {
   return agent.eventually(async () => {
     const box = drawnBox(await session.screenWithCursor());
-    expect(box !== undefined && check(box.rows)).toBe(true);
+    expect(box !== undefined && check(box.rows, box.cursor)).toBe(true);
     return box as BoxSeen;
   });
 }
@@ -195,6 +195,8 @@ async function typeOverTheDraft(
 ): Promise<void> {
   if (rowsBelowTheCursor > 0) await session.press(...Array(rowsBelowTheCursor).fill('Down'));
   await session.press('C-e');
+  // Every kill is told by what it redraws: the keys before must have been drawn first.
+  await boxShowing(agent, session, cursorAtTheEnd);
   await session.type(SEPARATOR);
   let kills = 0;
   let box: BoxSeen;
@@ -217,6 +219,16 @@ async function typeOverTheDraft(
   await session.press('BSpace');
   await submitInputBox(agent, session, (text) => text.trim() !== '');
   await turnEnded(agent);
+}
+
+/** Whether the cursor is at the end of the box's last row, nothing hidden below it. */
+function cursorAtTheEnd(rows: readonly string[], cursor: BoxSeen['cursor']): boolean {
+  const lastRow = rows.length - 3;
+  return (
+    !rows.at(-2)?.includes('more') &&
+    cursor.row === lastRow &&
+    cursor.column === Array.from(rows[lastRow] ?? '').length
+  );
 }
 
 /** A person's draft of numbered lines, each with as many letters after it as asked. */
