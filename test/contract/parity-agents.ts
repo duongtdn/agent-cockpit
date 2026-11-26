@@ -1,4 +1,4 @@
-import { expect } from 'vitest';
+import { expect, type TaskMeta } from 'vitest';
 import type { AgentSession } from '../support/agent-session.ts';
 import { startFakeAgentRunner } from '../support/fake-agent/runner.ts';
 import type { Turn } from '../support/fake-agent/script.ts';
@@ -54,6 +54,7 @@ export interface BothAgentsHooks {
  *
  * @param scenario - See {@link Scenario}.
  * @param whenFinished - Registers the test's end: the test's own, since scenarios are played alongside each other.
+ * @param meta - The test's own metadata, for the same reason.
  * @returns What each agent's hooks said, for `expect(fake).toEqual(real)`.
  * @throws Error as every wait of the contract suite's, when an agent does
  * not do what the scenario awaits: for the fake agent, with the reason it
@@ -62,11 +63,12 @@ export interface BothAgentsHooks {
 export async function hooksOfBothAgents(
   scenario: Scenario,
   whenFinished: WhenFinished,
+  meta: TaskMeta,
 ): Promise<BothAgentsHooks> {
   const playedOn = async (agent: Promise<ParityAgent>) => played(scenario, await agent);
   const [real, fake] = await Promise.all([
-    playedOn(realAgent(scenario, whenFinished)),
-    playedOn(fakeAgent(scenario, whenFinished)),
+    playedOn(realAgent(scenario, whenFinished, meta)),
+    playedOn(fakeAgent(scenario, whenFinished, meta)),
   ]);
   return { real, fake };
 }
@@ -89,8 +91,12 @@ async function played(scenario: Scenario, agent: ParityAgent): Promise<ObservedH
   return comparable(agent.hooks.received, { sessionId: first.id, workFolder: agent.workFolder });
 }
 
-async function realAgent(scenario: Scenario, whenFinished: WhenFinished): Promise<ParityAgent> {
-  const agent = await startContractAgent({ ...permissionsOf(scenario), whenFinished });
+async function realAgent(
+  scenario: Scenario,
+  whenFinished: WhenFinished,
+  meta: TaskMeta,
+): Promise<ParityAgent> {
+  const agent = await startContractAgent({ ...permissionsOf(scenario), whenFinished, meta });
   agent.api.script(...apiAnswersFor(scenario.script));
   return {
     ...agent,
@@ -100,7 +106,11 @@ async function realAgent(scenario: Scenario, whenFinished: WhenFinished): Promis
   };
 }
 
-async function fakeAgent(scenario: Scenario, whenFinished: WhenFinished): Promise<ParityAgent> {
+async function fakeAgent(
+  scenario: Scenario,
+  whenFinished: WhenFinished,
+  meta: TaskMeta,
+): Promise<ParityAgent> {
   // Closed last started first: the sessions end while their hooks still have somewhere to go.
   const closers: (() => Promise<void>)[] = [];
   whenFinished(() => runAll(closers.reverse()));
@@ -111,7 +121,7 @@ async function fakeAgent(scenario: Scenario, whenFinished: WhenFinished): Promis
     script: scenario.script,
   });
   closers.push(() => launcher.close());
-  const agent = drivenAgent({ hooks, launcher });
+  const agent = drivenAgent({ hooks, launcher, meta });
   return {
     ...agent,
     staysBusy: async (session) => {

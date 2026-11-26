@@ -64,8 +64,8 @@ function permissionDecision(decision: object): object {
  * alongside each other: each has receivers, folders and tmux sockets of its own.
  */
 function agreeOn(title: string, scenario: Scenario): void {
-  it.concurrent(title, async ({ onTestFinished }) => {
-    const { real, fake } = await hooksOfBothAgents(scenario, onTestFinished);
+  it.concurrent(title, async ({ onTestFinished, task }) => {
+    const { real, fake } = await hooksOfBothAgents(scenario, onTestFinished, task.meta);
     expect(fake).toEqual(real);
   });
 }

@@ -1,6 +1,12 @@
 import { expect, it } from 'vitest';
 import { turn } from '../support/fake-api/index.ts';
-import { type ContractAgent, inputBoxText, startContractAgent, submitPrompt } from './harness.ts';
+import {
+  type ContractAgent,
+  inputBoxText,
+  startContractAgent,
+  submitInputBox,
+  submitPrompt,
+} from './harness.ts';
 
 /** Typed once every key before it was read, it shows where the early keys left the input box. */
 const BARRIER = '.';
@@ -25,9 +31,8 @@ it('4 — Keys typed before SessionStart keep their text, not surely their Enter
 
   if (outcome === 'kept') {
     expect(agent.hooks.events()).toEqual(['SessionStart']);
-    await session.press('Enter');
-    const submitted = await agent.hook('UserPromptSubmit');
-    expect(submitted.payload.prompt).toMatch(KEPT_IN_THE_BOX);
+    const { hook } = await submitInputBox(agent, session, (box) => KEPT_IN_THE_BOX.test(box));
+    expect(hook.payload.prompt).toMatch(KEPT_IN_THE_BOX);
   } else {
     const submitted = await agent.hook('UserPromptSubmit');
     expect(submitted.payload.prompt).toBe('typed too early');
@@ -36,7 +41,7 @@ it('4 — Keys typed before SessionStart keep their text, not surely their Enter
   }
   await agent.hook('Stop');
 
-  const late = await submitPrompt(agent, session, 'typed after the start');
+  const { hook: late } = await submitPrompt(agent, session, 'typed after the start');
   await agent.hook('Stop');
 
   expect(late.payload.prompt).toBe('typed after the start');
@@ -72,7 +77,7 @@ it('5 — A submitted prompt fires UserPromptSubmit', async () => {
   const session = await agent.startNew({ prompt: 'given on the command line' });
   const given = await agent.hook('UserPromptSubmit');
   await agent.hook('Stop');
-  const typed = await submitPrompt(agent, session, 'typed into the terminal');
+  const { hook: typed } = await submitPrompt(agent, session, 'typed into the terminal');
   await agent.hook('Stop');
 
   for (const [hook, prompt] of [

@@ -11,7 +11,7 @@ const RESULTS_FILE = fileURLToPath(new URL('../../test-results/contract.json', i
 /**
  * A vitest reporter that writes what a run of the contract suite found: the
  * agent's version, read once from the pinned binary, and each behavior's
- * number, title and outcome. A reporter, because it sees every test of every
+ * number, title and outcome, and the Enters the agent lost. A reporter, because it sees every test of every
  * file once the run has ended, in the one process that outlives them: a
  * failed, timed-out or crashed test is recorded like any other, and no two
  * files write the results at the same time.
@@ -22,6 +22,7 @@ export default class ContractResultsReporter implements Reporter {
       Array.from(module.children.allTests(), (test) => ({
         name: test.name,
         state: test.result().state,
+        lostEnters: test.meta().lostEnters ?? [],
       })),
     );
     const results = contractResults(pinnedAgentVersion(), new Date(), tests);

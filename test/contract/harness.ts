@@ -1,5 +1,5 @@
 import { setTimeout as pause } from 'node:timers/promises';
-import { expect, onTestFinished } from 'vitest';
+import { expect, onTestFinished, type RunnerTestCase, type TaskMeta, TestRunner } from 'vitest';
 import { eventually } from '../support/eventually.ts';
 import { type FakeApi, type LoggedRequest, startFakeApi } from '../support/fake-api/index.ts';
 import {
@@ -14,6 +14,7 @@ import {
   startRealAgentRunner,
 } from '../support/real-agent/runner.ts';
 import { runAll } from '../support/run-all.ts';
+import type { LostEnters } from './results.ts';
 
 /**
  * The real agent as one contract test has it: a scripted API, a hook
@@ -71,6 +72,12 @@ export interface ContractAgent {
    * @param signal - `SIGTERM`, on which the agent exits by itself, or `SIGKILL`.
    */
   end(session: AgentSession, signal: 'SIGTERM' | 'SIGKILL'): Promise<void>;
+  /**
+   * Keeps, in the test's results, the Enters a submit pressed before the one
+   * the agent took: no failure, since the driver absorbs a lost Enter, but
+   * what a run should show.
+   */
+  noteLostEnters(lost: LostEnters): void;
 }
 
 /** Registers what runs when the test finishes, passed or failed. */
@@ -80,6 +87,11 @@ export type WhenFinished = (finish: () => Promise<void>) => void;
 export interface ContractAgentOptions {
   /** Registers the test's end; the running test's by default. */
   readonly whenFinished?: WhenFinished;
+  /**
+   * The test's metadata, where the run's results read what the test noted;
+   * the running test's by default.
+   */
+  readonly meta?: TaskMeta;
   /** How long a wait may last before it fails, in milliseconds. */
   readonly patienceMs?: number;
   /**
@@ -88,15 +100,6 @@ export interface ContractAgentOptions {
    */
   readonly permissions?: object;
 }
-
-/**
- * How long an Enter is given to submit before the box is looked at again: a
- * few seconds, as the driver gives it, far more than a taken Enter needs.
- */
-const SUBMIT_PATIENCE_MS = 3000;
-
-/** How many times Enter is pressed on a prompt that stays in the box, as the driver does. */
-const ENTER_PRESSES = 3;
 
 /** Far longer than the agent takes (a start is under a second), short enough to fail with the reason. */
 const PATIENCE_MS = 15_000;
@@ -132,6 +135,7 @@ export async function startContractAgent(
 ): Promise<ContractAgent> {
   const {
     whenFinished = onTestFinished,
+    meta = runningTestMeta(),
     patienceMs = PATIENCE_MS,
     permissions = NO_ASK_FOR_SHELL_COMMANDS,
   } = options;
@@ -154,7 +158,13 @@ export async function startContractAgent(
   });
   closers.push(() => runner.close());
   finalChecks.push(() => expect(runner.leftOutsideRoot()).toEqual([]));
-  return { api, ...drivenAgent({ api, hooks, launcher: runner, patienceMs }) };
+  return { api, ...drivenAgent({ api, hooks, launcher: runner, meta, patienceMs }) };
+}
+
+function runningTestMeta(): TaskMeta {
+  const test = TestRunner.getCurrentTest<RunnerTestCase | undefined>();
+  if (test === undefined) throw new Error('No test runs: give the meta of the test.');
+  return test.meta;
 }
 
 /** An agent's sessions as a test drives them, whatever the agent talks to. */
@@ -171,6 +181,8 @@ export interface DrivenAgentParts {
   readonly hooks: HookReceiver;
   /** What launches its sessions. */
   readonly launcher: Launcher;
+  /** The test's metadata, where the run's results read what the test noted. */
+  readonly meta: TaskMeta;
   /** How long a wait may last before it fails, in milliseconds; as {@link ContractAgentOptions} by default. */
   readonly patienceMs?: number;
 }
@@ -183,7 +195,7 @@ export interface DrivenAgentParts {
  * @returns The agent, with nothing launched yet.
  */
 export function drivenAgent(parts: DrivenAgentParts): DrivenAgent {
-  const { hooks, launcher } = parts;
+  const { hooks, launcher, meta } = parts;
   const sessions = watchedSessions();
   const waits = failFastWaits({ ...parts, sessions, patienceMs: parts.patienceMs ?? PATIENCE_MS });
   const launched = async (launching: Promise<AgentSession>) => sessions.watch(await launching);
@@ -200,6 +212,9 @@ export function drivenAgent(parts: DrivenAgentParts): DrivenAgent {
       sessions.expectEndOf(session);
       process.kill(await session.processId(), signal);
       await waits.waitFor(`the session ${session.name} to be gone`, session.ended);
+    },
+    noteLostEnters: (lost) => {
+      meta.lostEnters = [...(meta.lostEnters ?? []), lost];
     },
   };
 }
@@ -394,53 +409,128 @@ export function inputBoxText(screen: string): string | undefined {
 }
 
 /**
- * Types a prompt into an idle session and submits it as the driver does:
- * Enter, then a few seconds for the `UserPromptSubmit` that carries it; when
- * none came and the prompt is still in the input box, Enter again, up to
- * three times. The agent has been seen to miss an Enter, so a submit is
- * confirmed, never assumed.
+ * How long an Enter is given to submit before the box is looked at again: a
+ * few seconds, as the driver gives it, far more than a taken Enter needs.
+ */
+const SUBMIT_PATIENCE_MS = 3000;
+
+/** How many times Enter is pressed on a prompt that stays in the box, as the driver does. */
+const ENTER_PRESSES = 3;
+
+/** What a submit gave. */
+export interface Submitted {
+  /** The `UserPromptSubmit` hook, which carries the prompt. */
+  readonly hook: ReceivedHook;
+  /** How many Enters it took: more than one when the agent lost one. */
+  readonly enters: number;
+}
+
+/**
+ * Types a prompt into an idle session and submits it as the driver does,
+ * with {@link submitInputBox}.
  *
  * @param agent - The agent, real or fake, whose hooks tell of the submit.
  * @param session - An idle session, its input box empty.
  * @param prompt - The prompt, on one line.
- * @returns The `UserPromptSubmit` hook, which carries the prompt.
- * @throws Error when the prompt stays in the box after the last Enter, or
- * as every wait of the agent's.
+ * @returns The hook that carries the prompt, and the Enters it took.
+ * @throws Error as {@link submitInputBox}.
  */
 export async function submitPrompt(
   agent: DrivenAgent,
   session: AgentSession,
   prompt: string,
-): Promise<ReceivedHook> {
+): Promise<Submitted> {
   await session.type(prompt);
-  const submitted = agent.hook('UserPromptSubmit');
-  // Awaited below; until then, only raced against the time an Enter is given.
-  submitted.catch(() => {});
+  const submitted = await submitInputBox(agent, session, (box) => sameText(box, prompt));
+  expect(submitted.hook.payload.prompt).toBe(prompt);
+  return submitted;
+}
+
+/**
+ * Submits what an idle session's input box holds as the driver does: Enter,
+ * then a few seconds for the `UserPromptSubmit`; when none came and the box
+ * still holds the text, Enter again, up to three times. The agent has been
+ * seen to miss an Enter, so a submit is confirmed, never assumed. Each Enter
+ * before the one taken is noted in the test's results.
+ *
+ * @param agent - The agent, real or fake, whose hooks tell of the submit.
+ * @param session - An idle session, the text in its input box.
+ * @param stillHolds - Tells whether the box, as {@link inputBoxText} gives
+ * it, still holds the text: once it does not, the text was taken.
+ * @returns The hook that carries the text, and the Enters it took.
+ * @throws Error when the box still holds the text after the last Enter, or
+ * as every wait of the agent's.
+ */
+export async function submitInputBox(
+  agent: DrivenAgent,
+  session: AgentSession,
+  stillHolds: (box: string) => boolean,
+): Promise<Submitted> {
+  // Claimed once, before the first Enter: whichever Enter is taken, its hook is this one. It
+  // never fails and keeps no timer, so nothing runs on when the submit throws.
+  const submitted = agent.hooks.next('UserPromptSubmit');
   for (let enters = 1; ; enters++) {
     await session.press('Enter');
-    if (await settlesWithin(submitted, SUBMIT_PATIENCE_MS)) break;
-    // Out of the box, the prompt was taken and its hook is on its way: another Enter would be the agent's next key.
-    if (inputBoxText(await session.screen()) !== prompt) break;
+    // Each Enter has a few seconds of its own; the agent's wait adds only its failing fast.
+    const hook = await waitAWhile(
+      agent,
+      `a UserPromptSubmit after Enter ${enters}`,
+      submitted,
+      SUBMIT_PATIENCE_MS,
+    );
+    if (hook !== undefined) return noted(agent, { hook, enters });
+    const box = inputBoxText(await session.screen());
+    if (box === undefined || !stillHolds(box)) {
+      // Out of the box, the text was taken and its hook is on its way: another Enter would be
+      // the agent's next key. The hook gets the agent's whole patience from now.
+      const late = await agent.waitFor('the UserPromptSubmit of a text the box let go', submitted);
+      return noted(agent, { hook: late, enters });
+    }
     if (enters === ENTER_PRESSES) {
       throw new Error(
-        `The prompt "${prompt}" is still in the input box after ${ENTER_PRESSES} Enters, ${SUBMIT_PATIENCE_MS} ms apart, and no UserPromptSubmit came.`,
+        `The input box still holds ${JSON.stringify(box)} after ${ENTER_PRESSES} Enters, ${SUBMIT_PATIENCE_MS} ms apart, and no UserPromptSubmit came.`,
       );
     }
   }
-  const hook = await submitted;
-  expect(hook.payload.prompt).toBe(prompt);
-  return hook;
 }
 
-/** Tells whether a promise settles, either way, within a time. */
-async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+function noted(agent: DrivenAgent, submitted: Submitted): Submitted {
+  if (submitted.enters > 1) {
+    agent.noteLostEnters({
+      prompt: String(submitted.hook.payload.prompt),
+      lost: submitted.enters - 1,
+    });
+  }
+  return submitted;
+}
+
+/**
+ * Tells whether an input box holds a text, whatever whitespace it drew: a
+ * text wider than the box is wrapped onto lines, at a space or inside a
+ * word, so the box's spaces and line breaks are not surely the text's.
+ */
+function sameText(box: string, text: string): boolean {
+  const bare = (drawn: string) => drawn.replace(/\s+/gu, '');
+  return bare(box) === bare(text);
+}
+
+/**
+ * Waits as the agent does, but only for a while.
+ *
+ * @returns What the promise fulfilled with, or `undefined` when it is later.
+ * @throws Error as every wait of the agent's; no timer outlives it either way.
+ */
+async function waitAWhile<T>(
+  agent: DrivenAgent,
+  what: string,
+  promise: Promise<T>,
+  ms: number,
+): Promise<T | undefined> {
   const timeout = new AbortController();
-  const settled = promise.then(
-    () => true,
-    () => true,
-  );
-  const late = pause(ms, false, { signal: timeout.signal }).catch(() => false);
-  const outcome = await Promise.race([settled, late]);
-  timeout.abort();
-  return outcome;
+  const late = pause(ms, undefined, { signal: timeout.signal }).catch(() => undefined);
+  try {
+    return await agent.waitFor(what, Promise.race([promise, late]));
+  } finally {
+    timeout.abort();
+  }
 }

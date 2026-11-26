@@ -97,11 +97,14 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   the `UserPromptSubmit` that carries the prompt, Enter again while the
   prompt stays in the input box, up to three times. The agent has been seen
   to miss an Enter, more so under load; a submit is confirmed, never
-  assumed. Only a test of what an Enter does (behavior 4: keys typed before
-  `SessionStart` keep their text, not surely their Enter) presses it bare.
+  assumed. Text already in the box is submitted the same way with
+  `submitInputBox()`. Only a test of what an Enter does (behavior 4: keys
+  typed before `SessionStart` keep their text, not surely their Enter)
+  presses it bare.
 - Each run writes `test-results/contract.json` (git-ignored; CI keeps it as
   an artifact): the agent's version, the date, each behavior's number, title
-  and outcome.
+  and outcome, and every Enter the agent lost in a submit (`lostEnters`: the
+  test, the text, how many), which fails no test.
 
 ## The fake agent
 
