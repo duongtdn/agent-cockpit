@@ -10,8 +10,8 @@ export interface ObservedHook {
 
 /** What a scenario gives each agent its own of: where one of them is expected, the other's would be wrong. */
 export interface OwnValues {
-  /** The id the session was launched with. */
-  readonly sessionId: string;
+  /** The ids the scenario's sessions were launched with, in the order of their launches. */
+  readonly sessionIds: readonly string[];
   /** The folder the session was launched in. */
   readonly workFolder: string;
 }
@@ -36,10 +36,18 @@ export const VALUES_THAT_DIFFER_BY_NATURE: Readonly<Record<string, Nature>> = {
   tool_use_id: 'recurrence',
   turn_id: 'recurrence',
   message_id: 'recurrence',
-  // How long a tool ran.
+  // A subagent's id, and the files an agent keeps for it under its own folders.
+  agent_id: 'recurrence',
+  agentId: 'recurrence',
+  agent_transcript_path: 'recurrence',
+  outputFile: 'recurrence',
+  // How long a tool or a task ran.
   duration_ms: 'type',
   // The full name the real agent resolves the launch's model to; the fake agent has no model.
   model: 'type',
+  resolvedModel: 'type',
+  // The tokens a subagent's model counted.
+  subagent_tokens: 'type',
   // What a resumed conversation costs to go on with: a clock, and counts of the model's tokens.
   seconds_since_last_response: 'type',
   context_tokens: 'type',
@@ -76,14 +84,64 @@ function inComparedOrder(hooks: readonly ObservedHook[]): ObservedHook[] {
   return ordered;
 }
 
-/** Names the values that come back, by field: the first of a field is 1, the next new one 2. */
-function recurrenceNamer(): (field: string, value: string) => string {
-  const seen = new Map<string, string[]>();
-  return (field, value) => {
-    const values = seen.get(field) ?? [];
-    if (!values.includes(value)) seen.set(field, [...values, value]);
-    return `<${field} ${(seen.get(field) as string[]).indexOf(value) + 1}>`;
-  };
+/**
+ * Names the values an agent draws, the values of the fields of a
+ * {@link Nature} `recurrence`: the first value of a field is `<field 1>`,
+ * the next new one `<field 2>`. They are named in the order the hooks are
+ * compared in, each payload's fields in the order of their names, so that
+ * two agents that send them in another order of keys name them alike.
+ */
+function drawnValues(hooks: readonly ObservedHook[]): Map<string, string> {
+  const names = new Map<string, string>();
+  const counts = new Map<string, number>();
+  function visit(field: string, value: unknown): void {
+    if (typeof value === 'string') {
+      if (VALUES_THAT_DIFFER_BY_NATURE[field] !== 'recurrence' || names.has(value)) return;
+      const count = (counts.get(field) ?? 0) + 1;
+      counts.set(field, count);
+      names.set(value, `<${field} ${count}>`);
+    } else if (Array.isArray(value)) {
+      for (const item of value) visit(field, item);
+    } else if (typeof value === 'object' && value !== null) {
+      for (const [inner, innerValue] of Object.entries(value).sort(([a], [b]) =>
+        a < b ? -1 : 1,
+      )) {
+        visit(inner, innerValue);
+      }
+    }
+  }
+  for (const hook of hooks) visit('', hook.payload);
+  return names;
+}
+
+function escapedForPattern(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Gives what names the drawn values wherever a text holds them, a path or
+ * a message too: each where it stands as a word, the longest first.
+ */
+function namerOfDrawnValues(names: ReadonlyMap<string, string>): (text: string) => string {
+  const drawn = [...names.keys()].sort((a, b) => b.length - a.length);
+  if (drawn.length === 0) return (text) => text;
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9])(?:${drawn.map(escapedForPattern).join('|')})(?![A-Za-z0-9])`,
+    'g',
+  );
+  return (text) => text.replace(pattern, (value) => names.get(value) as string);
+}
+
+/** A field written as a tag inside a text, as an agent's prompt of its own writes them. */
+const TAGGED_FIELD = /<([a-z_-]+)>([^<]*)<\/\1>/g;
+
+/** Masks, inside a text, the fields written as tags whose value differs by its type alone. */
+function maskTaggedFields(text: string): string {
+  return text.replace(TAGGED_FIELD, (tagged, tag: string) =>
+    VALUES_THAT_DIFFER_BY_NATURE[tag.replaceAll('-', '_')] === 'type'
+      ? `<${tag}><differs by nature></${tag}>`
+      : tagged,
+  );
 }
 
 /**
@@ -97,16 +155,21 @@ function recurrenceNamer(): (field: string, value: string) => string {
  * kind and every key of its payload. A value is kept as it is, unless it
  * is the agent's own session id or work folder, which is named as such, or
  * the value of a field of {@link VALUES_THAT_DIFFER_BY_NATURE}, which is
- * replaced by where it recurs or by its type.
+ * replaced by where it recurs or by its type. The same holds inside a text:
+ * a value drawn by the agent is named wherever it stands (an id in a
+ * message, a file in a path), and a field written as a tag whose value
+ * differs by its type is masked.
  *
  * @param hooks - The hooks, in the order of arrival.
- * @param own - The session id and the work folder of the agent that sent them.
+ * @param own - The session ids and the work folder of the agent that sent them.
  * @returns The hooks, for `toEqual`.
  */
 export function comparable(hooks: readonly ObservedHook[], own: OwnValues): ObservedHook[] {
-  const named = recurrenceNamer();
+  const ordered = inComparedOrder(hooks);
+  const drawn = drawnValues(ordered);
+  const named = namerOfDrawnValues(drawn);
   const ownNames = new Map([
-    [own.sessionId, '<the session id>'],
+    ...own.sessionIds.map((id, index): [string, string] => [id, `<the session id ${index + 1}>`]),
     [own.workFolder, '<the work folder>'],
   ]);
 
@@ -115,8 +178,7 @@ export function comparable(hooks: readonly ObservedHook[], own: OwnValues): Obse
       ? VALUES_THAT_DIFFER_BY_NATURE[field]
       : undefined;
     if (nature === 'type') return `<${typeof value}>`;
-    if (nature === 'recurrence' && typeof value === 'string') return named(field, value);
-    if (typeof value === 'string') return ownNames.get(value) ?? value;
+    if (typeof value === 'string') return ownNames.get(value) ?? maskTaggedFields(named(value));
     if (Array.isArray(value)) return value.map((item) => comparedValue(field, item));
     if (typeof value === 'object' && value !== null) return fieldsOf(value);
     return value;
@@ -128,7 +190,7 @@ export function comparable(hooks: readonly ObservedHook[], own: OwnValues): Obse
     );
   }
 
-  return inComparedOrder(hooks).map(({ event, via, payload }) => ({
+  return ordered.map(({ event, via, payload }) => ({
     event,
     via,
     payload: fieldsOf(payload),

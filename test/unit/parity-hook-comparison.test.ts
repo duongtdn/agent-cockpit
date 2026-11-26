@@ -5,8 +5,8 @@ import {
   type OwnValues,
 } from '../support/parity/hook-comparison.ts';
 
-const real: OwnValues = { sessionId: 'real-session', workFolder: '/tmp/real/work' };
-const fake: OwnValues = { sessionId: 'fake-session', workFolder: '/tmp/fake/work' };
+const real: OwnValues = { sessionIds: ['real-session'], workFolder: '/tmp/real/work' };
+const fake: OwnValues = { sessionIds: ['fake-session'], workFolder: '/tmp/fake/work' };
 
 function hook(
   event: string,
@@ -20,12 +20,12 @@ describe('two agents agree', () => {
   it('on a session id and a work folder that are each their own, wherever they stand', () => {
     const suggestions = (folder: string) => [{ type: 'addDirectories', directories: [folder] }];
     const ofReal = hook('PermissionRequest', {
-      session_id: real.sessionId,
+      session_id: real.sessionIds[0],
       cwd: real.workFolder,
       permission_suggestions: suggestions(real.workFolder),
     });
     const ofFake = hook('PermissionRequest', {
-      session_id: fake.sessionId,
+      session_id: fake.sessionIds[0],
       cwd: fake.workFolder,
       permission_suggestions: suggestions(fake.workFolder),
     });
@@ -41,6 +41,57 @@ describe('two agents agree', () => {
 
     expect(comparable(turn('/fake.jsonl', 'p-9', 'toolu_fake_1'), fake)).toEqual(
       comparable(turn('/real.jsonl', 'c3d1', 'toolu_01'), real),
+    );
+  });
+
+  it('on the ids of every session launched, by the order of their launches', () => {
+    const own = { sessionIds: ['first', 'second'], workFolder: '/work' };
+    const other = { sessionIds: ['one', 'two'], workFolder: '/work' };
+
+    expect(comparable([hook('SessionStart', { session_id: 'second' })], own)).toEqual(
+      comparable([hook('SessionStart', { session_id: 'two' })], other),
+    );
+    expect(comparable([hook('SessionStart', { session_id: 'first' })], own)).not.toEqual(
+      comparable([hook('SessionStart', { session_id: 'two' })], other),
+    );
+  });
+
+  it('on an id an agent drew, wherever a text holds it, whatever the order of the keys', () => {
+    const launched = (agent: string, file: string, call: string, reversed: boolean) => {
+      const response = { agentId: agent, outputFile: file };
+      return [
+        hook('SubagentStart', { agent_id: agent }),
+        hook(
+          'PostToolUse',
+          reversed
+            ? { tool_response: response, tool_use_id: call }
+            : { tool_use_id: call, tool_response: response },
+        ),
+        hook('UserPromptSubmit', {
+          prompt: `<task-id>${agent}</task-id>\n<tool-use-id>${call}</tool-use-id>\n<output-file>${file}</output-file>`,
+        }),
+      ];
+    };
+
+    expect(
+      comparable(launched('a1fake', '/tmp/f/a1fake.output', 'toolu_fake_1', true), fake),
+    ).toEqual(comparable(launched('a9real', '/tmp/r/a9real.output', 'toolu_01', false), real));
+  });
+
+  it('on a field of one type written as a tag inside a text', () => {
+    const notification = (ms: number, tokens: number) =>
+      hook('UserPromptSubmit', {
+        prompt: `<usage><subagent_tokens>${tokens}</subagent_tokens><tool_uses>1</tool_uses><duration_ms>${ms}</duration_ms></usage>`,
+      });
+
+    expect(comparable([notification(3, 0)], fake)).toEqual(
+      comparable([notification(1388, 15)], real),
+    );
+    expect(comparable([notification(3, 0)], fake)).not.toEqual(
+      comparable(
+        [{ ...notification(3, 0), payload: { prompt: '<tool_uses>2</tool_uses>' } }],
+        real,
+      ),
     );
   });
 
@@ -96,7 +147,7 @@ describe('two agents differ', () => {
   it("on a session id or a folder that is not the agent's own", () => {
     expectDifferent(
       [hook('Stop', { session_id: 'another-session' })],
-      [hook('Stop', { session_id: real.sessionId })],
+      [hook('Stop', { session_id: real.sessionIds[0] })],
     );
     expectDifferent(
       [hook('Stop', { cwd: '/elsewhere' })],

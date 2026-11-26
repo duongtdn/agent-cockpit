@@ -2,9 +2,12 @@ import { expect, type TaskMeta } from 'vitest';
 import type { AgentSession } from '../support/agent-session.ts';
 import { startFakeAgentRunner } from '../support/fake-agent/runner.ts';
 import type { Turn } from '../support/fake-agent/script.ts';
+import { holdTasks, releaseTasks } from '../support/fake-agent/tasks.ts';
+import type { FakeApi } from '../support/fake-api/index.ts';
 import { startHookReceiver } from '../support/hooks/hook-receiver.ts';
-import { apiAnswersFor } from '../support/parity/api-answers.ts';
+import { apiAnswersFor, subagentAnswersFor } from '../support/parity/api-answers.ts';
 import { comparable, type ObservedHook } from '../support/parity/hook-comparison.ts';
+import type { RecipePiece } from '../support/real-agent/environment.ts';
 import { runAll } from '../support/run-all.ts';
 import {
   type DrivenAgent,
@@ -22,6 +25,11 @@ export interface ParityAgent extends DrivenAgent {
    * answer. Nothing a hook or a transcript says marks that moment.
    */
   staysBusy(session: AgentSession): Promise<void>;
+  /**
+   * Lets the background task the script started do its work: until then
+   * its subagent waits, on either agent, as one whose model has not answered.
+   */
+  releaseTask(): Promise<void>;
 }
 
 /** Something to play once on each agent, for what their hooks said to be compared. */
@@ -33,6 +41,11 @@ export interface Scenario {
   readonly script: readonly Turn[];
   /** The `permissions` of the sessions' settings; by default every shell command runs without an ask. */
   readonly permissions?: object;
+  /**
+   * The pieces of the start-up recipe left out of both agents'
+   * configuration, each for the dialog it spares; none by default.
+   */
+  readonly leftOutOfRecipe?: readonly RecipePiece[];
   /**
    * Drives the agent: launches, prompts, keys, answers to its hooks, and
    * the end. It awaits every hook it expects, so that all of them arrived
@@ -65,12 +78,14 @@ export async function hooksOfBothAgents(
   whenFinished: WhenFinished,
   meta: TaskMeta,
 ): Promise<BothAgentsHooks> {
-  const playedOn = async (agent: Promise<ParityAgent>) => played(scenario, await agent);
-  const [real, fake] = await Promise.all([
-    playedOn(realAgent(scenario, whenFinished, meta)),
-    playedOn(fakeAgent(scenario, whenFinished, meta)),
+  const real = await realAgent(scenario, whenFinished, meta);
+  // The fake agent is told the real one's API, which a failure names: it never calls it.
+  const fake = await fakeAgent(scenario, real.api.baseUrl, whenFinished, meta);
+  const [realHooks, fakeHooks] = await Promise.all([
+    played(scenario, real),
+    played(scenario, fake),
   ]);
-  return { real, fake };
+  return { real: realHooks, fake: fakeHooks };
 }
 
 /** Plays a scenario on an agent, and gives what its receiver got since. */
@@ -86,28 +101,52 @@ async function played(scenario: Scenario, agent: ParityAgent): Promise<ObservedH
     startNew: (options) => remembered(agent.startNew(options)),
     resume: (sessionId, options) => remembered(agent.resume(sessionId, options)),
   });
-  const [first] = launched;
-  if (first === undefined) throw new Error('The scenario launched no session.');
-  return comparable(agent.hooks.received, { sessionId: first.id, workFolder: agent.workFolder });
+  if (launched.length === 0) throw new Error('The scenario launched no session.');
+  const sessionIds = [...new Set(launched.map((session) => session.id))];
+  return comparable(agent.hooks.received, { sessionIds, workFolder: agent.workFolder });
 }
+
+/**
+ * The real agent never tries a request again: a failure the scripted API
+ * answers ends the turn at once, as the fake agent plays the end of the
+ * retries.
+ */
+const NO_RETRIES = { CLAUDE_CODE_MAX_RETRIES: '0' };
 
 async function realAgent(
   scenario: Scenario,
   whenFinished: WhenFinished,
   meta: TaskMeta,
-): Promise<ParityAgent> {
-  const agent = await startContractAgent({ ...permissionsOf(scenario), whenFinished, meta });
+): Promise<ParityAgent & { readonly api: FakeApi }> {
+  const agent = await startContractAgent({
+    ...permissionsOf(scenario),
+    runner: { leftOutOfRecipe: scenario.leftOutOfRecipe ?? [], variables: NO_RETRIES },
+    whenFinished,
+    meta,
+  });
   agent.api.script(...apiAnswersFor(scenario.script));
+  for (const { prompt, answers } of subagentAnswersFor(scenario.script)) {
+    agent.api.scriptConversation(prompt, ...answers);
+  }
+  let tasksReleased = 0;
   return {
     ...agent,
     staysBusy: async () => {
       await agent.waitFor('the request the API holds', agent.api.heldRequest());
+    },
+    // A scenario with a task holds no other request: the task's are the only ones held.
+    releaseTask: async () => {
+      tasksReleased += 1;
+      (
+        await agent.waitFor('the task the API holds', agent.api.heldRequest(tasksReleased))
+      ).release();
     },
   };
 }
 
 async function fakeAgent(
   scenario: Scenario,
+  apiBaseUrl: string,
   whenFinished: WhenFinished,
   meta: TaskMeta,
 ): Promise<ParityAgent> {
@@ -119,14 +158,18 @@ async function fakeAgent(
   const launcher = await startFakeAgentRunner({
     settings: sessionSettings(hooks, permissionsOf(scenario).permissions),
     script: scenario.script,
+    leftOutOfRecipe: scenario.leftOutOfRecipe ?? [],
+    apiBaseUrl,
   });
   closers.push(() => launcher.close());
+  holdTasks(launcher.workFolder);
   const agent = drivenAgent({ hooks, launcher, meta });
   return {
     ...agent,
     staysBusy: async (session) => {
       await agent.eventually(async () => expect(await session.screen()).toContain(STAYS_BUSY));
     },
+    releaseTask: async () => releaseTasks(launcher.workFolder),
   };
 }
 

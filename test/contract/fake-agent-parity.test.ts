@@ -1,8 +1,13 @@
+import { execFile } from 'node:child_process';
+import { setTimeout as pause } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
 import type { AgentSession } from '../support/agent-session.ts';
-import type { Question, Step } from '../support/fake-agent/script.ts';
+import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
+import type { Question, ReplyStep, ToolStep } from '../support/fake-agent/script.ts';
 import { INTERRUPTED } from '../support/fake-agent/transcript.ts';
-import { submitPrompt, userTexts } from './harness.ts';
+import { pinnedAgentBinary } from '../support/real-agent/binary.ts';
+import { submitInputBox, submitPrompt, userTexts } from './harness.ts';
 import { hooksOfBothAgents, type ParityAgent, type Scenario } from './parity-agents.ts';
 
 /**
@@ -12,7 +17,7 @@ import { hooksOfBothAgents, type ParityAgent, type Scenario } from './parity-age
  */
 
 /** A shell command that needs nothing and prints nothing, with what the real agent says of it once it ran. */
-function touch(file: string): Step {
+function touch(file: string): ToolStep {
   return {
     do: 'tool',
     name: 'Bash',
@@ -38,7 +43,7 @@ const fruit: Question = {
   multiSelect: false,
 };
 
-function reply(text: string): Step {
+function reply(text: string): ReplyStep {
   return { do: 'reply', text };
 }
 
@@ -53,6 +58,94 @@ async function terminated(agent: ParityAgent, session: AgentSession): Promise<vo
   await agent.end(session, 'SIGTERM');
   await agent.hook('SessionEnd');
   await agent.hook('SessionEnd');
+}
+
+/** Waits until a session shows a text, a start-up dialog's among them. */
+async function shows(agent: ParityAgent, session: AgentSession, text: string): Promise<void> {
+  await agent.eventually(async () => expect(await session.screen()).toContain(text));
+}
+
+const TRUST_DIALOG = 'Accessing workspace:';
+const BYPASS_WARNING = 'WARNING: Claude Code running in Bypass Permissions mode';
+const KEY_QUESTION = 'Do you want to use this API key?';
+
+/** How long a key on a start-up dialog is given to be taken before it is pressed again. */
+const DIALOG_KEY_PATIENCE_MS = 1000;
+const DIALOG_KEY_PRESSES = 3;
+const SCREEN_POLL_MS = 20;
+
+/** What a session shows, or nothing once it is gone. */
+async function screenOrNothing(session: AgentSession): Promise<string | undefined> {
+  if (!(await session.isLive())) return undefined;
+  return session.screen().catch(() => undefined);
+}
+
+/**
+ * Presses a key on a start-up dialog until it is taken, as the screen
+ * tells: the real agent's dialog was seen to drop the keys pressed in the
+ * moment after it showed, as its input box drops an early Enter.
+ *
+ * @param taken - Tells from the screen, or from its absence once the session is gone, that the key was taken.
+ */
+async function pressOnDialog(
+  session: AgentSession,
+  key: string,
+  taken: (screen: string | undefined) => boolean,
+): Promise<void> {
+  for (let presses = 1; presses <= DIALOG_KEY_PRESSES; presses++) {
+    await session.press(key);
+    const deadline = Date.now() + DIALOG_KEY_PATIENCE_MS;
+    while (Date.now() < deadline) {
+      if (taken(await screenOrNothing(session))) return;
+      await pause(SCREEN_POLL_MS);
+    }
+  }
+  throw new Error(`The dialog did not take ${key} in ${DIALOG_KEY_PRESSES} presses.`);
+}
+
+/**
+ * How long the selection of a start-up dialog must stay before it is
+ * chosen: seen of 2.1.332, a dialog draws itself again about 150 ms after
+ * it showed, its selection back on its first option.
+ */
+const SELECTION_SETTLES_MS = 500;
+
+/** Tells whether a selection stays on screen for a while, or stops as soon as it is gone. */
+async function stays(session: AgentSession, selected: RegExp): Promise<boolean> {
+  const until = Date.now() + SELECTION_SETTLES_MS;
+  while (Date.now() < until) {
+    if (!selected.test((await screenOrNothing(session)) ?? '')) return false;
+    await pause(SCREEN_POLL_MS);
+  }
+  return true;
+}
+
+/** Selects a start-up dialog's "Yes", once it stays selected, and chooses it. */
+async function answerYes(
+  session: AgentSession,
+  dialog: string,
+  move: 'Up' | 'Down',
+): Promise<void> {
+  const yes = /❯ Yes/u;
+  for (let tries = 1; ; tries++) {
+    await pressOnDialog(session, move, (screen) => yes.test(screen ?? ''));
+    if (await stays(session, yes)) break;
+    if (tries === DIALOG_KEY_PRESSES) throw new Error(`The dialog did not keep "Yes" selected.`);
+  }
+  await pressOnDialog(session, 'Enter', (screen) => !screen?.includes(dialog));
+}
+
+/** Leaves at a start-up dialog with a key, and waits until the session is gone. */
+async function leaveAt(agent: ParityAgent, session: AgentSession, key: string): Promise<void> {
+  const left = agent.exits(session);
+  await pressOnDialog(session, key, (screen) => screen === undefined);
+  await left;
+}
+
+/** Runs `/compact` as a person types it, and waits for the hook that tells it was taken. */
+async function compactCommand(agent: ParityAgent, session: AgentSession): Promise<void> {
+  await session.type('/compact');
+  await submitInputBox(agent, session, (box) => box.trim() === '/compact', 'PreCompact');
 }
 
 function permissionDecision(decision: object): object {
@@ -172,4 +265,181 @@ agreeOn('the end by SIGTERM of a session that took no prompt', {
     await agent.hook('SessionStart');
     await terminated(agent, session);
   },
+});
+
+agreeOn('the trust dialog answered Yes, then the launch prompt; the next start asks nothing', {
+  script: [[reply('Trusted.')]],
+  leftOutOfRecipe: ['folder-trust'],
+  async play(agent) {
+    const session = await agent.startNew({ prompt: 'say one line' });
+    await shows(agent, session, TRUST_DIALOG);
+    await answerYes(session, TRUST_DIALOG, 'Down');
+    await agent.hook('SessionStart');
+    await turnEnded(agent);
+    await terminated(agent, session);
+    const again = await agent.startNew();
+    await agent.hook('SessionStart');
+    await terminated(agent, again);
+  },
+});
+
+agreeOn('the trust dialog left by Enter on its "No, exit", then by Esc: no hook', {
+  script: [],
+  leftOutOfRecipe: ['folder-trust'],
+  async play(agent) {
+    for (const key of ['Enter', 'Escape']) {
+      const session = await agent.startNew({ prompt: 'say one line' });
+      await shows(agent, session, TRUST_DIALOG);
+      await leaveAt(agent, session, key);
+    }
+  },
+});
+
+agreeOn('the warning of bypassPermissions left by Enter, then by Esc: SessionEnd each time', {
+  script: [],
+  async play(agent) {
+    for (const key of ['Enter', 'Escape']) {
+      const session = await agent.startNew({
+        prompt: 'say one line',
+        permissionMode: 'bypassPermissions',
+      });
+      await shows(agent, session, BYPASS_WARNING);
+      await leaveAt(agent, session, key);
+      await agent.hook('SessionEnd');
+      await agent.hook('SessionEnd');
+    }
+  },
+});
+
+agreeOn(
+  'the warning of bypassPermissions accepted, then the launch prompt; the next start warns no more',
+  {
+    script: [[reply('Accepted.')]],
+    async play(agent) {
+      const permissionMode = 'bypassPermissions';
+      const session = await agent.startNew({ prompt: 'say one line', permissionMode });
+      await shows(agent, session, BYPASS_WARNING);
+      await answerYes(session, BYPASS_WARNING, 'Down');
+      await agent.hook('SessionStart');
+      await turnEnded(agent);
+      await terminated(agent, session);
+      const again = await agent.startNew({ permissionMode });
+      await agent.hook('SessionStart');
+      await terminated(agent, again);
+    },
+  },
+);
+
+agreeOn('the trust dialog answered Yes, then the warning of bypassPermissions left', {
+  script: [],
+  leftOutOfRecipe: ['folder-trust'],
+  async play(agent) {
+    const session = await agent.startNew({
+      prompt: 'say one line',
+      permissionMode: 'bypassPermissions',
+    });
+    await shows(agent, session, TRUST_DIALOG);
+    await answerYes(session, TRUST_DIALOG, 'Down');
+    await shows(agent, session, BYPASS_WARNING);
+    await leaveAt(agent, session, 'Enter');
+    await agent.hook('SessionEnd');
+    await agent.hook('SessionEnd');
+  },
+});
+
+agreeOn('the question about the API key answered No, then a prompt fails on the login', {
+  script: [],
+  leftOutOfRecipe: ['key-approval'],
+  async play(agent) {
+    const session = await agent.startNew();
+    await shows(agent, session, KEY_QUESTION);
+    await pressOnDialog(session, 'Enter', (screen) => !screen?.includes(KEY_QUESTION));
+    await agent.hook('SessionStart');
+    await submitPrompt(agent, session, 'say one line');
+    await agent.hook('StopFailure');
+    await terminated(agent, session);
+  },
+});
+
+agreeOn('the question about the API key answered Yes, then the launch prompt', {
+  script: [[reply('With the key.')]],
+  leftOutOfRecipe: ['key-approval'],
+  async play(agent) {
+    const session = await agent.startNew({ prompt: 'say one line' });
+    await shows(agent, session, KEY_QUESTION);
+    await answerYes(session, KEY_QUESTION, 'Up');
+    await turnEnded(agent);
+    await terminated(agent, session);
+  },
+});
+
+agreeOn('turns that fail on errors of the API, one of each kind, then a turn that answers', {
+  script: [
+    [{ do: 'fail', status: 529 }],
+    [{ do: 'fail', status: 500 }],
+    [{ do: 'fail', status: 429 }],
+    [{ do: 'fail', status: 401 }],
+    [touch('a.txt'), { do: 'fail', status: 403 }],
+    [reply('Answered.')],
+  ],
+  async play(agent) {
+    const session = await agent.startNew({ prompt: 'the first' });
+    await agent.hook('UserPromptSubmit');
+    await agent.hook('StopFailure');
+    for (const prompt of ['the second', 'the third', 'the fourth', 'the fifth']) {
+      await submitPrompt(agent, session, prompt);
+      await agent.hook('StopFailure');
+    }
+    await submitPrompt(agent, session, 'the last');
+    await turnEnded(agent);
+    await terminated(agent, session);
+  },
+});
+
+agreeOn('/compact after a turn', {
+  script: [[reply('Something to compact.')], [{ do: 'compact', summary: 'The summary.' }]],
+  async play(agent) {
+    const session = await agent.startNew({ prompt: 'say one line' });
+    await turnEnded(agent);
+    await compactCommand(agent, session);
+    await agent.hook('PostCompact');
+    await terminated(agent, session);
+  },
+});
+
+agreeOn('a task in the background: Stop lists it, its calls name it, its end starts a turn', {
+  script: [
+    [
+      {
+        do: 'task',
+        description: 'Count files',
+        prompt: 'Count the files.',
+        agentType: 'general-purpose',
+        work: [touch('inner.txt'), reply('Counted.')],
+      },
+      reply('Started.'),
+    ],
+    [reply('Noted.')],
+  ],
+  async play(agent) {
+    const session = await agent.startNew({ prompt: 'start a task' });
+    await turnEnded(agent);
+    await agent.releaseTask();
+    await agent.hook('SubagentStop');
+    await turnEnded(agent);
+    await terminated(agent, session);
+  },
+});
+
+it('--version: the same line, and nothing else', async () => {
+  const run = promisify(execFile);
+  // Nothing of the person's: not their configuration folder, not their keys.
+  const environment = { env: { PATH: '/usr/bin:/bin' } };
+  const fake = fakeAgentCommand();
+  const [real, ofFake] = await Promise.all([
+    run(pinnedAgentBinary(), ['--version'], environment),
+    run(fake.command, [...fake.args, '--version'], environment),
+  ]);
+
+  expect(ofFake).toEqual(real);
 });
