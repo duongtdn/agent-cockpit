@@ -95,6 +95,7 @@ describe('package.json', () => {
     'test:integration',
     'test:coverage',
     'test:contract',
+    'test:browser',
     'check',
   ])('has the script %s', (script) => {
     expect(manifest.scripts[script]).toEqual(expect.any(String));
@@ -103,6 +104,7 @@ describe('package.json', () => {
   it('runs each suite by its project, so that no other run takes the contract suite along', () => {
     expect(manifest.scripts.test).toBe('vitest run --project unit');
     expect(manifest.scripts['test:integration']).toBe('vitest run --project integration');
+    expect(manifest.scripts['test:browser']).toBe('vitest run --project browser');
     expect(manifest.scripts['test:contract']).toMatch(/^vitest run --project contract( |$)/);
   });
 
@@ -128,11 +130,12 @@ describe('the check script and CI', () => {
     .map(([, script]) => script)
     .filter((script) => script !== 'install');
 
-  it('check typechecks, lints, tests, runs the contract suite, builds and packs', () => {
+  it('check typechecks, lints, tests, runs the browser and the contract suites, builds and packs', () => {
     expect(scriptsOfCheck).toEqual([
       'typecheck',
       'lint',
       'test:coverage',
+      'test:browser',
       'test:contract',
       'build',
       'test:pack',
@@ -141,6 +144,12 @@ describe('the check script and CI', () => {
 
   it('CI runs the steps of check, in its order', () => {
     expect(scriptsOfCi).toEqual(scriptsOfCheck);
+  });
+
+  it("CI installs Playwright's Chromium before the browser tests", () => {
+    const install = workflow.indexOf('run: pnpm exec playwright install --with-deps chromium');
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(workflow.indexOf('run: pnpm test:browser'));
   });
 
   it('CI installs with the lockfile frozen', () => {

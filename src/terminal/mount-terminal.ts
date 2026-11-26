@@ -1,0 +1,203 @@
+import { FitAddon } from '@xterm/addon-fit';
+import { type ITheme, Terminal } from '@xterm/xterm';
+import { createConnection } from '../client/connection.js';
+import { takeTokenFromLink } from '../client/token.js';
+import { CockpitError } from '../shared/cockpit-error.js';
+import { isSessionKey } from '../shared/session.js';
+import { clipboardTextOf, writeClipboard } from './clipboard.js';
+import { ruleForKey } from './key-rules.js';
+import { linkTerminal, type TerminalLink, type TerminalStatus } from './terminal-link.js';
+
+/** The OSC number by which a program asks the terminal to set the clipboard. */
+const CLIPBOARD_SEQUENCE = 52;
+
+/** What `mountTerminal` takes. */
+export interface MountTerminalOptions {
+  /**
+   * Where the app mounted the cockpit's handler: a path (`/cockpit`), resolved
+   * against the page's address, or an `http:` or `https:` URL.
+   */
+  readonly baseUrl: string;
+  /** The terminal's colors, as xterm.js names them. */
+  readonly theme?: ITheme;
+  /** The terminal's font, as CSS names it. */
+  readonly fontFamily?: string;
+  /** The font's size, in CSS pixels. */
+  readonly fontSize?: number;
+}
+
+/** A terminal mounted in the app's element. */
+export interface MountedTerminal {
+  /**
+   * Follows the connection's status: `connecting`, `open`, `closed` (the
+   * connection dropped; the terminal reconnects by itself) or `ended` (the
+   * session is gone: nothing to attach to). The handler receives the
+   * status at once, then each change.
+   *
+   * @param event - `'status'`.
+   * @param handler - Receives each status.
+   * @returns A function that removes the handler.
+   */
+  on(event: 'status', handler: (status: TerminalStatus) => void): () => void;
+  /** Gives the terminal the keyboard. */
+  focus(): void;
+  /**
+   * Closes the connection and removes the terminal from the element. The
+   * session goes on; it can be mounted again.
+   */
+  dispose(): void;
+}
+
+/**
+ * Mounts a session's terminal in an element: an xterm.js terminal of the
+ * cockpit's own, fitted to the element and following its size, attached to
+ * the session over a WebSocket that carries the app's token (taken from the
+ * page's link as the client takes it). After a drop it reconnects by itself,
+ * waiting 0.5 s, doubling up to 10 s; once the session has ended it stays
+ * `ended`.
+ *
+ * Keys: the session's driver sends its key rules when the terminal attaches
+ * (for Claude Code, Shift+Enter types a new line rather than submitting).
+ * Copy: text the session copies (the agent's own selection, tmux's) reaches
+ * the clipboard; a selection of the terminal's own, made with Shift+drag
+ * (Option+drag on macOS), is copied by Ctrl+C, which then sends nothing to
+ * the session. The page links xterm.js's style sheet,
+ * `@xterm/xterm/css/xterm.css`.
+ *
+ * @param element - Where the terminal lives; the app owns its size.
+ * @param key - The session's key.
+ * @param options - See {@link MountTerminalOptions}.
+ * @returns The mounted terminal.
+ * @throws `CockpitError` `invalid-options` when `key` is no session key or
+ * `baseUrl` is not a path or an HTTP URL.
+ */
+export function mountTerminal(
+  element: HTMLElement,
+  key: string,
+  options: MountTerminalOptions,
+): MountedTerminal {
+  checkKey(key);
+  const connection = createConnection(options.baseUrl, takeTokenFromLink());
+  const terminal = new Terminal({
+    ...looks(options),
+    // On macOS, Option forces the terminal's own selection over the mouse reports the agent asks for.
+    macOptionClickForcesSelection: true,
+  });
+  const fit = new FitAddon();
+  terminal.loadAddon(fit);
+  terminal.open(element);
+  fit.fit();
+
+  const statuses = statusEmitter();
+  const link = linkTerminal(connection, key, {
+    size: () => ({ columns: terminal.cols, rows: terminal.rows }),
+    write: (output) => terminal.write(output),
+    status: statuses.emit,
+  });
+  const subscriptions = [
+    terminal.onData((text) => link.sendInput(text)),
+    terminal.onBinary((text) => link.sendBytes(text)),
+    terminal.onResize(({ cols, rows }) => link.resize({ columns: cols, rows })),
+    terminal.parser.registerOscHandler(CLIPBOARD_SEQUENCE, (data) => {
+      const text = clipboardTextOf(data);
+      if (text !== undefined) writeClipboard(text);
+      return true;
+    }),
+  ];
+  terminal.attachCustomKeyEventHandler((event) => handleKey(event, terminal, link));
+  const observer = new ResizeObserver(() => fit.fit());
+  observer.observe(element);
+
+  let disposed = false;
+  return {
+    on: (_event, handler) => statuses.subscribe(handler),
+    focus: () => terminal.focus(),
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      statuses.clear();
+      observer.disconnect();
+      link.close();
+      for (const subscription of subscriptions) subscription.dispose();
+      terminal.dispose();
+    },
+  };
+}
+
+function checkKey(key: string): void {
+  if (typeof key === 'string' && isSessionKey(key)) return;
+  throw new CockpitError('invalid-options', 'The terminal needs a session key.', {
+    issues: [{ path: ['key'], message: 'Expected a session key: [a-z0-9-]+.' }],
+  });
+}
+
+/** The look options xterm.js takes, without those the app left out. */
+function looks({ theme, fontFamily, fontSize }: MountTerminalOptions): {
+  theme?: ITheme;
+  fontFamily?: string;
+  fontSize?: number;
+} {
+  return {
+    ...(theme === undefined ? {} : { theme }),
+    ...(fontFamily === undefined ? {} : { fontFamily }),
+    ...(fontSize === undefined ? {} : { fontSize }),
+  };
+}
+
+/**
+ * Decides who handles a key: `false` when the terminal took it (xterm.js
+ * then sends nothing), `true` to leave it to xterm.js. The browser delivers
+ * a key as `keydown` and, for some, `keypress` too: what it sends is sent
+ * on `keydown` only, and the `keypress` of a key taken is taken as well.
+ */
+function handleKey(event: KeyboardEvent, terminal: Terminal, link: TerminalLink): boolean {
+  const pressed = event.type === 'keydown';
+  if (pressed && isCopyKey(event) && terminal.hasSelection()) {
+    writeClipboard(terminal.getSelection());
+    terminal.clearSelection();
+    event.preventDefault();
+    return false;
+  }
+  const rule = ruleForKey(link.keyRules(), event);
+  if (rule === undefined) return true;
+  if (pressed) link.sendInput(rule.send);
+  event.preventDefault();
+  return false;
+}
+
+/** Ctrl+C alone: with a selection of the terminal's own, it copies instead of interrupting. */
+function isCopyKey(event: KeyboardEvent): boolean {
+  return (
+    event.key.toLowerCase() === 'c' &&
+    event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.metaKey
+  );
+}
+
+/** The status handlers and the status they last heard. */
+function statusEmitter(): {
+  emit(status: TerminalStatus): void;
+  subscribe(handler: (status: TerminalStatus) => void): () => void;
+  clear(): void;
+} {
+  const handlers = new Set<(status: TerminalStatus) => void>();
+  let current: TerminalStatus = 'connecting';
+  return {
+    emit: (status) => {
+      current = status;
+      for (const handler of handlers) handler(status);
+    },
+    subscribe: (handler) => {
+      // A handler given twice is two subscriptions, each removed by its own function.
+      const subscription = (status: TerminalStatus): void => handler(status);
+      handlers.add(subscription);
+      subscription(current);
+      return () => {
+        handlers.delete(subscription);
+      };
+    },
+    clear: () => handlers.clear(),
+  };
+}

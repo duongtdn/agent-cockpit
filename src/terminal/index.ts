@@ -5,4 +5,8 @@
  * @packageDocumentation
  */
 
-export {};
+export type { CockpitErrorCode, CockpitErrorFields, Issue } from '../shared/cockpit-error.js';
+export { CockpitError, isCockpitError } from '../shared/cockpit-error.js';
+export type { MountedTerminal, MountTerminalOptions } from './mount-terminal.js';
+export { mountTerminal } from './mount-terminal.js';
+export type { TerminalStatus } from './terminal-link.js';

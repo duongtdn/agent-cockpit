@@ -13,8 +13,17 @@ export class FakeWebSocket extends EventTarget {
   readonly url: string;
   /** The subprotocols the page offered. */
   readonly protocols: readonly string[];
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 3;
+
   /** Whether the page closed it. */
   closedByPage = false;
+  /** As the page set it. */
+  binaryType: BinaryType = 'blob';
+  readyState: number = FakeWebSocket.CONNECTING;
+  /** Every message the page sent, in order. */
+  readonly sent: (string | Uint8Array)[] = [];
 
   constructor(url: string | URL, protocols: string | string[] = []) {
     super();
@@ -40,8 +49,15 @@ export class FakeWebSocket extends EventTarget {
     this.closedByPage = true;
   }
 
+  send(data: string | Uint8Array): void {
+    if (this.readyState !== FakeWebSocket.OPEN)
+      throw new Error('Sent on a socket that is not open.');
+    this.sent.push(data);
+  }
+
   /** The server accepts the handshake. */
   accept(): void {
+    this.readyState = FakeWebSocket.OPEN;
     this.dispatchEvent(new Event('open'));
   }
 
@@ -52,7 +68,14 @@ export class FakeWebSocket extends EventTarget {
 
   /** The connection ends: after `accept`, a drop; before it, a refused handshake. */
   drop(): void {
+    this.readyState = FakeWebSocket.CLOSED;
     this.dispatchEvent(new Event('error'));
     this.dispatchEvent(new CloseEvent('close', { code: 1006 }));
+  }
+
+  /** The server closes the connection with a code. */
+  closeWith(code: number): void {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.dispatchEvent(new CloseEvent('close', { code }));
   }
 }

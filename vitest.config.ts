@@ -24,6 +24,11 @@ export default defineConfig({
         },
       },
       { test: { name: 'pack', include: ['test/pack/**/*.test.ts'] } },
+      {
+        // A real Chromium (Playwright's): what only a browser shows of the
+        // terminal, its keys, its fit and its copy.
+        test: { name: 'browser', include: ['test/browser/**/*.test.ts'], testTimeout: 30_000 },
+      },
     ],
     coverage: {
       provider: 'v8',

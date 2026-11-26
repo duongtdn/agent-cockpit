@@ -35,6 +35,9 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test:coverage
+      # The terminal's browser tests run in Playwright's Chromium.
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:browser
       # The pinned agent, in tmux, against a scripted API of the suite's own: no login, no secret.
       - run: pnpm test:contract
       - uses: actions/upload-artifact@v7

@@ -58,7 +58,8 @@
     "test:integration": "vitest run --project integration",
     "test:coverage": "vitest run --project unit --project integration --coverage",
     "test:contract": "vitest run --project contract --reporter=default --reporter=./test/contract/results-reporter.ts",
-    "check": "pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm test:contract && pnpm build && pnpm test:pack",
+    "test:browser": "vitest run --project browser",
+    "check": "pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm test:browser && pnpm test:contract && pnpm build && pnpm test:pack",
     "test:pack": "vitest run --project pack"
   },
   "dependencies": {
@@ -78,6 +79,7 @@
     "@types/node": "22.20.7",
     "@types/ws": "8.18.2",
     "@vitest/coverage-v8": "5.1.2",
+    "playwright": "1.65.1",
     "typescript": "7.0.2",
     "vitest": "5.1.2"
   },

@@ -1,7 +1,7 @@
 import { once } from 'node:events';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
-import { type WebSocket, WebSocketServer } from 'ws';
+import { type RawData, type WebSocket, WebSocketServer } from 'ws';
 import { TOKEN_HEADER, tokenOfSubprotocols, WIRE_SUBPROTOCOL } from '../../src/shared/wire.ts';
 
 /** Where the test server mounts the wire, as an app mounts the cockpit. */
@@ -26,6 +26,11 @@ export interface AcceptedSocket {
   readonly offered: string;
   /** The server's end of it. */
   readonly socket: WebSocket;
+  /**
+   * Every message the page sent on it, from the first: a text message as its
+   * text, a binary one as its bytes.
+   */
+  readonly messages: (string | Buffer)[];
 }
 
 /** An answer the server gives to a request: a status and a body. */
@@ -98,11 +103,17 @@ export async function startWireServer(): Promise<WireServer> {
     }
     sockets.handleUpgrade(request, socket, head, (webSocket) => {
       const offered = header(request, 'sec-websocket-protocol') ?? '';
+      const messages: (string | Buffer)[] = [];
+      webSocket.on('message', (data: RawData, isBinary: boolean) => {
+        const bytes = Buffer.isBuffer(data) ? data : Buffer.concat([data].flat() as Buffer[]);
+        messages.push(isBinary ? bytes : bytes.toString('utf8'));
+      });
       const socketAccepted = {
         path: pathBelowMount(request),
         token: tokenOfSubprotocols(offered),
         offered,
         socket: webSocket,
+        messages,
       };
       const waiter = waiting.shift();
       if (waiter === undefined) accepted.push(socketAccepted);
