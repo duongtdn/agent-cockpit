@@ -42,7 +42,20 @@ export function classifyFailure(stderr: string): TmuxFailureKind {
  * @returns The path, or `undefined` when tmux named no such socket.
  */
 export function socketLeftBehind(stderr: string): string | undefined {
-  return /^no server running on (.+)$/m.exec(stderr)?.[1];
+  return (
+    /^no server running on (.+)$/m.exec(stderr)?.[1] ??
+    /^error connecting to (.+) \(Connection refused\)$/m.exec(stderr)?.[1]
+  );
+}
+
+/**
+ * Tells whether a failed tmux command met a server that exited under it: tmux
+ * then names no socket, and asking again finds the server gone and names it.
+ *
+ * @param stderr - The command's error output.
+ */
+export function serverExitedUnder(stderr: string): boolean {
+  return /^server exited unexpectedly/m.test(stderr);
 }
 
 /** Splits tmux's output into its lines, without the empty ones. */

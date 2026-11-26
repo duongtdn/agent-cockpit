@@ -10,6 +10,7 @@ export default defineConfig({
         test: {
           name: 'integration',
           include: ['test/integration/**/*.test.ts'],
+          setupFiles: ['test/support/tmux-sockets-setup.ts'],
           testTimeout: 15_000,
         },
       },
@@ -20,6 +21,7 @@ export default defineConfig({
         test: {
           name: 'contract',
           include: ['test/contract/**/*.test.ts'],
+          setupFiles: ['test/support/tmux-sockets-setup.ts'],
           testTimeout: 60_000,
         },
       },
@@ -27,7 +29,12 @@ export default defineConfig({
       {
         // A real Chromium (Playwright's): what only a browser shows of the
         // terminal, its keys, its fit and its copy.
-        test: { name: 'browser', include: ['test/browser/**/*.test.ts'], testTimeout: 30_000 },
+        test: {
+          name: 'browser',
+          include: ['test/browser/**/*.test.ts'],
+          setupFiles: ['test/support/tmux-sockets-setup.ts'],
+          testTimeout: 30_000,
+        },
       },
     ],
     coverage: {

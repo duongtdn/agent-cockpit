@@ -34,6 +34,7 @@ import {
   parseScreen,
   parseServer,
   parseVariableNames,
+  serverExitedUnder,
   socketLeftBehind,
 } from './tmux-replies.js';
 import { startScript } from './tmux-start.js';
@@ -58,6 +59,13 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 /** How long a killed tmux server may take to exit. */
 const SERVER_EXIT_TIMEOUT_MS = 5000;
 const SERVER_EXIT_POLL_MS = 10;
+
+/**
+ * How often a shutdown asks a server that exits under it again: once is
+ * enough to find it gone; the bound only keeps a tmux that never says so
+ * from holding the shutdown forever.
+ */
+const SHUT_DOWN_ATTEMPTS = 3;
 
 /** How often the host asks tmux whether a terminal is attached yet; tmux answers in a few milliseconds. */
 const ATTACH_POLL_MS = 10;
@@ -205,15 +213,17 @@ class TmuxSessionHost implements SessionHost {
   }
 
   async shutDown(): Promise<void> {
-    let printed: string;
-    try {
-      printed = await this.#tmux.run(SHUT_DOWN_ARGUMENTS);
-    } catch (error) {
-      // No server runs: there is nothing to end, and none is started to end it.
-      if (error instanceof TmuxFailure && error.kind === 'no-server') {
+    let printed: string | undefined;
+    for (let attempt = 1; printed === undefined; attempt += 1) {
+      try {
+        printed = await this.#tmux.run(SHUT_DOWN_ARGUMENTS);
+      } catch (error) {
+        // No server runs: there is nothing to end, and none is started to end it.
+        if (!(error instanceof TmuxFailure && error.kind === 'no-server')) throw hostError(error);
+        // A server that exited under the call named no socket: the next call names it.
+        if (serverExitedUnder(error.message) && attempt < SHUT_DOWN_ATTEMPTS) continue;
         return removeSocket(socketLeftBehind(error.message));
       }
-      throw hostError(error);
     }
     const server = parseServer(printed);
     await processGone(server.pid);

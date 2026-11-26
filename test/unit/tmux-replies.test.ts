@@ -36,6 +36,12 @@ describe('the socket a server that ended left behind', () => {
     );
   });
 
+  it('is the path tmux could not connect to, no server listening on its file', () => {
+    expect(
+      socketLeftBehind('error connecting to /tmp/tmux-1000/my app (Connection refused)\n'),
+    ).toBe('/tmp/tmux-1000/my app');
+  });
+
   it.each([
     'error connecting to /tmp/tmux-1000/app (No such file or directory)\n',
     'server exited unexpectedly\n',

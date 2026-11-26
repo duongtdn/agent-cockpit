@@ -166,10 +166,7 @@ function without(variables: NodeJS.ProcessEnv, names: readonly string[]): NodeJS
 
 /** Sets variables of this process for the time of a test. */
 function withProcessVariables(variables: Record<string, string>): void {
-  Object.assign(process.env, variables);
-  restorations.push(() => {
-    for (const name of Object.keys(variables)) delete process.env[name];
-  });
+  for (const [name, value] of Object.entries(variables)) withProcessVariable(name, value);
 }
 
 /** Gives this process a variable, or none of that name, until the test ends; then what it had. */

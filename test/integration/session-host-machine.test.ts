@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -227,5 +227,27 @@ describe('a terminal that does not get attached', () => {
       message: 'tmux did not attach a terminal to s within 200 ms.',
     });
     expect(() => process.kill(Number(readFileSync(pidFile, 'utf8')), 0)).toThrow();
+  });
+});
+
+describe('shutting down a server that is exiting', () => {
+  it.each([
+    [
+      'refuses the connection',
+      'echo "error connecting to $SOCKET (Connection refused)" >&2; exit 1',
+    ],
+    [
+      'exits under the call, then is gone',
+      'if [ -e "$SOCKET.asked" ]; then echo "no server running on $SOCKET" >&2; else touch "$SOCKET.asked"; echo "server exited unexpectedly" >&2; fi; exit 1',
+    ],
+  ])('removes the socket it left when it %s', async (_how, script) => {
+    const socket = join(folder, `left-${scripts}`);
+    writeFileSync(socket, '');
+    const host = hostOn(`SOCKET='${socket}'\n${script}`);
+
+    await host.shutDown();
+
+    expect(existsSync(socket)).toBe(false);
+    rmSync(`${socket}.asked`, { force: true });
   });
 });
