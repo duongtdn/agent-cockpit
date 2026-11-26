@@ -9,6 +9,7 @@ import {
 import {
   type AgentSession,
   type LaunchOptions,
+  type RealAgentRunner,
   startRealAgentRunner,
 } from '../support/real-agent/runner.ts';
 import { runAll } from '../support/run-all.ts';
@@ -80,6 +81,11 @@ export interface ContractAgentOptions {
   readonly whenFinished?: WhenFinished;
   /** How long a wait may last before it fails, in milliseconds. */
   readonly patienceMs?: number;
+  /**
+   * The `permissions` of the sessions' settings; by default every shell
+   * command runs without an ask. A test of the ask itself gives its own.
+   */
+  readonly permissions?: object;
 }
 
 /** Far longer than the agent takes (a start is under a second), short enough to fail with the reason. */
@@ -90,7 +96,7 @@ const PATIENCE_MS = 15_000;
  * permission dialog is no part of these behaviors, and the commands are the
  * tests' own, in a temporary folder.
  */
-const PERMISSIONS = { allow: ['Bash'] };
+export const NO_ASK_FOR_SHELL_COMMANDS = { allow: ['Bash'] };
 
 /**
  * The requests the agent makes to paths the API's double does not know, and
@@ -114,7 +120,11 @@ const EXPECTED_UNKNOWN_REQUESTS: readonly string[] = ['HEAD /api/hello'];
 export async function startContractAgent(
   options: ContractAgentOptions = {},
 ): Promise<ContractAgent> {
-  const { whenFinished = onTestFinished, patienceMs = PATIENCE_MS } = options;
+  const {
+    whenFinished = onTestFinished,
+    patienceMs = PATIENCE_MS,
+    permissions = NO_ASK_FOR_SHELL_COMMANDS,
+  } = options;
   // Closed last started first: the sessions end while their hooks still have somewhere to go.
   const closers: (() => Promise<void>)[] = [];
   const finalChecks: (() => void)[] = [];
@@ -130,20 +140,49 @@ export async function startContractAgent(
   closers.push(() => hooks.close());
   const runner = await startRealAgentRunner({
     apiBaseUrl: api.baseUrl,
-    settings: { ...hooks.settings(), permissions: PERMISSIONS },
+    settings: sessionSettings(hooks, permissions),
   });
   closers.push(() => runner.close());
   finalChecks.push(() => expect(runner.leftOutsideRoot()).toEqual([]));
+  return { api, ...drivenAgent({ api, hooks, launcher: runner, patienceMs }) };
+}
+
+/** An agent's sessions as a test drives them, whatever the agent talks to. */
+export type DrivenAgent = Omit<ContractAgent, 'api'>;
+
+/** What launches an agent's sessions in one work folder: the real agent's runner, or a fake agent's. */
+export type Launcher = Pick<RealAgentRunner, 'workFolder' | 'startNew' | 'resume'>;
+
+/** What a driven agent is made of. */
+export interface DrivenAgentParts {
+  /** The API's double, when the agent talks to one: its waits then fail on a request with no scripted answer. */
+  readonly api?: FakeApi;
+  /** Where the agent's hooks arrive. */
+  readonly hooks: HookReceiver;
+  /** What launches its sessions. */
+  readonly launcher: Launcher;
+  /** How long a wait may last before it fails, in milliseconds; as {@link ContractAgentOptions} by default. */
+  readonly patienceMs?: number;
+}
+
+/**
+ * Gives an agent, real or fake, the sessions and the waits of
+ * {@link ContractAgent}. Nothing is started and nothing is closed here.
+ *
+ * @param parts - See {@link DrivenAgentParts}.
+ * @returns The agent, with nothing launched yet.
+ */
+export function drivenAgent(parts: DrivenAgentParts): DrivenAgent {
+  const { hooks, launcher } = parts;
   const sessions = watchedSessions();
-  const waits = failFastWaits({ api, hooks, sessions, patienceMs });
+  const waits = failFastWaits({ ...parts, sessions, patienceMs: parts.patienceMs ?? PATIENCE_MS });
   const launched = async (launching: Promise<AgentSession>) => sessions.watch(await launching);
 
   return {
-    api,
     hooks,
-    workFolder: runner.workFolder,
-    startNew: (launchOptions) => launched(runner.startNew(launchOptions)),
-    resume: (sessionId, launchOptions) => launched(runner.resume(sessionId, launchOptions)),
+    workFolder: launcher.workFolder,
+    startNew: (launchOptions) => launched(launcher.startNew(launchOptions)),
+    resume: (sessionId, launchOptions) => launched(launcher.resume(sessionId, launchOptions)),
     hook: (event) => waits.waitFor(`a ${event} hook`, hooks.next(event)),
     waitFor: waits.waitFor,
     eventually: waits.eventually,
@@ -153,6 +192,17 @@ export async function startContractAgent(
       await waits.waitFor(`the session ${session.name} to be gone`, session.ended);
     },
   };
+}
+
+/**
+ * Gives the settings of an agent's sessions, real or fake: every hook to a
+ * receiver, and the permissions.
+ *
+ * @param hooks - Where the hooks arrive.
+ * @param permissions - The `permissions` of the settings.
+ */
+export function sessionSettings(hooks: HookReceiver, permissions: object): object {
+  return { ...hooks.settings(), permissions };
 }
 
 function assertNoUnexpectedPath(api: FakeApi): void {
@@ -229,7 +279,7 @@ function shown(screen: string): string {
 
 /** What the waits of an agent look at to fail with a reason. */
 interface WaitSurroundings {
-  readonly api: FakeApi;
+  readonly api?: FakeApi;
   readonly hooks: HookReceiver;
   readonly sessions: WatchedSessions;
   readonly patienceMs: number;
@@ -260,7 +310,8 @@ function failFastWaits({
       timer = setTimeout(() => resolve(tooLong(what)), patienceMs);
     });
     // After either, what is awaited would never come: the session stopped there, or is no more.
-    const stopped = Promise.race([late, api.unexpectedRequest(), sessions.unexpectedEnd]);
+    const unscripted = api === undefined ? [] : [api.unexpectedRequest()];
+    const stopped = Promise.race([late, ...unscripted, sessions.unexpectedEnd]);
     const outcome = await Promise.race([
       awaited.then((value) => ({ value })),
       stopped.then((failure) => ({ failure })),
@@ -273,7 +324,7 @@ function failFastWaits({
     waitFor,
     eventually: (check) =>
       eventually(check, () => {
-        api.assertNothingUnexpected();
+        api?.assertNothingUnexpected();
         sessions.assertNoneGone();
       }),
   };

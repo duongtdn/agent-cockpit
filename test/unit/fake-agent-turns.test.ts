@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { INTERRUPTED, INTERRUPTED_FOR_TOOL_USE } from '../support/fake-agent/transcript.ts';
-import { type Played, playFakeAgent, submit } from '../support/played-fake-agent.ts';
+import { type Played, playFakeAgent, submit, WORK_FOLDER } from '../support/played-fake-agent.ts';
 
-const touch = { do: 'tool', name: 'Bash', input: { command: 'touch a.txt' } } as const;
+const touch = {
+  do: 'tool',
+  name: 'Bash',
+  input: { command: 'touch a.txt' },
+  result: '(Bash completed with no output)',
+} as const;
 const stayBusy = { do: 'stay-busy' } as const;
 const reply = { do: 'reply', text: 'Done.' } as const;
 const allowed = {
@@ -75,14 +80,24 @@ describe('the fake agent, interrupted with Esc', () => {
       hookAnswers: { PreToolUse: allowed },
     });
     submit(played, 'touch, then think');
-    await fires(played, 'PostToolUse');
+    await vi.waitFor(() => expect(played.screen().step).toBe('stay-busy'));
 
     played.agent.press({ kind: 'escape' });
 
     await becomesIdle(played);
     expect(played.recorded).toEqual(['touch, then think', INTERRUPTED]);
-    expect(played.screen()).toMatchObject({ lastPrompt: 'touch, then think', input: '' });
-    expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse']);
+    expect(played.screen()).toMatchObject({
+      lastPrompt: 'touch, then think',
+      input: '',
+      step: undefined,
+    });
+    expect(played.fired).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PostToolUse',
+      'PostToolBatch',
+    ]);
   });
 
   it('records the marker of a tool use while a call is open (behavior 6)', async () => {
@@ -126,6 +141,7 @@ describe('the fake agent, showing a reply', () => {
     expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'MessageDisplay', 'Stop']);
     expect(messageDisplays(played)).toEqual([
       {
+        prompt_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
         turn_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
         message_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
         index: 0,
@@ -171,6 +187,160 @@ describe('the fake agent, showing a reply', () => {
     await becomesIdle(played);
     expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'Stop']);
     expect(played.exits).toEqual([]);
+  });
+});
+
+describe('the fake agent, calling a tool', () => {
+  const permissionAnswer = (decision: object) => ({
+    hookSpecificOutput: { hookEventName: 'PermissionRequest', decision },
+  });
+  const batches = (played: Played) =>
+    played.events
+      .filter((event) => event.name === 'PostToolBatch')
+      .flatMap((event) => event.fields.tool_calls as { tool_response: string }[])
+      .map((call) => call.tool_response);
+
+  it('tells PostToolBatch, after PostToolUse, what the model is told of a call that ran', async () => {
+    const played = await playFakeAgent({
+      script: [[touch, reply]],
+      hookAnswers: { PermissionRequest: permissionAnswer({ behavior: 'allow' }) },
+    });
+
+    submit(played, 'touch it');
+
+    await fires(played, 'Stop');
+    expect(played.fired).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PermissionRequest',
+      'PostToolUse',
+      'PostToolBatch',
+      'MessageDisplay',
+      'Stop',
+    ]);
+    expect(batches(played)).toEqual(['(Bash completed with no output)']);
+  });
+
+  it.each([
+    ['its message', { message: 'Not this file.' }, 'Not this file.'],
+    ['that a hook denied it, when the hook gives no message', {}, 'Permission denied by hook'],
+  ])(
+    'tells PostToolBatch of a call a hook denied, with %s, and no PostToolUse',
+    async (_what, more, told) => {
+      const played = await playFakeAgent({
+        script: [[touch, reply]],
+        hookAnswers: { PermissionRequest: permissionAnswer({ behavior: 'deny', ...more }) },
+      });
+
+      submit(played, 'touch it');
+
+      await fires(played, 'Stop');
+      expect(played.fired).not.toContain('PostToolUse');
+      expect(batches(played)).toEqual([told]);
+    },
+  );
+
+  it('tells PostToolBatch of a call the dontAsk mode denied, in the words of Claude Code', async () => {
+    const played = await playFakeAgent({ script: [[touch, reply]], mode: 'dontAsk' });
+
+    submit(played, 'touch it');
+
+    await fires(played, 'Stop');
+    expect(played.fired).not.toContain('PostToolUse');
+    expect(batches(played)).toEqual([
+      expect.stringMatching(/^Permission to use Bash has been denied/),
+    ]);
+  });
+
+  it('tells no PostToolBatch of a call whose denial interrupts the turn', async () => {
+    const played = await playFakeAgent({
+      script: [[touch, reply]],
+      hookAnswers: { PermissionRequest: permissionAnswer({ behavior: 'deny', interrupt: true }) },
+    });
+
+    submit(played, 'touch it');
+
+    await becomesIdle(played);
+    expect(played.fired).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PermissionRequest',
+    ]);
+    expect(played.recorded).toEqual(['touch it', INTERRUPTED_FOR_TOOL_USE]);
+  });
+
+  it('runs with no ask a tool the settings allow', async () => {
+    const played = await playFakeAgent({ script: [[touch, reply]], allowRules: ['Bash'] });
+
+    submit(played, 'touch it');
+
+    await fires(played, 'Stop');
+    expect(played.fired).not.toContain('PermissionRequest');
+    expect(played.fired).toContain('PostToolUse');
+  });
+
+  it('tells PermissionRequest what the ask of a touch suggests, for the folder of the session', async () => {
+    const played = await playFakeAgent({ script: [[touch, reply]] });
+
+    submit(played, 'touch it');
+
+    await fires(played, 'PermissionRequest');
+    expect(played.events.at(-1)?.fields.permission_suggestions).toEqual([
+      { type: 'addDirectories', directories: [WORK_FOLDER], destination: 'session' },
+      { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+    ]);
+  });
+});
+
+describe('the fake agent, naming the prompt in its hooks', () => {
+  const promptIds = (played: Played) => played.events.map((event) => event.fields.prompt_id);
+
+  it('gives every hook of a turn the id of its prompt, and each prompt an id of its own', async () => {
+    const played = await playFakeAgent({ script: [[reply], [reply]] });
+    submit(played, 'first');
+    await fires(played, 'Stop');
+
+    submit(played, 'second');
+
+    await vi.waitFor(() => expect(played.fired.filter((name) => name === 'Stop')).toHaveLength(2));
+    const [start, ...ids] = promptIds(played);
+    expect(start).toBeUndefined();
+    expect(ids.slice(0, 3)).toEqual(Array(3).fill(ids[0]));
+    expect(ids.slice(3)).toEqual(Array(3).fill(ids[3]));
+    expect(ids[3]).not.toBe(ids[0]);
+    expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('gives SessionEnd the id of the last prompt, and none when the process took no prompt', async () => {
+    const prompted = await playFakeAgent({ script: [[reply]] });
+    submit(prompted, 'first');
+    await fires(prompted, 'Stop');
+    const unprompted = await playFakeAgent({ script: [] });
+
+    await prompted.agent.terminate();
+    await unprompted.agent.terminate();
+
+    expect(promptIds(prompted).at(-1)).toBe(promptIds(prompted).at(-2));
+    expect(unprompted.events.at(-1)?.fields).toEqual({ reason: 'other' });
+  });
+});
+
+describe('the fake agent, starting', () => {
+  it('names the model of its launch in the SessionStart of a new session', async () => {
+    const played = await playFakeAgent({ script: [] });
+
+    expect(played.events[0]?.fields).toEqual({ source: 'startup', model: 'haiku' });
+  });
+
+  it('says in the SessionStart of a resumed session how long ago it last answered', async () => {
+    const played = await playFakeAgent({ script: [], resumedAfterSeconds: 12 });
+
+    expect(played.events[0]?.fields).toMatchObject({
+      source: 'resume',
+      seconds_since_last_response: 12,
+    });
   });
 });
 

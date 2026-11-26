@@ -28,6 +28,11 @@ export interface ToolStep {
   readonly input: ToolInput;
   /** What the tool answers when it runs; an empty object when left out. */
   readonly response?: unknown;
+  /**
+   * What the model is told of the call once it ran, which `PostToolBatch`
+   * hooks are told too: a call that runs with such a hook needs it.
+   */
+  readonly result?: string;
 }
 
 /** Ask the person questions. */
@@ -83,7 +88,11 @@ function isStep(step: unknown): step is Step {
     case 'reply':
       return typeof candidate.text === 'string';
     case 'tool':
-      return typeof candidate.name === 'string' && isObject(candidate.input);
+      return (
+        typeof candidate.name === 'string' &&
+        isObject(candidate.input) &&
+        ['string', 'undefined'].includes(typeof candidate.result)
+      );
     case 'question':
       return Array.isArray(candidate.questions);
     case 'stay-busy':

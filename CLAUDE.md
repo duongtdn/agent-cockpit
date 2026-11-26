@@ -26,7 +26,8 @@ test/
   pack/         what `npm pack` would ship
   support/      fake-api/ (a scripted Messages API), fake-agent/ (a program
                 run in place of Claude Code), real-agent/ (the pinned
-                agent's runner), hooks/ (a hook receiver, for both agents)
+                agent's runner), hooks/ (a hook receiver, for both agents),
+                parity/ (how the hooks of the two agents are compared)
 examples/       example apps: the demos and the end-to-end fixtures
 docs/           guide.md, api.md, security.md, machines.md
 ```
@@ -103,6 +104,17 @@ script a test writes in the session's folder. It plays only what was observed
 of Claude Code; asked for anything else it shows why and exits with status
 70 — extend it from evidence, never from a guess. It is TypeScript that Node
 runs as it is, so the integration tests need Node 22.18 or later.
+
+The fake agent is held to the real one by
+`test/contract/fake-agent-parity.test.ts`: each scenario is played once on
+each, through tmux and a receiver of every hook event, and what the hooks
+said must agree — their order, the kind of hook, every key of every payload,
+and every value but the few that `test/support/parity/hook-comparison.ts`
+lists as different by nature. To add a scenario, add an `agreeOn(title, …)`
+there: its `script` (the fake agent's; the API's answers follow from it) and
+its `play`, which drives either agent and awaits every hook it expects. A
+difference is closed in the fake agent, which plays what the real one did or
+refuses it; the comparison is never loosened for one.
 
 ## How code is written here
 

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { decisionOf } from '../support/fake-agent/hook-answers.ts';
 import {
+  afterPrompt,
   messageDisplay,
   payloadOf,
   permissionRequest,
+  postToolBatch,
   postToolUse,
   preToolUse,
   sessionEnd,
@@ -31,11 +33,67 @@ describe("the payloads of the fake agent's hooks", () => {
     });
   });
 
-  it('SessionStart says whether the session started or resumed', () => {
-    expect(payloadOf(session, sessionStart('resume'))).toMatchObject({
-      hook_event_name: 'SessionStart',
-      source: 'resume',
+  it.each([
+    ['SessionStart', sessionStart({ source: 'startup', model: 'haiku' })],
+    ['SessionEnd', sessionEnd('other')],
+  ])('%s carries no mode', (_event, hookEvent) => {
+    expect(payloadOf(session, hookEvent)).not.toHaveProperty('permission_mode');
+  });
+
+  it('carry the effort for a tool call, its ask, its end, its batch and the end of the turn only', () => {
+    const withEffort = [
+      preToolUse(call),
+      permissionRequest(call),
+      postToolUse(call, {}),
+      postToolBatch(call, ''),
+      stop('Done.'),
+    ];
+    const without = [
+      sessionStart({ source: 'startup', model: 'haiku' }),
+      userPromptSubmit('hello'),
+      messageDisplay({ turnId: 'turn-1', messageId: 'message-1', text: 'Done.' }),
+      sessionEnd('other'),
+    ];
+
+    for (const hookEvent of withEffort) {
+      expect(payloadOf(session, hookEvent)).toMatchObject({ effort: { level: 'medium' } });
+    }
+    for (const hookEvent of without) {
+      expect(payloadOf(session, hookEvent)).not.toHaveProperty('effort');
+    }
+  });
+
+  it('carry the id of the last prompt once one was taken', () => {
+    expect(payloadOf(session, stop('Done.'))).not.toHaveProperty('prompt_id');
+    expect(payloadOf(session, afterPrompt('prompt-1', stop('Done.')))).toMatchObject({
+      prompt_id: 'prompt-1',
+      last_assistant_message: 'Done.',
     });
+  });
+
+  it('SessionStart of a new session names its model', () => {
+    expect(payloadOf(session, sessionStart({ source: 'startup', model: 'haiku' }))).toEqual({
+      session_id: session.sessionId,
+      cwd: '/work/unit',
+      transcript_path: session.transcriptPath,
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+      model: 'haiku',
+    });
+  });
+
+  it('SessionStart of a resumed session says what going on costs, when the agent answered before', () => {
+    const answeredBefore = sessionStart({ source: 'resume', secondsSinceLastResponse: 7 });
+    const neverAnswered = sessionStart({ source: 'resume', secondsSinceLastResponse: undefined });
+
+    expect(answeredBefore.fields).toEqual({
+      source: 'resume',
+      seconds_since_last_response: 7,
+      context_tokens: 0,
+      prompt_cache_likely_expired: false,
+      estimated_cache_write_usd: 0,
+    });
+    expect(neverAnswered.fields).toEqual({ source: 'resume' });
   });
 
   it('UserPromptSubmit carries the prompt (behavior 5)', () => {
@@ -56,6 +114,15 @@ describe("the payloads of the fake agent's hooks", () => {
 
     expect(payload).toMatchObject({ tool_name: 'Bash', tool_input: { command: 'touch a.txt' } });
     expect(payload).not.toHaveProperty('tool_use_id');
+    expect(payload).not.toHaveProperty('permission_suggestions');
+  });
+
+  it('PermissionRequest carries the suggestions of the ask, when it has any', () => {
+    const suggestions = [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }];
+
+    expect(permissionRequest(call, suggestions).fields).toMatchObject({
+      permission_suggestions: suggestions,
+    });
   });
 
   it('PostToolUse carries the id of its PreToolUse and what the tool answered (behavior 10)', () => {
@@ -63,11 +130,30 @@ describe("the payloads of the fake agent's hooks", () => {
       tool_name: 'Bash',
       tool_use_id: 'toolu_fake_1',
       tool_response: { stdout: '' },
+      duration_ms: 0,
     });
   });
 
-  it('Stop carries the last message of the turn (behavior 7)', () => {
-    expect(payloadOf(session, stop('Done.'))).toMatchObject({ last_assistant_message: 'Done.' });
+  it('PostToolBatch carries the call as the model made it, and what the model is told of it', () => {
+    expect(postToolBatch(call, '(Bash completed with no output)').fields).toEqual({
+      tool_calls: [
+        {
+          tool_name: 'Bash',
+          tool_input: { command: 'touch a.txt' },
+          tool_use_id: 'toolu_fake_1',
+          tool_response: '(Bash completed with no output)',
+        },
+      ],
+    });
+  });
+
+  it('Stop carries the last message of the turn, and nothing left running (behavior 7)', () => {
+    expect(stop('Done.').fields).toEqual({
+      stop_hook_active: false,
+      last_assistant_message: 'Done.',
+      background_tasks: [],
+      session_crons: [],
+    });
   });
 
   it('MessageDisplay carries a whole message as its one and last part, its turn, and no mode', () => {
@@ -138,23 +224,21 @@ describe('what the hooks answered, as the fake agent reads it', () => {
     });
   });
 
-  it("reads a PermissionRequest hook's deny, and whether it interrupts the turn (behavior 26)", () => {
+  it("reads a PermissionRequest hook's deny, its message and whether it interrupts the turn (behavior 26)", () => {
     expect(decisionOf('PermissionRequest', [asked({ behavior: 'deny', message: 'No.' })])).toEqual({
       behavior: 'deny',
       interrupts: false,
+      message: 'No.',
     });
     expect(decisionOf('PermissionRequest', [asked({ behavior: 'deny', interrupt: true })])).toEqual(
-      { behavior: 'deny', interrupts: true },
+      { behavior: 'deny', interrupts: true, message: undefined },
     );
   });
 
   it('takes the first decision among several answers', () => {
     const answers = [{}, asked({ behavior: 'deny' }), asked({ behavior: 'allow' })];
 
-    expect(decisionOf('PermissionRequest', answers)).toEqual({
-      behavior: 'deny',
-      interrupts: false,
-    });
+    expect(decisionOf('PermissionRequest', answers)).toMatchObject({ behavior: 'deny' });
   });
 
   it.each([

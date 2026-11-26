@@ -5,10 +5,16 @@ import { type CommandLine, parseCommandLine } from './command-line.ts';
 import { createHookRunner } from './hook-runner.ts';
 import { type HookSettings, parseHookSettings } from './hook-settings.ts';
 import { createKeyDecoder, type Key } from './keys.ts';
+import { parseAllowRules } from './permission-settings.ts';
 import { renderScreen, type ScreenView } from './screen.ts';
 import { readScript } from './script.ts';
 import { startReleased } from './start-gate.ts';
-import { countPrompts, openTranscript, transcriptPathFor } from './transcript.ts';
+import {
+  countPrompts,
+  openTranscript,
+  secondsSinceLastResponse,
+  transcriptPathFor,
+} from './transcript.ts';
 
 /**
  * How long an ESC waits for what follows before it is the Escape key: longer
@@ -58,10 +64,17 @@ function refuseToPlay(error: unknown): never {
   process.exit(CANNOT_PLAY_STATUS);
 }
 
-function hookSettingsOf(commandLine: CommandLine): HookSettings {
-  if (commandLine.settingsFile === undefined) return {};
+/** What the fake agent plays of a settings file. */
+interface PlayedSettings {
+  readonly hooks: HookSettings;
+  readonly allowRules: readonly string[];
+}
+
+function settingsOf(commandLine: CommandLine): PlayedSettings {
+  if (commandLine.settingsFile === undefined) return { hooks: {}, allowRules: [] };
   try {
-    return parseHookSettings(readFileSync(commandLine.settingsFile, 'utf8'));
+    const text = readFileSync(commandLine.settingsFile, 'utf8');
+    return { hooks: parseHookSettings(text), allowRules: parseAllowRules(text) };
   } catch (error) {
     refuseToPlay(error);
   }
@@ -88,6 +101,7 @@ function takeKeys(agent: FakeAgent): void {
 const commandLine = readCommandLine();
 const cwd = process.cwd();
 const transcriptPath = transcriptPathOf(commandLine, cwd);
+const settings = settingsOf(commandLine);
 const session = {
   sessionId: commandLine.sessionId,
   cwd,
@@ -96,9 +110,12 @@ const session = {
 };
 const agent = createFakeAgent({
   commandLine,
-  hooks: createHookRunner(hookSettingsOf(commandLine), session),
+  hooks: createHookRunner(settings.hooks, session),
   transcript: openTranscript(transcriptPath, commandLine.sessionId),
   promptsTaken: countPrompts(transcriptPath),
+  secondsSinceLastResponse: secondsSinceLastResponse(transcriptPath, new Date()),
+  workFolder: cwd,
+  allowRules: settings.allowRules,
   startReleased: () => startReleased(cwd),
   readScript: () => readScript(cwd),
   show,

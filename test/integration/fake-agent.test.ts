@@ -26,7 +26,12 @@ import {
 const appName = `fake-agent-test-${process.pid}-${Date.now()}`;
 const pacing = { chunkLength: 200, pauseMs: 1 };
 
-const touch = { do: 'tool', name: 'Bash', input: { command: 'touch a.txt' } } as const;
+const touch = {
+  do: 'tool',
+  name: 'Bash',
+  input: { command: 'touch a.txt' },
+  result: '(Bash completed with no output)',
+} as const;
 const fruit: Question = {
   question: 'Which fruit?',
   header: 'Fruit',
@@ -87,6 +92,8 @@ interface Launch {
   readonly heldStart?: boolean;
   /** Variables the agent must not see. */
   readonly without?: readonly string[];
+  /** The `permissions` of the settings; none by default. */
+  readonly permissions?: object;
 }
 
 /** Makes the folder of a new session, with its script, and its settings file. */
@@ -154,7 +161,7 @@ function runDirectly(options: {
 async function launch(options: Launch = {}): Promise<Session> {
   const { name, folder, settingsFile } = prepare(
     options.script,
-    JSON.stringify(receiver.settings()),
+    JSON.stringify({ ...receiver.settings(), permissions: options.permissions }),
     options.resume?.folder,
   );
   const id = options.resume?.id ?? randomUUID();
@@ -235,9 +242,9 @@ describe('the fake agent: its start and its hooks', () => {
       session_id: session.id,
       transcript_path: transcriptPathFor(configFolder, session.folder, session.id),
       cwd: session.folder,
-      permission_mode: 'default',
       hook_event_name: 'SessionStart',
       source: 'startup',
+      model: expect.any(String),
     });
     expect(receiver.received.filter((hook) => hook.event === 'SessionStart')).toHaveLength(1);
   });
@@ -264,7 +271,12 @@ describe('the fake agent: its start and its hooks', () => {
     const start = await receiver.next('SessionStart');
     const end = await receiver.next('Stop');
 
-    expect(start.payload).toMatchObject({ session_id: first.id, source: 'resume' });
+    expect(start.payload).toMatchObject({
+      session_id: first.id,
+      source: 'resume',
+      seconds_since_last_response: expect.any(Number),
+    });
+    expect(start.payload).not.toHaveProperty('model');
     expect(end.payload).toMatchObject({ session_id: first.id, last_assistant_message: 'Two.' });
     expect(transcriptOf(end)).toContain('"first"');
   });
@@ -354,6 +366,7 @@ describe('the fake agent: taking a prompt', () => {
       session_id: session.id,
       transcript_path: stop.payload.transcript_path,
       cwd: session.folder,
+      prompt_id: stop.payload.prompt_id,
       hook_event_name: 'MessageDisplay',
       turn_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
       message_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
@@ -458,6 +471,11 @@ describe('the fake agent: what it cannot play', () => {
       /a hook of type "prompt"/,
     ],
     ['settings that are no JSON', '{ "hooks": ', /settings that are no JSON/],
+    [
+      'permissions it does not play',
+      JSON.stringify({ permissions: { deny: ['Bash'] } }),
+      /the "deny" of the permissions/,
+    ],
   ])(
     'refuses to start on %s, with the status of what it cannot play and no stack',
     async (_what, settings, problem) => {
@@ -573,6 +591,16 @@ describe('the fake agent: a tool that needs permission', () => {
     await receiver.next('PostToolUse');
   });
 
+  const hooksOfATouchThatRuns = [
+    'SessionStart',
+    'UserPromptSubmit',
+    'PreToolUse',
+    'PostToolUse',
+    'PostToolBatch',
+    'MessageDisplay',
+    'Stop',
+  ];
+
   it.each(['acceptEdits', 'plan', 'auto', 'bypassPermissions'])(
     'runs a touch with no ask in the %s mode',
     async (mode) => {
@@ -580,16 +608,26 @@ describe('the fake agent: a tool that needs permission', () => {
 
       await receiver.next('Stop');
 
-      expect(receiver.events()).toEqual([
-        'SessionStart',
-        'UserPromptSubmit',
-        'PreToolUse',
-        'PostToolUse',
-        'MessageDisplay',
-        'Stop',
-      ]);
+      expect(receiver.events()).toEqual(hooksOfATouchThatRuns);
     },
   );
+
+  it('runs with no ask a tool its settings allow, and tells PostToolBatch what the model is told', async () => {
+    await launch({ script, prompt: 'touch it', permissions: { allow: ['Bash'] } });
+
+    const batch = await receiver.next('PostToolBatch');
+    await receiver.next('Stop');
+
+    expect(receiver.events()).toEqual(hooksOfATouchThatRuns);
+    expect(batch.payload.tool_calls).toEqual([
+      {
+        tool_name: 'Bash',
+        tool_input: touch.input,
+        tool_use_id: (await receiver.next('PreToolUse')).payload.tool_use_id,
+        tool_response: touch.result,
+      },
+    ]);
+  });
 });
 
 describe('the fake agent: a question', () => {
@@ -688,6 +726,7 @@ describe('the fake agent: a question', () => {
       'SessionStart',
       'UserPromptSubmit',
       'PreToolUse',
+      'PostToolBatch',
       'MessageDisplay',
       'Stop',
     ]);
@@ -702,6 +741,7 @@ describe('the fake agent: a question', () => {
       'SessionStart',
       'UserPromptSubmit',
       'PreToolUse',
+      'PostToolBatch',
       'MessageDisplay',
       'Stop',
     ]);
@@ -713,7 +753,7 @@ describe('the fake agent: an interruption', () => {
     const script: Turn[] = [[touch, { do: 'stay-busy' }], [{ do: 'reply', text: 'Back.' }]];
     const session = await launch({ script, prompt: 'work', mode: 'acceptEdits' });
     const ran = await receiver.next('PostToolUse');
-    await expectScreen(session, 'state: busy');
+    await expectScreen(session, 'state: busy', 'step: stay-busy');
 
     await host.sendKeys(session.name, ['Escape']);
 
@@ -727,6 +767,7 @@ describe('the fake agent: an interruption', () => {
       'UserPromptSubmit',
       'PreToolUse',
       'PostToolUse',
+      'PostToolBatch',
       'UserPromptSubmit',
       'MessageDisplay',
       'Stop',
@@ -835,7 +876,8 @@ describe('the fake agent: an exit', () => {
     process.kill(await pidOf(session), 'SIGTERM');
 
     const end = await receiver.next('SessionEnd');
-    expect(end.payload).toMatchObject({ reason: 'other' });
+    expect(end.payload).toMatchObject({ reason: 'other', prompt_id: taken.payload.prompt_id });
+    expect(end.payload).not.toHaveProperty('permission_mode');
     await expectGone(session);
     expect(transcriptOf(taken)).not.toContain(INTERRUPTED);
   });

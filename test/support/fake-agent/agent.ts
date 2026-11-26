@@ -2,11 +2,14 @@ import { randomUUID } from 'node:crypto';
 import type { CommandLine } from './command-line.ts';
 import { type Decision, decisionOf } from './hook-answers.ts';
 import {
+  afterPrompt,
   type HookEvent,
   messageDisplay,
   permissionRequest,
+  postToolBatch,
   postToolUse,
   preToolUse,
+  type Start,
   sessionEnd,
   sessionStart,
   stop,
@@ -17,9 +20,10 @@ import {
 import type { HookRunner } from './hook-runner.ts';
 import { createInputBox } from './input-box.ts';
 import type { Key } from './keys.ts';
+import { allowsEveryCallOf } from './permission-settings.ts';
 import type { AgentState, Dialog, ScreenView } from './screen.ts';
 import { type Step, type Turn, turnAt } from './script.ts';
-import { type PlannedCall, planCall } from './tool-calls.ts';
+import { DENIED_BY_HOOK, deniedInDontAsk, type PlannedCall, planCall } from './tool-calls.ts';
 import { INTERRUPTED, INTERRUPTED_FOR_TOOL_USE, type Transcript } from './transcript.ts';
 
 /** What a fake agent is given by the process it runs in. */
@@ -32,6 +36,12 @@ export interface AgentSurroundings {
   readonly transcript: Transcript;
   /** How many prompts the conversation took before this process: where a resumed one goes on in the script. */
   readonly promptsTaken: number;
+  /** How long ago the agent last answered in a resumed conversation; none when it never did. */
+  readonly secondsSinceLastResponse: number | undefined;
+  /** The folder the session runs in. */
+  readonly workFolder: string;
+  /** The rules the settings allow tool calls by, with no ask. */
+  readonly allowRules: readonly string[];
   /** Waits until the test lets the session get ready; at once when nothing holds it. */
   startReleased(): Promise<void>;
   /**
@@ -117,10 +127,14 @@ function startTurn(): RunningTurn {
   };
 }
 
-/** How an ask ended: the call runs with an input, or it does not run. */
-type AskOutcome =
-  | { readonly runsWith: ToolInput }
-  | { readonly runsWith: undefined; readonly interrupts: boolean };
+/** How a call ended: it ran with an input, or it was refused and the model is told why. */
+type CallOutcome = { readonly runsWith: ToolInput } | { readonly deniedWith: string };
+
+/** How an ask ended: as a call does, or with a refusal that interrupts the turn. */
+type AskOutcome = CallOutcome | { readonly interrupts: true };
+
+/** The model a session names when its launch names none: the fake agent has no model. */
+const UNNAMED_MODEL = 'fake-model';
 
 /** A dialog on screen, and what a Yes in the terminal does to it. */
 interface OpenDialog {
@@ -134,7 +148,9 @@ interface OpenDialog {
  * of Claude Code. Asked for anything else (a prompt its script has no turn
  * for, an Enter while a turn runs, a hook's answer or a tool in a mode
  * whose effect is not known, a hook that fails, a reply of several lines
- * that `MessageDisplay` hooks would be told of), it shows the problem on its screen and exits
+ * that `MessageDisplay` hooks would be told of, a call whose suggestions or
+ * whose result a hook would be told of and nothing says), it shows the
+ * problem on its screen and exits
  * with {@link CANNOT_PLAY_STATUS}, with no hook: a guess would let a test
  * pass on a behavior Claude Code may not have.
  *
@@ -149,6 +165,9 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   let lastPrompt: string | undefined;
   let problem: string | undefined;
   let turn: RunningTurn | undefined;
+  let step: Step | undefined;
+  /** The id of the last prompt this process took: every later hook names it. */
+  let promptId: string | undefined;
   let promptsTaken = surroundings.promptsTaken;
   let toolCalls = 0;
   let ending = false;
@@ -158,6 +177,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       sessionId: commandLine.sessionId,
       permissionMode: commandLine.permissionMode,
       state,
+      step: step?.do,
       dialog: dialog?.shown,
       lastPrompt,
       problem,
@@ -176,13 +196,20 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
    * @throws `Error` for an answer the fake agent does not play.
    */
   async function fire(event: HookEvent, signal?: AbortSignal): Promise<Decision> {
-    return decisionOf(event.name, await hooks.fire(event, signal));
+    const told = promptId === undefined ? event : afterPrompt(promptId, event);
+    return decisionOf(event.name, await hooks.fire(told, signal));
+  }
+
+  function started(): Start {
+    return commandLine.resumes
+      ? { source: 'resume', secondsSinceLastResponse: surroundings.secondsSinceLastResponse }
+      : { source: 'startup', model: commandLine.model ?? UNNAMED_MODEL };
   }
 
   async function start(): Promise<void> {
     show();
     await surroundings.startReleased();
-    const reported = fire(sessionStart(commandLine.resumes ? 'resume' : 'startup')).then(
+    const reported = fire(sessionStart(started())).then(
       () => true,
       (error: unknown) => {
         fail(messageOf(error));
@@ -260,11 +287,12 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   ): Promise<void> {
     try {
       transcript.recordPrompt(prompt);
+      promptId = randomUUID();
       const place = promptsTaken;
       promptsTaken += 1;
       const steps = turnAt(surroundings.readScript(), place);
       await running.during(fire(userPromptSubmit(prompt), running.signal));
-      for (const step of steps) await play(step, running);
+      for (const next of steps) await play(next, running);
     } catch (error) {
       if (!(error instanceof Interruption)) {
         fail(messageOf(error));
@@ -278,6 +306,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     }
     dialog = undefined;
     turn = undefined;
+    step = undefined;
     state = 'idle';
     show();
   }
@@ -286,13 +315,15 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     transcript.recordInterruption(running.toolCallOpen ? INTERRUPTED_FOR_TOOL_USE : INTERRUPTED);
   }
 
-  function play(step: Step, running: RunningTurn): Promise<unknown> {
-    switch (step.do) {
+  function play(next: Step, running: RunningTurn): Promise<unknown> {
+    step = next;
+    show();
+    switch (next.do) {
       case 'reply':
-        return playReply(step.text, running);
+        return playReply(next.text, running);
       case 'tool':
       case 'question':
-        return playCall(planCall(step), running);
+        return playCall(planCall(next), running);
       case 'stay-busy':
         return running.during(new Promise(() => {}));
       case 'exit':
@@ -331,39 +362,74 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     const call = { id: `toolu_fake_${toolCalls}`, name: planned.name, input: planned.input };
     running.produced = true;
     running.toolCallOpen = true;
+    transcript.recordToolCall(call);
     const before = await running.during(fire(preToolUse(call), running.signal));
-    const input = inputSettledBy(before, planned) ?? (await inputByMode(planned, call, running));
-    if (input !== undefined) {
-      const ran = postToolUse({ ...call, input }, planned.responseTo(input));
+    const settled = inputSettledBy(before, planned);
+    const outcome =
+      settled === undefined ? await outcomeByMode(planned, call, running) : { runsWith: settled };
+    if ('runsWith' in outcome) {
+      const ran = postToolUse(
+        { ...call, input: outcome.runsWith },
+        planned.responseTo(outcome.runsWith),
+      );
       await running.during(fire(ran, running.signal));
     }
+    await tellOfTheBatch(planned, call, outcome, running);
     running.toolCallOpen = false;
   }
 
-  /** Gives the input a call runs with in the session's mode, or none when it does not run. */
-  async function inputByMode(
+  /**
+   * Tells the `PostToolBatch` hooks, when the settings have any, that the
+   * call is over and what the model is told of it. Seen of Claude Code: a
+   * refused call is told of too, and the turn goes on after their answer.
+   *
+   * @throws `Error` for a call that ran and whose script gives no result.
+   */
+  async function tellOfTheBatch(
+    planned: PlannedCall,
+    call: ToolCall,
+    outcome: CallOutcome,
+    running: RunningTurn,
+  ): Promise<void> {
+    if (!hooks.configures('PostToolBatch')) return;
+    const result = 'runsWith' in outcome ? planned.resultOf(outcome.runsWith) : outcome.deniedWith;
+    await running.during(fire(postToolBatch(call, result), running.signal));
+  }
+
+  /**
+   * Gives how a call ends in the session's mode, when no `PreToolUse` hook settled it.
+   *
+   * @throws `Interruption` for an ask that a refusal ends along with the turn.
+   */
+  async function outcomeByMode(
     planned: PlannedCall,
     call: ToolCall,
     running: RunningTurn,
-  ): Promise<ToolInput | undefined> {
-    const route = planned.routeIn(commandLine.permissionMode);
-    if (route === 'run') return planned.input;
-    if (route === 'deny') return undefined;
+  ): Promise<CallOutcome> {
+    const isAllowed = allowsEveryCallOf(surroundings.allowRules, planned.name);
+    const route = planned.routeIn(commandLine.permissionMode, isAllowed);
+    if (route === 'run') return { runsWith: planned.input };
+    if (route === 'deny') return { deniedWith: deniedInDontAsk(planned.name) };
     const outcome = await ask(planned, call, running);
-    if (outcome.runsWith === undefined && outcome.interrupts) throw new Interruption();
-    return outcome.runsWith;
+    if ('interrupts' in outcome) throw new Interruption();
+    return outcome;
   }
 
   /**
    * Asks about a call in the terminal and through `PermissionRequest` at
    * once: the first answer wins, and a hook without a decision leaves the
    * dialog to the terminal.
+   *
+   * @throws `Error` for a call whose suggestions a hook would be told of and nothing says.
    */
   async function ask(
     planned: PlannedCall,
     call: ToolCall,
     running: RunningTurn,
   ): Promise<AskOutcome> {
+    const asked = hooks.configures('PermissionRequest')
+      ? permissionRequest(call, planned.suggestionsIn(surroundings.workFolder))
+      : permissionRequest(call);
     const fromTerminal = new Promise<AskOutcome>((resolve) => {
       dialog = {
         shown: { kind: planned.dialog, toolName: planned.name },
@@ -372,7 +438,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     });
     state = 'waiting';
     show();
-    const fromHooks = fire(permissionRequest(call), running.signal).then(
+    const fromHooks = fire(asked, running.signal).then(
       (decision) => outcomeOf(decision, planned) ?? fromTerminal,
     );
     // The hook stays open after an answer in the terminal: what it answers then is still read.
@@ -412,7 +478,11 @@ function inputSettledBy(decision: Decision, planned: PlannedCall): ToolInput | u
 
 /** Reads how a hook's decision ends an ask, or nothing when it leaves the ask open. */
 function outcomeOf(decision: Decision, planned: PlannedCall): AskOutcome | undefined {
-  if (decision.behavior === 'deny') return { runsWith: undefined, interrupts: decision.interrupts };
+  if (decision.behavior === 'deny') {
+    return decision.interrupts
+      ? { interrupts: true }
+      : { deniedWith: decision.message ?? DENIED_BY_HOOK };
+  }
   const input = inputSettledBy(decision, planned);
   return input === undefined ? undefined : { runsWith: input };
 }

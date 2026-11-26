@@ -39,8 +39,8 @@ const PLAYED_FIELDS: Readonly<Record<HookDefinition['type'], readonly string[]>>
 const MATCHERS_OF_EVERY_TOOL: readonly (string | undefined)[] = [undefined, '', '*'];
 
 /**
- * Reads the hooks of a settings file; what else the file holds is not the
- * fake agent's to play.
+ * Reads the hooks of a settings file; its permissions are read apart, and
+ * what else the file holds is not the fake agent's to play.
  *
  * A hook's `timeout` is taken and not played: the fake agent never times a
  * hook out. Seen of Claude Code, a hook that times out behaves as one with

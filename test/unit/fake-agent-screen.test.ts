@@ -5,6 +5,7 @@ const view = {
   sessionId: '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11',
   permissionMode: 'default',
   state: 'idle',
+  step: undefined,
   dialog: undefined,
   lastPrompt: undefined,
   problem: undefined,
@@ -29,6 +30,12 @@ describe("the fake agent's screen", () => {
 
     expect(lines).toContain('state: busy');
     expect(lines).toContain('prompt: "one\\ntwo"');
+  });
+
+  it('shows the step a running turn plays, between its state and its dialog', () => {
+    const lines = renderScreen({ ...view, state: 'busy', step: 'stay-busy' });
+
+    expect(lines.slice(3, 6)).toEqual(['state: busy', 'step: stay-busy', 'dialog: none']);
   });
 
   it('shows the dialog a person could answer (behavior 9)', () => {

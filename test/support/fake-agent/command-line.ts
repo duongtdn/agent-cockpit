@@ -8,6 +8,8 @@ export interface CommandLine {
   readonly settingsFile: string | undefined;
   /** The mode given with `--permission-mode`, or `default`. */
   readonly permissionMode: string;
+  /** The model given with `--model`, as it was written; none when the launch names none. */
+  readonly model: string | undefined;
   /** The prompt that follows `--`: submitted with no keys. */
   readonly prompt: string | undefined;
 }
@@ -52,6 +54,7 @@ export function parseCommandLine(args: readonly string[]): CommandLine {
     resumes: options.has('--resume'),
     settingsFile: options.get('--settings'),
     permissionMode: options.get('--permission-mode') ?? 'default',
+    model: options.get('--model'),
     prompt: prompts[0],
   };
 }

@@ -7,6 +7,7 @@ import {
   INTERRUPTED,
   INTERRUPTED_FOR_TOOL_USE,
   openTranscript,
+  secondsSinceLastResponse,
   transcriptPathFor,
 } from '../support/fake-agent/transcript.ts';
 import { findTranscript } from '../support/transcript-files.ts';
@@ -60,6 +61,36 @@ describe("the fake agent's transcript", () => {
       },
     ]);
     expect(entriesOf(path).every((entry) => typeof entry.timestamp === 'string')).toBe(true);
+  });
+
+  it("records a tool call as an entry of the agent's", () => {
+    const path = transcriptPathFor(configFolder, '/work/unit', ID);
+    const call = { id: 'toolu_fake_1', name: 'Bash', input: { command: 'touch a.txt' } };
+
+    openTranscript(path, ID).recordToolCall(call);
+
+    expect(entriesOf(path)).toMatchObject([
+      {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', ...call }] },
+      },
+    ]);
+  });
+
+  it('tells how long ago the agent last answered, with a text or a tool call', () => {
+    const path = transcriptPathFor(configFolder, '/work/unit', ID);
+    const transcript = openTranscript(path, ID);
+    const inAWhile = (ms: number) => new Date(Date.now() + ms);
+    transcript.recordPrompt('one');
+    expect(secondsSinceLastResponse(path, inAWhile(90_000))).toBeUndefined();
+
+    transcript.recordToolCall({ id: 'toolu_fake_1', name: 'Bash', input: {} });
+    transcript.recordInterruption(INTERRUPTED);
+
+    expect(secondsSinceLastResponse(path, inAWhile(90_500))).toBe(90);
+    expect(
+      secondsSinceLastResponse(join(configFolder, 'absent.jsonl'), new Date()),
+    ).toBeUndefined();
   });
 
   it('names the two interruption markers (behavior 6)', () => {

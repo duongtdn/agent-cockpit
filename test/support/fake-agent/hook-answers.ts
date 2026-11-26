@@ -11,6 +11,8 @@ export type Decision =
       readonly behavior: 'deny';
       /** Whether the refusal also interrupts the turn. */
       readonly interrupts: boolean;
+      /** What the hook tells the model of its refusal, when it says anything. */
+      readonly message: string | undefined;
     }
   | { readonly behavior: 'none' };
 
@@ -38,8 +40,8 @@ const DECISION_READERS: Readonly<Record<string, DecisionReader>> = {
  * Reads what the hooks of an event answered. Only what was observed of
  * Claude Code is read: no answer at all; for `PreToolUse`, an `allow`, with
  * an input or not; for `PermissionRequest`, an `allow`, with an input or
- * not, and a `deny`, which may interrupt the turn and whose message goes to
- * a model the fake agent has not.
+ * not, and a `deny`, which may interrupt the turn and whose message is what
+ * the model is told.
  *
  * @param event - The event's name.
  * @param answers - Each hook's answer, as parsed JSON.
@@ -91,7 +93,11 @@ function decisionOfTheAsk(specific: Fields, refuse: Refuse): Decision {
   }
   if (behavior === 'deny') {
     refuseFields(more, ['interrupt', 'message'], refuse);
-    return { behavior, interrupts: more.interrupt === true };
+    return {
+      behavior,
+      interrupts: more.interrupt === true,
+      message: typeof more.message === 'string' ? more.message : undefined,
+    };
   }
   throw refuse(String(JSON.stringify(behavior)));
 }

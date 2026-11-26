@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { CANNOT_PLAY_STATUS } from '../support/fake-agent/agent.ts';
 import { type Played, playFakeAgent as start, submit } from '../support/played-fake-agent.ts';
 
-const touch = { do: 'tool', name: 'Bash', input: { command: 'touch a.txt' } } as const;
+const touch = {
+  do: 'tool',
+  name: 'Bash',
+  input: { command: 'touch a.txt' },
+  result: '(Bash completed with no output)',
+} as const;
 const write = { do: 'tool', name: 'Write', input: { file_path: 'a.txt', content: '' } } as const;
 const reply = { do: 'reply', text: 'Done.' } as const;
 
@@ -117,8 +122,22 @@ describe('the fake agent, asked to play what it has no evidence for', () => {
         'PreToolUse',
         'PermissionRequest',
         'PostToolUse',
+        'PostToolBatch',
         'MessageDisplay',
         'Stop',
+      ],
+    ],
+    [
+      'PostToolBatch',
+      { decision: 'block', reason: 'Not so.' },
+      /PostToolBatch.*"decision"/,
+      [
+        'SessionStart',
+        'UserPromptSubmit',
+        'PreToolUse',
+        'PermissionRequest',
+        'PostToolUse',
+        'PostToolBatch',
       ],
     ],
     [
@@ -214,6 +233,7 @@ describe('the fake agent, asked to play what it has no evidence for', () => {
         'UserPromptSubmit',
         'PreToolUse',
         'PostToolUse',
+        'PostToolBatch',
         'MessageDisplay',
         'Stop',
       ]);
@@ -221,9 +241,71 @@ describe('the fake agent, asked to play what it has no evidence for', () => {
       submit(played, 'write it');
 
       await expectFailure(played, new RegExp(`Write.*${mode}`));
-      expect(played.fired.slice(6)).toEqual(['UserPromptSubmit', 'PreToolUse']);
+      expect(played.fired.slice(7)).toEqual(['UserPromptSubmit', 'PreToolUse']);
     },
   );
+
+  it('fails on a call that ran and whose script gives no result, when PostToolBatch has a hook', async () => {
+    const { result: _result, ...touchWithoutResult } = touch;
+    const played = await start({
+      script: [[touchWithoutResult, reply]],
+      mode: 'acceptEdits',
+    });
+
+    submit(played, 'touch it');
+
+    await expectFailure(played, /the call of Bash no "result", which a PostToolBatch hook is told/);
+    expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse']);
+  });
+
+  it('plays such a call when the settings give PostToolBatch no hook', async () => {
+    const { result: _result, ...touchWithoutResult } = touch;
+    const played = await start({
+      script: [[touchWithoutResult, reply]],
+      mode: 'acceptEdits',
+      withoutHooksFor: ['PostToolBatch'],
+    });
+
+    submit(played, 'touch it');
+
+    await vi.waitFor(() => expect(played.fired).toContain('Stop'));
+    expect(played.fired).not.toContain('PostToolBatch');
+    expect(played.exits).toEqual([]);
+  });
+
+  it('fails on the ask of a call that is no touch, when PermissionRequest has a hook: what it suggests is not known', async () => {
+    const played = await start({ script: [[write, reply]] });
+
+    submit(played, 'write it');
+
+    await expectFailure(played, /suggests when it asks about this call of Write/);
+    expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'PreToolUse']);
+  });
+
+  it('asks about such a call in the terminal when the settings give PermissionRequest no hook', async () => {
+    const played = await start({
+      script: [[write, reply]],
+      withoutHooksFor: ['PermissionRequest'],
+    });
+
+    submit(played, 'write it');
+
+    await vi.waitFor(() =>
+      expect(played.screen().dialog).toEqual({ kind: 'permission', toolName: 'Write' }),
+    );
+    expect(played.exits).toEqual([]);
+  });
+
+  it('fails on a call of a tool the settings allow some calls of only', async () => {
+    const played = await start({ script: [[touch, reply]], allowRules: ['Bash(sleep:*)'] });
+
+    submit(played, 'touch it');
+
+    await expectFailure(
+      played,
+      /the rule "Bash\(sleep:\*\)" of the settings allows this call of Bash/,
+    );
+  });
 
   it('fails on a call in a mode it does not know', async () => {
     const played = await start({ script: [[touch, reply]], mode: 'yolo' });

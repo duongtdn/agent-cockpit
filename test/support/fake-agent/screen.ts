@@ -13,6 +13,8 @@ export interface ScreenView {
   readonly sessionId: string;
   readonly permissionMode: string;
   readonly state: AgentState;
+  /** What the running turn does now, as its script names the step; none between turns. */
+  readonly step: string | undefined;
   /** The dialog on screen, if any. */
   readonly dialog: Dialog | undefined;
   /** The last prompt taken, if any. */
@@ -36,6 +38,7 @@ export function renderScreen(view: ScreenView): string[] {
     `session: ${view.sessionId}`,
     `mode: ${view.permissionMode}`,
     `state: ${view.state}`,
+    ...(view.step === undefined ? [] : [`step: ${view.step}`]),
     `dialog: ${view.dialog ? `${view.dialog.kind} ${view.dialog.toolName}` : 'none'}`,
     `prompt: ${view.lastPrompt === undefined ? 'none' : JSON.stringify(view.lastPrompt)}`,
     ...(view.problem === undefined ? [] : [`problem: ${view.problem}`]),

@@ -19,6 +19,7 @@ describe("the fake agent's command line, read as Claude Code's", () => {
       resumes: false,
       settingsFile: '/state/settings.json',
       permissionMode: 'acceptEdits',
+      model: undefined,
       prompt: undefined,
     });
   });
@@ -53,7 +54,7 @@ describe("the fake agent's command line, read as Claude Code's", () => {
     expect(line.prompt).toBeUndefined();
   });
 
-  it('accepts the other options a session is launched with', () => {
+  it('reads the model as it is written, and accepts the other options a session is launched with', () => {
     const line = parseCommandLine([
       '--resume',
       ID,
@@ -68,7 +69,7 @@ describe("the fake agent's command line, read as Claude Code's", () => {
       'go on',
     ]);
 
-    expect(line).toMatchObject({ sessionId: ID, resumes: true, prompt: 'go on' });
+    expect(line).toMatchObject({ sessionId: ID, resumes: true, model: 'haiku', prompt: 'go on' });
   });
 
   it('refuses an option a session is never launched with', () => {

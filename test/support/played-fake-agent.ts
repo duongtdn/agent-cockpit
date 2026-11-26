@@ -26,7 +26,14 @@ export interface Playing {
   readonly hookAnswers?: Readonly<Record<string, unknown>>;
   /** The events the settings give no hook; none by default: every event has its hook. */
   readonly withoutHooksFor?: readonly string[];
+  /** The rules the settings allow tool calls by; none by default. */
+  readonly allowRules?: readonly string[];
+  /** Whether the agent resumes a conversation, and how long ago it last answered in it; a new one by default. */
+  readonly resumedAfterSeconds?: number;
 }
+
+/** The folder a played agent says it runs in. */
+export const WORK_FOLDER = '/work';
 
 /**
  * Starts a fake agent in memory, for a test of what it plays: no process, no
@@ -40,6 +47,8 @@ export async function playFakeAgent({
   mode = 'default',
   hookAnswers = {},
   withoutHooksFor = [],
+  allowRules = [],
+  resumedAfterSeconds,
 }: Playing): Promise<Played> {
   const events: HookEvent[] = [];
   const fired: string[] = [];
@@ -49,9 +58,10 @@ export async function playFakeAgent({
   const agent = createFakeAgent({
     commandLine: {
       sessionId: '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11',
-      resumes: false,
+      resumes: resumedAfterSeconds !== undefined,
       settingsFile: undefined,
       permissionMode: mode,
+      model: 'haiku',
       prompt: undefined,
     },
     hooks: {
@@ -67,9 +77,13 @@ export async function playFakeAgent({
     transcript: {
       recordPrompt: (prompt) => recorded.push(prompt),
       recordReply: (text) => recorded.push(text),
+      recordToolCall: () => {},
       recordInterruption: (marker) => recorded.push(marker),
     },
     promptsTaken: 0,
+    secondsSinceLastResponse: resumedAfterSeconds,
+    workFolder: WORK_FOLDER,
+    allowRules,
     startReleased: async () => {},
     readScript: typeof script === 'function' ? script : () => script,
     show: (view) => views.push(view),
