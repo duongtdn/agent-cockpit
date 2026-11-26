@@ -1,8 +1,9 @@
-import { chmod, mkdir, stat } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { appFileName } from '../app-name.js';
 import type { SessionFolders } from '../sessions/sessions.js';
+import { openOwnFolder, type UntrustedStateError } from './own-files.js';
 
 /** The folder under the user's state root that holds every app's state folder. */
 const COCKPIT_FOLDER = 'agent-cockpit';
@@ -12,9 +13,6 @@ const SESSIONS_FOLDER = 'sessions';
 
 /** What a session's key may hold, so that its folder never leaves the sessions' folder. */
 const SESSION_KEY = /^[a-z0-9-]+$/;
-
-/** Rights of a folder of the cockpit's: its user's alone. */
-const PRIVATE_FOLDER = 0o700;
 
 /** The app's state folder, open. */
 export interface StateFolder {
@@ -51,48 +49,35 @@ function stateRoot(environment: Readonly<Record<string, string | undefined>>): s
 }
 
 /**
- * Opens an app's state folder: creates it, readable by the app's user
- * alone, and its missing parents as any folder. A folder that exists keeps
- * its rights: the app may have named a folder of its own, whose rights are
- * its to choose. What the cockpit keeps in it is private however the folder
- * is: its files are the user's alone, and so are its sessions' folders.
+ * Opens an app's state folder, the cockpit's own: creates it readable by
+ * the app's user alone, its missing parents as any folder; one that exists
+ * must be a folder of the user's — never a symbolic link — and is narrowed
+ * to the user alone, as are its sessions' folders. Another user able to
+ * write in it could plant the files the cockpit reads, the app's token
+ * among them.
  *
  * @param path - The folder, from {@link stateFolderPath}.
  * @returns The open folder.
- * @throws The file system's error when the folder cannot be created — a
- * parent that is a file, or a folder of another user; an `Error` when a
- * file stands in its place.
+ * @throws {@link UntrustedStateError} when the folder, or its sessions'
+ * folder, is a symbolic link, a file or another user's; the file system's
+ * error when it cannot be created — a parent that is a file, or a folder of
+ * another user.
  */
 export async function openStateFolder(path: string): Promise<StateFolder> {
-  await createFolderPrivate(path);
+  await mkdir(dirname(path), { recursive: true });
+  await openOwnFolder(path);
+  const sessions = join(path, SESSIONS_FOLDER);
+  await openOwnFolder(sessions);
   return {
     path,
     sessions: {
       async prepare(key) {
         if (!SESSION_KEY.test(key))
           throw new TypeError(`${JSON.stringify(key)} is no session key.`);
-        const folder = join(path, SESSIONS_FOLDER, key);
-        await privateFolder(join(path, SESSIONS_FOLDER));
-        await privateFolder(folder);
+        const folder = join(sessions, key);
+        await openOwnFolder(folder);
         return folder;
       },
     },
   };
-}
-
-/** Creates a folder readable by its user alone, unless one is there: that one is left as it is. */
-async function createFolderPrivate(path: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  try {
-    await mkdir(path, { mode: PRIVATE_FOLDER });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    if (!(await stat(path)).isDirectory()) throw new Error(`${path} is no folder.`);
-  }
-}
-
-/** Makes a folder of the cockpit's own readable by its user alone, whatever rights it had. */
-async function privateFolder(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: PRIVATE_FOLDER });
-  await chmod(path, PRIVATE_FOLDER);
 }

@@ -26,6 +26,10 @@ Nothing is published yet.
   on in tmux. The state folder (`$XDG_STATE_HOME/agent-cockpit/<name>` by
   default) and the app's token are readable by the app's user alone; the
   token and the agent-facing port stay the same from one start to the next.
+  The state folder is the cockpit's own: one that exists must be the user's
+  and is narrowed to the user alone, and each file read in it must be a
+  regular file of the user's (never a symbolic link), else `invalid-options`;
+  a token's file others could read gives way to a new token.
 - The app's lock: a Linux abstract unix socket named from an id in the state
   folder. A second process of the app waits 5 seconds, then rejects with
   `cockpit-locked`, whose `holder` is the holding process's id or

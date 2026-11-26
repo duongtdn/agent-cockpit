@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { link, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { link, rename, rm, writeFile } from 'node:fs/promises';
+import { readOwnFile, type UntrustedStateError } from './own-files.js';
 
 /** Where a file is written before it is put in place: beside it, so that the move is atomic. */
 function asideOf(path: string): string {
@@ -29,6 +30,8 @@ export async function writePrivateFile(path: string, content: string): Promise<v
  * @param path - The file.
  * @param content - What it holds if this writer creates it.
  * @returns What the file holds: this writer's content, or the winner's.
+ * @throws {@link UntrustedStateError} when the file there is no regular
+ * file of the user's; it is narrowed to the user alone when others had rights on it.
  */
 export async function createPrivateFileOnce(path: string, content: string): Promise<string> {
   const aside = asideOf(path);
@@ -38,7 +41,7 @@ export async function createPrivateFileOnce(path: string, content: string): Prom
     return content;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    return await readFile(path, 'utf8');
+    return await readOwnFile(path);
   } finally {
     await rm(aside, { force: true });
   }

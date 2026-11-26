@@ -1,5 +1,5 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { inspectOwnFile, type UntrustedStateError } from './own-files.js';
 import { writePrivateFile } from './private-files.js';
 import { mintToken, tokensMatch } from './tokens.js';
 
@@ -24,11 +24,15 @@ export interface AppToken {
 /**
  * Opens the app's token: the one kept in the state folder, so that a
  * restart sends no browser back for the link, or a new one at the first
- * start — or when the file holds no token the cockpit could have minted.
- * Called with the app's lock held, so no other process writes it meanwhile.
+ * start — or when the file holds no token the cockpit could have minted, or
+ * a group or others had rights on it: the token may then be known, and a
+ * new one sends every browser back for the link. Called with the app's lock
+ * held, so no other process writes it meanwhile.
  *
  * @param folder - The app's state folder.
  * @returns The token.
+ * @throws {@link UntrustedStateError} when the token's file is a symbolic
+ * link, no regular file or another user's: who planted it knows the token.
  */
 export async function openAppToken(folder: string): Promise<AppToken> {
   const file = join(folder, APP_TOKEN_FILE);
@@ -38,10 +42,11 @@ export async function openAppToken(folder: string): Promise<AppToken> {
   return { value, matches: (candidate) => tokensMatch(value, candidate) };
 }
 
+/** The token kept, when it is one the cockpit minted and nobody else could have read. */
 async function readKept(file: string): Promise<string | undefined> {
   try {
-    const content = await readFile(file, 'utf8');
-    return MINTED_TOKEN.test(content) ? content : undefined;
+    const { content, exposed } = await inspectOwnFile(file);
+    return !exposed && MINTED_TOKEN.test(content) ? content : undefined;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;

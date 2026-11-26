@@ -6,10 +6,12 @@ import { openAgentListener } from './agent-listener/agent-listener.js';
 import { type CockpitOptions, checkCockpitOptions } from './cockpit-options.js';
 import { createHandler } from './http/handler.js';
 import { type Job, launchOfJob } from './jobs.js';
+import type { SessionHost } from './session-host/session-host.js';
 import { createTmuxSessionHost } from './session-host/tmux-session-host.js';
 import { createSessions, type Sessions } from './sessions/sessions.js';
 import { openAppToken } from './state/app-token.js';
 import { takeAppLock } from './state/lock.js';
+import { UntrustedStateError } from './state/own-files.js';
 import { openStateFolder, stateFolderPath } from './state/state-folder.js';
 
 /** The fragment's key that carries the app's token in the page's link. */
@@ -86,8 +88,11 @@ export interface Cockpit {
  *
  * @param options - See {@link CockpitOptions}.
  * @returns The cockpit.
- * @throws `CockpitError` `invalid-options` with every issue of the options;
- * `unsupported-machine` when the machine is not Linux, or its tmux is
+ * @throws `CockpitError` `invalid-options` with every issue of the options,
+ * or with one issue when the state folder, or a file the cockpit reads in
+ * it, is not the cockpit's own (a symbolic link, not a folder or a regular
+ * file, another user's) — on `stateDirectory` when the app named the
+ * folder; `unsupported-machine` when the machine is not Linux, or its tmux is
  * missing or too old; `cockpit-locked` when another process of the app runs
  * a cockpit.
  */
@@ -96,7 +101,22 @@ export async function createCockpit(options: CockpitOptions): Promise<Cockpit> {
   checkPlatform(process.platform);
   const host = createTmuxSessionHost({ appName: checked.name });
   await host.checkMachine();
-  const folder = await openStateFolder(stateFolderPath(checked.name, checked.stateDirectory));
+  const statePath = stateFolderPath(checked.name, checked.stateDirectory);
+  try {
+    return await openCockpit(checked, host, statePath);
+  } catch (error) {
+    if (!(error instanceof UntrustedStateError)) throw error;
+    throw untrustedState(error, statePath, checked.stateDirectory !== undefined);
+  }
+}
+
+/** Opens the state folder, takes the lock, and assembles the cockpit around them. */
+async function openCockpit(
+  checked: CockpitOptions,
+  host: SessionHost,
+  statePath: string,
+): Promise<Cockpit> {
+  const folder = await openStateFolder(statePath);
   const lock = await takeAppLock(folder.path);
   try {
     const appToken = await openAppToken(folder.path);
@@ -152,6 +172,25 @@ export async function createCockpit(options: CockpitOptions): Promise<Cockpit> {
     await lock.release();
     throw error;
   }
+}
+
+/**
+ * The refusal of a state folder the cockpit cannot call its own: an issue on
+ * `stateDirectory` when the app named the folder, else on the options as a
+ * whole, naming the default folder.
+ */
+function untrustedState(
+  error: UntrustedStateError,
+  statePath: string,
+  named: boolean,
+): CockpitError<'invalid-options'> {
+  const why = `${error.message} The state folder must be the cockpit's own: a folder of the app's user, which no other user can write, and its files the user's.`;
+  const issue = named
+    ? { path: ['stateDirectory'], message: why }
+    : { path: [], message: `The default state folder ${statePath}: ${why}` };
+  return new CockpitError('invalid-options', "The cockpit's state folder cannot be trusted.", {
+    issues: [issue],
+  });
 }
 
 /**

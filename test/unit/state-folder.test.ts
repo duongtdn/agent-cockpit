@@ -1,7 +1,16 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { UntrustedStateError } from '../../src/server/state/own-files.ts';
 import { openStateFolder, stateFolderPath } from '../../src/server/state/state-folder.ts';
 
 const modeOf = (path: string) => statSync(path).mode & 0o777;
@@ -66,18 +75,46 @@ describe('openStateFolder', () => {
     expect(modeOf(join(root, 'a/b'))).toBe(modeOf(plain));
   });
 
-  it('leaves the rights of a folder that exists, which may be the app’s, as they are', async () => {
+  it('narrows a folder of the user’s that others could reach: it is the cockpit’s own', async () => {
     const path = join(root, 'my-app');
     mkdirSync(path);
-    chmodSync(path, 0o755);
+    chmodSync(path, 0o775);
     await openStateFolder(path);
-    expect(modeOf(path)).toBe(0o755);
+    expect(modeOf(path)).toBe(0o700);
   });
 
   it('refuses a path that is a file', async () => {
     const path = join(root, 'my-app');
     writeFileSync(path, '');
-    await expect(openStateFolder(path)).rejects.toThrow();
+    await expect(openStateFolder(path)).rejects.toThrow(UntrustedStateError);
+  });
+
+  it('refuses a symbolic link, even to a folder of the user’s, and leaves its target as it is', async () => {
+    const target = join(root, 'elsewhere');
+    mkdirSync(target);
+    chmodSync(target, 0o755);
+    const path = join(root, 'my-app');
+    symlinkSync(target, path);
+    await expect(openStateFolder(path)).rejects.toThrow(UntrustedStateError);
+    expect(modeOf(target)).toBe(0o755);
+  });
+
+  it('refuses a folder of another user, and says whose', async () => {
+    const path = join(root, 'my-app');
+    mkdirSync(path, { mode: 0o700 });
+    const owner = statSync(path).uid;
+    vi.spyOn(process, 'getuid').mockReturnValue(owner + 1);
+    try {
+      await expect(openStateFolder(path)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'UntrustedStateError',
+          path,
+          message: expect.stringContaining(`another user (uid ${owner})`),
+        }),
+      );
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   describe('the sessions’ folders', () => {
@@ -97,6 +134,14 @@ describe('openStateFolder', () => {
       expect(await folder.sessions.prepare('k')).toBe(path);
       expect(statSync(join(path, 'kept')).isFile()).toBe(true);
       expect(modeOf(path)).toBe(0o700);
+    });
+
+    it('refuses a sessions’ folder that is a symbolic link', async () => {
+      const path = join(root, 'my-app');
+      mkdirSync(path, { mode: 0o700 });
+      mkdirSync(join(root, 'elsewhere'));
+      symlinkSync(join(root, 'elsewhere'), join(path, 'sessions'));
+      await expect(openStateFolder(path)).rejects.toThrow(UntrustedStateError);
     });
 
     it.each(['', '..', 'a/b', 'A', 'a_b', '.hidden'])(

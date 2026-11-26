@@ -1,9 +1,9 @@
-import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { HOOKS_PATH, type HookRequest } from '../driver.js';
 import { readBodyWithin } from '../http/body.js';
 import type { HookAccess } from '../sessions/sessions.js';
+import { readOwnFile, type UntrustedStateError } from '../state/own-files.js';
 import { writePrivateFile } from '../state/private-files.js';
 import { createHookTokens, type HookTokens } from './hook-tokens.js';
 
@@ -63,7 +63,9 @@ export interface AgentListener {
  * @param options - See {@link AgentListenerOptions}.
  * @returns The listener, listening.
  * @throws The system's `EADDRINUSE` error when the port the app fixes is
- * taken; the file system's error when the port cannot be remembered.
+ * taken; {@link UntrustedStateError} when the file of the remembered port is
+ * a symbolic link, no regular file or another user's; the file system's
+ * error when the port cannot be remembered.
  */
 export async function openAgentListener(options: AgentListenerOptions): Promise<AgentListener> {
   const portFile = join(options.folder, PORT_FILE);
@@ -92,7 +94,7 @@ export async function openAgentListener(options: AgentListenerOptions): Promise<
 }
 
 async function readRememberedPort(file: string): Promise<number | undefined> {
-  const text = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
+  const text = await readOwnFile(file).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return '';
     throw error;
   });

@@ -24,9 +24,13 @@ export interface CockpitOptions {
   /**
    * The folder the cockpit keeps its own files in — the folder itself, not
    * a parent of it; by default `$XDG_STATE_HOME/agent-cockpit/<name>`
-   * (`~/.local/state` when `XDG_STATE_HOME` is unset). Created readable by
-   * the app's user alone when missing; one that exists keeps its rights,
-   * the cockpit's files and folders in it being the user's alone.
+   * (`~/.local/state` when `XDG_STATE_HOME` is unset). It is the cockpit's
+   * own, so private: created readable by the app's user alone when
+   * missing; one that exists must be a folder of the user's, never a
+   * symbolic link, and is narrowed to the user alone. A file the cockpit
+   * reads in it must be a regular file of the user's: one others could read
+   * is narrowed, the app's token minted anew. Otherwise `createCockpit`
+   * rejects with `invalid-options`.
    */
   readonly stateDirectory?: string;
   /**

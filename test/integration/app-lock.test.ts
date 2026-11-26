@@ -1,10 +1,20 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type AppLock, takeAppLock } from '../../src/server/state/lock.ts';
+import { UntrustedStateError } from '../../src/server/state/own-files.ts';
 import { CockpitError } from '../../src/shared/cockpit-error.ts';
 import { killLockHolders, type LockHolder, startLockHolder } from '../support/lock-holders.ts';
 
@@ -127,6 +137,22 @@ describe('the app’s lock', () => {
     await lock.release();
     await take();
     expect(readFileSync(file, 'utf8')).toBe(id);
+  });
+
+  it('narrows the id’s file when others could read it, keeping the id', async () => {
+    const id = 'ab'.repeat(16);
+    const file = join(folder, 'lock-id');
+    writeFileSync(file, id);
+    chmodSync(file, 0o644);
+    await take();
+    expect(readFileSync(file, 'utf8')).toBe(id);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses an id’s file that is a symbolic link', async () => {
+    writeFileSync(join(root, 'elsewhere'), 'ab'.repeat(16), { mode: 0o600 });
+    symlinkSync(join(root, 'elsewhere'), join(folder, 'lock-id'));
+    await expect(takeAppLock(folder, { waitMs: 0 })).rejects.toThrow(UntrustedStateError);
   });
 
   it('refuses a damaged id rather than take a lock no other process would see', async () => {

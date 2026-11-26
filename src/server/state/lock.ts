@@ -56,8 +56,9 @@ export interface LockOptions {
  * end of the wait: `holder` is the holder's pid as the kernel tells it, or
  * `another-user` when the socket that holds the name — listening or not —
  * is none of the user's processes.
- * The file system's error when the state folder's id cannot be read or
- * created, or is damaged.
+ * `UntrustedStateError` when the id's file is a symbolic link, no regular
+ * file or another user's. The file system's error when the state folder's
+ * id cannot be read or created, or is damaged.
  */
 export async function takeAppLock(folder: string, options: LockOptions = {}): Promise<AppLock> {
   const { waitMs = LOCK_WAIT_MS, procRoot = '/proc' } = options;

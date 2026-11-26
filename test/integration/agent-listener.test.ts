@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { connect, createServer, type Server } from 'node:net';
@@ -18,6 +19,7 @@ import {
   openAgentListener,
 } from '../../src/server/agent-listener/agent-listener.ts';
 import type { HookRequest } from '../../src/server/driver.ts';
+import { UntrustedStateError } from '../../src/server/state/own-files.ts';
 
 let folder: string;
 let received: HookRequest[];
@@ -169,9 +171,26 @@ describe('the agent-facing listener', () => {
       }
     });
 
-    it('fails when the remembered port cannot be read', async () => {
+    it('refuses a remembered port that is no regular file', async () => {
       mkdirSync(join(folder, 'agent-port'));
-      await expect(open()).rejects.toMatchObject({ code: 'EISDIR' });
+      await expect(open()).rejects.toThrow(UntrustedStateError);
+    });
+
+    it('refuses a remembered port that is a symbolic link', async () => {
+      const elsewhere = join(folder, 'elsewhere');
+      writeFileSync(elsewhere, String(await freePort()), { mode: 0o600 });
+      symlinkSync(elsewhere, join(folder, 'agent-port'));
+      await expect(open()).rejects.toThrow(UntrustedStateError);
+    });
+
+    it('narrows the remembered port’s file when others could reach it, binding that port', async () => {
+      const first = await open();
+      await closeListener(first);
+      const file = join(folder, 'agent-port');
+      chmodSync(file, 0o666);
+      const second = await open();
+      expect(second.port).toBe(first.port);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
     });
 
     it('frees its port when closed', async () => {

@@ -57,6 +57,15 @@ request also carries the app's token, or is refused with `no-token`
 - The token is 256 random bits, made at the app's first start and kept in
   the cockpit's state folder, readable by the app's user alone; it stays the
   same from one start to the next.
+- The state folder is the cockpit's own, and is kept private, so that no
+  other user can read the token or plant one they know. A folder that
+  exists must be the user's and is narrowed to the user alone; a symbolic
+  link, a file in its place or another user's folder is refused
+  (`invalid-options`). Nothing in it is followed: each file the cockpit
+  reads there (the token, the lock's id, the agent-facing port) must be a
+  regular file of the user's, or the start is refused the same way. A
+  token's file others had rights on is replaced by a new token, since the
+  old one may have been read; the other files are narrowed to the user.
 - `cockpit.link(pageUrl)` puts it in the page's link, in the fragment
   (`#cockpit=…`), which a browser never sends to a server.
 - The client and the terminal take it from the fragment, remove it from the

@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
@@ -416,6 +426,77 @@ describe('creating and closing the cockpit', () => {
 
     expect(second.link('http://127.0.0.1:8765/')).toBe(link);
     expect(link).toMatch(/^http:\/\/127\.0\.0\.1:8765\/#cockpit=[A-Za-z0-9_-]{43}$/);
+  });
+
+  describe('the state folder, the cockpit’s own', () => {
+    function optionsIn(stateDirectory?: string) {
+      made += 1;
+      return {
+        name: `assembly-state-${process.pid}-${made}`,
+        directory: root,
+        driver: claudeCode(),
+        jobs: [],
+        ...(stateDirectory === undefined ? {} : { stateDirectory }),
+      };
+    }
+
+    it('narrows a folder the app named that its group could write, and keeps it so', async () => {
+      const stateDirectory = join(root, `shared-${made}`);
+      mkdirSync(stateDirectory);
+      chmodSync(stateDirectory, 0o775);
+      const cockpit = await createCockpit(optionsIn(stateDirectory));
+      cleanups.push(() => cockpit.close());
+      expect(statSync(stateDirectory).mode & 0o777).toBe(0o700);
+      expect(statSync(join(stateDirectory, 'app-token')).mode & 0o777).toBe(0o600);
+    });
+
+    it('refuses a folder the app named that is a symbolic link, on `stateDirectory`', async () => {
+      const target = join(root, `target-${made}`);
+      mkdirSync(target, { mode: 0o700 });
+      const stateDirectory = join(root, `linked-${made}`);
+      symlinkSync(target, stateDirectory);
+      await expect(createCockpit(optionsIn(stateDirectory))).rejects.toMatchObject({
+        code: 'invalid-options',
+        issues: [{ path: ['stateDirectory'], message: expect.stringContaining(stateDirectory) }],
+      });
+    });
+
+    it('refuses a planted file in the folder the app named, naming it on `stateDirectory`', async () => {
+      const stateDirectory = join(root, `planted-${made}`);
+      mkdirSync(stateDirectory, { mode: 0o700 });
+      const elsewhere = join(root, `planted-token-${made}`);
+      writeFileSync(elsewhere, 'kq3J_x-9Zt0aPbXw2eYc8vRm4nLs6uHd1oQiGfAjK7E', { mode: 0o600 });
+      symlinkSync(elsewhere, join(stateDirectory, 'app-token'));
+      await expect(createCockpit(optionsIn(stateDirectory))).rejects.toMatchObject({
+        code: 'invalid-options',
+        issues: [
+          {
+            path: ['stateDirectory'],
+            message: expect.stringContaining(join(stateDirectory, 'app-token')),
+          },
+        ],
+      });
+    });
+
+    it('refuses the default folder when it is not the cockpit’s own, saying it is the default', async () => {
+      const before = process.env.XDG_STATE_HOME;
+      const xdg = join(root, `xdg-${made}`);
+      vi.stubEnv('XDG_STATE_HOME', xdg);
+      const options = optionsIn();
+      const folder = join(xdg, 'agent-cockpit', options.name);
+      const target = join(root, `default-target-${made}`);
+      mkdirSync(join(xdg, 'agent-cockpit'), { recursive: true });
+      mkdirSync(target, { mode: 0o700 });
+      symlinkSync(target, folder);
+      try {
+        const refused = await createCockpit(options).catch((error: unknown) => error);
+        expect(refused).toMatchObject({ code: 'invalid-options', issues: [{ path: [] }] });
+        const [issue] = (refused as { issues: { message: string }[] }).issues;
+        expect(issue?.message).toContain(`The default state folder ${folder}`);
+      } finally {
+        vi.stubEnv('XDG_STATE_HOME', before);
+      }
+    });
   });
 
   it('settles a run still pending when it is closed, and launches nothing more', async () => {
