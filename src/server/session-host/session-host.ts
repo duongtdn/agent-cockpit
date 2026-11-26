@@ -73,7 +73,9 @@ export interface SessionProcess {
  */
 export interface Attachment {
   /**
-   * Listens to what the session draws.
+   * Listens to what the session draws. The first listener also gets what was
+   * drawn since the terminal attached — the whole screen, as the host drew it
+   * for the new terminal — so that none of it is lost before anyone listens.
    *
    * @param listener - Called with each piece of terminal output, as text.
    * @returns A function that stops the listening.

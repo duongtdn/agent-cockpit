@@ -14,7 +14,9 @@ export interface AttachingTerminal {
 }
 
 /**
- * Starts a tmux client that attaches to a session, in a pty of its own. The
+ * Starts a tmux client that attaches to a session, in a pty of its own. Its
+ * output from the start, the screen tmux draws as it attaches included, goes
+ * to the attachment's first listener; later listeners hear from then on. The
  * client is told its terminal is xterm's: the browser's terminal emulates
  * it, and tmux sends the clipboard, focus and color sequences only to a
  * terminal it knows to take them.
@@ -39,6 +41,15 @@ export function attachTerminal(
     ...ptySize(size),
     env: tmux.environment(),
   });
+  // tmux draws the whole screen as it attaches, before the attachment is
+  // handed out: what comes before the first listener is held for it.
+  const held: string[] = [];
+  const listeners = new Set<(data: string) => void>();
+  let heard = false;
+  pty.onData((data) => {
+    if (!heard) held.push(data);
+    for (const listener of listeners) listener(data);
+  });
   // A pty whose client has exited throws on a write or a resize.
   let ended = false;
   const end = new Promise<void>((resolve) => {
@@ -50,8 +61,14 @@ export function attachTerminal(
 
   const attachment: Attachment = {
     onData(listener) {
-      const subscription = pty.onData(listener);
-      return () => subscription.dispose();
+      // A wrapper of its own, so that one listener given twice is two.
+      const each = (data: string) => listener(data);
+      if (!heard) {
+        heard = true;
+        for (const data of held.splice(0)) each(data);
+      }
+      listeners.add(each);
+      return () => void listeners.delete(each);
     },
     onEnd(listener) {
       let listening = true;

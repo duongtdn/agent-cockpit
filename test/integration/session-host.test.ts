@@ -866,6 +866,16 @@ describe('an attached terminal', () => {
     await eventually(async () => expect(await rows()).toBe(20));
   });
 
+  it('gives its first listener the screen tmux drew as it attached', async () => {
+    await startScript('drawn', 'echo already-drawn; exec cat');
+    await expectScreen('drawn', 'already-drawn');
+
+    const attachment = await attach('drawn');
+    const output = outputOf(attachment);
+
+    await eventually(() => expect(output.text).toContain('already-drawn'));
+  });
+
   it('stops giving output to a listener that left', async () => {
     await startScript('quiet', 'read line; echo marker; exec cat');
     const attachment = await attach('quiet');
