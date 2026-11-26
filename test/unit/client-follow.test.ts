@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CockpitError, createCockpitClient, type Session } from '../../src/client/index.ts';
 import { FOLLOW_SESSIONS_PATH, WIRE_SUBPROTOCOL } from '../../src/shared/wire.ts';
 import { loadAfresh, openPage } from '../support/browser-page.ts';
+import { installPageWebSocket } from '../support/page-web-socket.ts';
 import { json, startWireServer, type WireServer } from '../support/wire-server.ts';
 
 const token = 'kq3J_x-9Zt0aPbXw2eYc8vRm4nLs6uHd1oQiGfAjK7E';
@@ -21,6 +22,7 @@ beforeEach(async () => {
   server = await startWireServer();
   stops = [];
   openPage(`http://127.0.0.1:8765/#cockpit=${token}`);
+  installPageWebSocket();
 });
 
 afterEach(async () => {

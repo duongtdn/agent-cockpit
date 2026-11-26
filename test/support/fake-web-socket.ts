@@ -1,6 +1,22 @@
 import { vi } from 'vitest';
 
 /**
+ * The browser's `CloseEvent`, as far as the page reads it. Node has no
+ * global `CloseEvent` before 23, and the package supports Node 22.
+ */
+class FakeCloseEvent extends Event {
+  readonly code: number;
+  readonly reason = '';
+  readonly wasClean: boolean;
+
+  constructor(code: number) {
+    super('close');
+    this.code = code;
+    this.wasClean = code !== 1006;
+  }
+}
+
+/**
  * A browser `WebSocket` the test drives by hand: it opens, delivers, drops or
  * fails only when told. For what depends on time between connections (the
  * back-off), with fake timers; the wire itself is tested on real sockets.
@@ -70,12 +86,12 @@ export class FakeWebSocket extends EventTarget {
   drop(): void {
     this.readyState = FakeWebSocket.CLOSED;
     this.dispatchEvent(new Event('error'));
-    this.dispatchEvent(new CloseEvent('close', { code: 1006 }));
+    this.dispatchEvent(new FakeCloseEvent(1006));
   }
 
   /** The server closes the connection with a code. */
   closeWith(code: number): void {
     this.readyState = FakeWebSocket.CLOSED;
-    this.dispatchEvent(new CloseEvent('close', { code }));
+    this.dispatchEvent(new FakeCloseEvent(code));
   }
 }
