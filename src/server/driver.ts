@@ -445,8 +445,10 @@ export interface TypingTerminal {
   promptTaken(prompt: string, withinMs: number): Promise<boolean>;
   /**
    * The terminal through which the driver puts the person's draft back
-   * once the typing stopped: whatever the hooks told of a turn, a write is
-   * taken while the session is heard and the screen shows the input box.
+   * once the typing stopped: whatever turn the hooks told of, a write is
+   * taken while the session is heard, the agent has used no tool since the
+   * typing began (a tool may ask, its dialog drawn over the box a moment
+   * later, where a key could answer it), and the screen shows the input box.
    * Once one is refused with
    * {@link TypingStoppedError}, every later one is, and the typing's end
    * refuses them all.

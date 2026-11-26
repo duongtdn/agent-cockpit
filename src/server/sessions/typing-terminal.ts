@@ -37,8 +37,8 @@ export interface TypingTerminalOptions {
  * or anything waiting for a person, stops it. Before every write the
  * screen must show the input box, as the driver reads it. Once stopped,
  * the driver may still put the person's draft back through
- * {@link restoring}, whose writes need only the session heard and its box
- * shown.
+ * {@link restoring}, whose writes need only the session heard, no tool used
+ * since the typing began, and its box shown.
  */
 export class SessionTypingTerminal implements TypingTerminal {
   readonly #options: TypingTerminalOptions;
@@ -49,6 +49,11 @@ export class SessionTypingTerminal implements TypingTerminal {
   /** The prompt the driver waits for, as the agent carries it, once it says. */
   #expected: string | undefined;
   #stopped = false;
+  /**
+   * Whether the agent used a tool since the typing began: one may ask, and
+   * its dialog be drawn over the box at any moment.
+   */
+  #toolUsed = false;
   /** Whether a write to put the draft back was refused: every later one is. */
   #restoreStopped = false;
   #closed = false;
@@ -67,6 +72,7 @@ export class SessionTypingTerminal implements TypingTerminal {
   /** Takes what the session's hooks told while the prompt is typed. */
   heard(events: readonly DriverEvent[]): void {
     for (const event of events) {
+      if (event.type === 'working') this.#toolUsed = true;
       if (event.type !== 'prompt-taken') continue;
       this.#taken.push(event.prompt);
       for (const waiter of this.#waiters) waiter();
@@ -123,7 +129,7 @@ export class SessionTypingTerminal implements TypingTerminal {
     });
   }
 
-  /** Runs a write that puts the draft back once the session is heard and its box shown. */
+  /** Runs a write that puts the draft back while the session is heard, uses no tool, and shows its box. */
   async #restoreChecked(write: () => Promise<void>): Promise<void> {
     const why = this.#refusalToRestore() ?? (await this.#refusalByScreen());
     if (why !== undefined) {
@@ -163,7 +169,9 @@ export class SessionTypingTerminal implements TypingTerminal {
   #refusalToRestore(): string | undefined {
     if (this.#closed) return 'The typing is over.';
     if (this.#restoreStopped) return 'Putting the draft back was stopped.';
-    return this.#options.session() === undefined ? 'The session is no longer heard.' : undefined;
+    if (this.#options.session() === undefined) return 'The session is no longer heard.';
+    // A dialog is drawn a while after its hook: a key that checked the screen just before could answer it.
+    return this.#toolUsed ? 'The agent uses a tool, which may ask over the box.' : undefined;
   }
 
   #refusalByHooks(): string | undefined {

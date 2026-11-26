@@ -211,6 +211,21 @@ describe('a prompt sent to an `idle` session', () => {
     expect(writes()).toEqual(['C-u', 'C-y']);
   });
 
+  it('refuses to put the draft back once the agent used a tool, which may ask over the box', async () => {
+    await idleSession();
+    driver.typePrompt = async (prompt, terminal) => {
+      await terminal.pressKeys(['C-u']);
+      hook(`${PROMPT_PATH}<task-notification>`);
+      hook('/working');
+      await expect(terminal.typeText(prompt)).rejects.toThrow(TypingStoppedError);
+      await expect(terminal.restoring.pressKeys(['C-y'])).rejects.toThrow(TypingStoppedError);
+      return { draftLeft: 'In the kill ring.' };
+    };
+
+    await expect(sending()).rejects.toMatchObject({ code: 'wrong-state', state: 'busy' });
+    expect(writes()).toEqual(['C-u']);
+  });
+
   it('refuses to put the draft back while the screen shows no input box, and every write after', async () => {
     await idleSession();
     let terminalOf: TypingTerminal | undefined;
