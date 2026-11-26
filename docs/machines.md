@@ -104,14 +104,40 @@ On Linux, Claude Code's sandbox needs:
 
 - `bubblewrap` (`bwrap`) and `socat`, on the `PATH` the agent runs with (on
   Debian or Ubuntu: `apt-get install bubblewrap socat`);
-- unprivileged user namespaces, which `bwrap` makes. Ubuntu 24.04 keeps an
-  unconfined `bwrap` from making them through AppArmor: allow them, for
-  instance with `sysctl kernel.apparmor_restrict_unprivileged_userns=0` (a
-  setting of the whole machine; an AppArmor profile for `bwrap` is the
-  narrower way). `bwrap --unshare-all --die-with-parent --ro-bind / / true`
-  must then run without an error.
+- unprivileged user namespaces, which `bwrap` makes, and a second one that
+  Claude Code's seccomp helper makes inside `bwrap`, with its capabilities
+  there (to write `/proc/self/setgroups`).
 
-WSL2 runs it the same way. Claude Code's `sandbox.failIfUnavailable: true`
+Ubuntu 24.04 restricts both through AppArmor:
+
+- the setting `kernel.apparmor_restrict_unprivileged_userns` keeps an
+  unconfined process from making a user namespace;
+- the profiles of `bwrap-userns-restrict` (`bwrap` and `unpriv_bwrap`),
+  loaded whatever that setting says, let `bwrap` make its namespace but run
+  everything inside it under `unpriv_bwrap`, which denies every capability.
+
+There, a check of one level, `bwrap --unshare-all --die-with-parent --ro-bind
+/ / true`, passes, yet every sandboxed command the agent runs fails, with a
+message like `apply-seccomp: … nested userns is capability-restricted …`.
+The check that tells is the nested one:
+
+```sh
+bwrap --unshare-all --die-with-parent --ro-bind / / --proc /proc --dev /dev \
+  unshare --user --map-root-user true
+```
+
+It must run without an error. The cockpit's CI makes it pass by setting
+`sysctl kernel.apparmor_restrict_unprivileged_userns=0` and unloading that
+profile (`apparmor_parser --remove /etc/apparmor.d/bwrap-userns-restrict`).
+Both lower the machine's protection: Ubuntu restricts user namespaces
+because they open the kernel to attacks, and unloading the profile, or
+adjusting it to grant those capabilities, gives that back to whatever runs
+in `bwrap`. On a person's machine it is their choice, not the cockpit's.
+Without the sandbox, the cockpit's lines keep the agent out only as the
+"Without the sandbox" column of the
+[confinement table](security.md#keeping-the-agent-out) says.
+
+WSL2 runs the sandbox as Linux does. Claude Code's `sandbox.failIfUnavailable: true`
 in the person's settings makes the agent stop where the sandbox cannot run,
 rather than run unsandboxed. The cockpit's own tests run the sandbox on
 these programs, on CI too.
