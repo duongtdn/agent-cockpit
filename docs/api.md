@@ -157,14 +157,14 @@ subprotocol; never in a URL.
 
 ### `createCockpit(options)`
 
-| Option           | Default                                | What it does                                                                                                                                                   |
-| ---------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`           | required                               | The app's name, any non-empty text: its tmux socket (`agent-cockpit-<name>`), its state folder and its lock are named after it.                                |
-| `directory`      | required                               | The app's folder, where its sessions run: an existing folder, absolute or relative to the server's working folder.                                             |
-| `driver`         | required                               | The agent's driver: `claudeCode(…)`.                                                                                                                           |
-| `jobs`           | required                               | The jobs the app offers, each with an id of its own: `{ id, title, description?, args, key, prompt? }`.                                                        |
-| `stateDirectory` | `$XDG_STATE_HOME/agent-cockpit/<name>` | Where the cockpit keeps its own files (`~/.local/state` when `XDG_STATE_HOME` is unset): created readable by the app's user alone.                             |
-| `agentPort`      | one the system chooses, then kept      | The port of the agent-facing listener, on `127.0.0.1`. Left out, the port chosen at the first start is kept in the state folder and taken again at each start. |
+| Option           | Default                                | What it does                                                                                                                                                                                                                                                                  |
+| ---------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`           | required                               | The app's name, any non-empty text: its tmux socket (`agent-cockpit-<name>`), its state folder and its lock are named after it.                                                                                                                                               |
+| `directory`      | required                               | The app's folder, where its sessions run: an existing folder, absolute or relative to the server's working folder.                                                                                                                                                            |
+| `driver`         | required                               | The agent's driver: `claudeCode(…)`.                                                                                                                                                                                                                                          |
+| `jobs`           | required                               | The jobs the app offers, each with an id of its own: `{ id, title, description?, args, key, prompt? }`.                                                                                                                                                                       |
+| `stateDirectory` | `$XDG_STATE_HOME/agent-cockpit/<name>` | The folder the cockpit keeps its own files in, itself, not a parent (`~/.local/state` when `XDG_STATE_HOME` is unset): created readable by the app's user alone when missing; one that exists keeps its rights, the cockpit's files and folders in it being the user's alone. |
+| `agentPort`      | one the system chooses, then kept      | The port of the agent-facing listener, on `127.0.0.1`. Left out, the port chosen at the first start is kept in the state folder and taken again at each start.                                                                                                                |
 
 Any other option, and any other field of a job, is refused with
 `invalid-options`, never ignored: this version takes no `hiddenEnv`,
@@ -185,9 +185,7 @@ launches `claude` from the `PATH` of the server's environment, without the
 variables Claude Code sets for the programs it runs (`CLAUDE_CODE_*`,
 `CLAUDECODE`), so a server started from a Claude Code terminal does not hand
 that session's to its agents. Each session's settings and its token are
-written in the cockpit's state folder (`stateDirectory`, the folder itself:
-created readable by the app's user alone when missing, its rights kept when
-it exists), in files and folders readable by the app's user alone;
+written in the cockpit's state folder, readable by the app's user alone;
 the token is never on a command line or in the environment.
 
 ## Operations
