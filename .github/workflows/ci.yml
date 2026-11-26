@@ -72,13 +72,13 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: cockpit-diagnostics-node-${{ matrix.node }}
-          path: /tmp/cockpit-diagnostics
+          name: contract-results-node-${{ matrix.node }}
+          path: test-results/contract.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: contract-results-node-${{ matrix.node }}
-          path: test-results/contract.json
+          name: cockpit-diagnostics-node-${{ matrix.node }}
+          path: /tmp/cockpit-diagnostics
       - run: pnpm build
       - run: pnpm test:pack
       # A browser through the apps of examples/, on the built package, against the scripted API.

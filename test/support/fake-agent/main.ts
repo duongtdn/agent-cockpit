@@ -83,7 +83,7 @@ for (const args of [
 ]) {
   try {
     diag(
-      `tmux ${args.join(' ')}: ${(await import('node:child_process')).execFileSync('tmux', args, { encoding: 'utf8' }).trim()}`,
+      `tmux ${args.join(' ')}: ${(await import('node:child_process')).execFileSync('tmux', args, { encoding: 'utf8', stdio: 'pipe' }).trim()}`,
     );
   } catch (e) {
     diag(`tmux ${args.join(' ')} failed: ${String(e).slice(0, 200)}`);
