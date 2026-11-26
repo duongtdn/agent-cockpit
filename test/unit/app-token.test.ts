@@ -2,6 +2,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -97,5 +98,82 @@ describe('openAppToken', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+});
+
+describe('renewing the app’s token', () => {
+  it('mints a new token, kept in the state folder for the app’s user alone, and refuses the old one', async () => {
+    const token = await openAppToken(folder);
+    const old = token.value;
+
+    await token.renew();
+
+    expect(token.value).not.toBe(old);
+    expect(isWireToken(token.value)).toBe(true);
+    expect(token.matches(token.value)).toBe(true);
+    expect(token.matches(old)).toBe(false);
+    const file = join(folder, 'app-token');
+    expect(readFileSync(file, 'utf8')).toBe(token.value);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('is followed by a comparison taken from the token before it was renewed', async () => {
+    const token = await openAppToken(folder);
+    const { matches } = token;
+    const old = token.value;
+
+    await token.renew();
+
+    expect(matches(old)).toBe(false);
+    expect(matches(token.value)).toBe(true);
+  });
+
+  it('never makes an earlier token valid again', async () => {
+    const token = await openAppToken(folder);
+    const earlier = [token.value];
+    for (let renewal = 0; renewal < 3; renewal += 1) {
+      await token.renew();
+      earlier.push(token.value);
+    }
+
+    expect(new Set(earlier).size).toBe(earlier.length);
+    for (const old of earlier.slice(0, -1)) expect(token.matches(old)).toBe(false);
+  });
+
+  it('keeps the renewed token across a restart', async () => {
+    const token = await openAppToken(folder);
+    const old = token.value;
+    await token.renew();
+
+    const restarted = await openAppToken(folder);
+
+    expect(restarted.value).toBe(token.value);
+    expect(restarted.matches(old)).toBe(false);
+  });
+
+  it('keeps the file and the token in force alike when renewed twice at once', async () => {
+    const token = await openAppToken(folder);
+
+    await Promise.all([token.renew(), token.renew()]);
+
+    expect(readFileSync(join(folder, 'app-token'), 'utf8')).toBe(token.value);
+    expect(readdirSync(folder)).toEqual(['app-token']);
+  });
+
+  it('fails as a whole when the new token cannot be kept: the token in force stays, and stays on disk', async () => {
+    const token = await openAppToken(folder);
+    const old = token.value;
+    chmodSync(folder, 0o500);
+    try {
+      await expect(token.renew()).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      chmodSync(folder, 0o700);
+    }
+
+    expect(token.value).toBe(old);
+    expect(token.matches(old)).toBe(true);
+    expect(readFileSync(join(folder, 'app-token'), 'utf8')).toBe(old);
+    await token.renew();
+    expect(token.matches(old)).toBe(false);
   });
 });
