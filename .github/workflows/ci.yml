@@ -18,9 +18,19 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@v7
-      # node-pty ships no prebuilt binary for Linux: its install script compiles it.
-      - name: Install tmux and what node-pty compiles with
-        run: sudo apt-get update && sudo apt-get install --yes tmux build-essential python3
+      # node-pty ships no prebuilt binary for Linux: its install script compiles it. The agent's
+      # sandbox, which the contract rows of the confinement lines turn on, runs on bubblewrap and socat.
+      - name: Install tmux, what node-pty compiles with, and the agent's sandbox
+        run: sudo apt-get update && sudo apt-get install --yes tmux build-essential python3 bubblewrap socat
+      # Ubuntu 24.04 keeps an unconfined bwrap from making user namespaces; the sandbox needs them.
+      # The check fails the job here, loudly, if the runner still cannot make one.
+      - name: Let the agent's sandbox make user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-all --die-with-parent --ro-bind / / true
+          echo "bwrap makes its namespaces"
       - name: Check that tmux is 3.2a or later
         run: |
           version="$(tmux -V | cut -d ' ' -f 2)"
@@ -39,6 +49,9 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:browser
       # The pinned agent, in tmux, against a scripted API of the suite's own: no login, no secret.
+      # Its sandbox rows fail where the sandbox cannot run; only COCKPIT_CONTRACT_SANDBOX_LACKING,
+      # set here with a reason, would leave them out, and contract.json would say so. It is not set:
+      # the step above makes the sandbox run.
       - run: pnpm test:contract
       - uses: actions/upload-artifact@v7
         if: always()
