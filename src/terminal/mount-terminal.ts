@@ -49,7 +49,8 @@ export interface MountedTerminal {
    * HTTP request to the terminal's path that the same checks and the
    * terminal's switch refuse the same way — `refused` with its `cause`
    * (`terminal-off` among them), or `no-token` — or `unreachable`: nothing
-   * answers, what answers is not the cockpit, or the checks pass and still
+   * answers, the answer breaks off as it is read, what answers is not the
+   * cockpit, or the checks pass and still
    * no WebSocket opened (a proxy between may not pass them). A connection
    * that drops and reconnects is not reported. On `terminal-off` the
    * terminal stops trying: the app's switch refuses it until the app

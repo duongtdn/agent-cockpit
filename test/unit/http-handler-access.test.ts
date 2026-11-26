@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHandler, type Handler, type HandlerOptions } from '../../src/server/http/handler.ts';
+import { headerToken, subprotocolToken } from '../../src/server/http/request-token.ts';
 import type { Attachment } from '../../src/server/session-host/session-host.ts';
 import type { Session } from '../../src/shared/session.ts';
 import { eventually } from '../support/eventually.ts';
@@ -65,6 +66,14 @@ interface Served {
   readonly asked: IncomingMessage[];
   readonly failures: { where: string; cause: unknown }[];
   readonly attachments: QuietAttachment[];
+  /**
+   * Renews the app's token through the handler: `putInForce` is awaited
+   * before the new token is in force, so that a test can hold the renewal
+   * under way.
+   */
+  renewToken(next: string, putInForce?: Promise<void>): Promise<void>;
+  /** Whether a request carries the token in force, as the app's `cockpit.verify` tells. */
+  verify(request: IncomingMessage): boolean;
   /** Closes the servers as an app does, waiting for every connection to end. */
   closeServers(): Promise<void>;
 }
@@ -105,8 +114,9 @@ async function serve(
     await listen('127.0.0.2'),
   ];
   const authorize = access.authorize;
+  let token = TOKEN;
   handler = createHandler({
-    tokenMatches: (candidate) => candidate === TOKEN,
+    tokenMatches: (candidate) => candidate === token,
     run: async () => ({ action: 'started', state: 'busy' }),
     sessions: {
       list: () => [idle],
@@ -143,7 +153,25 @@ async function serve(
       servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
     );
   };
-  return { handler, local, lan, other, asked, failures, attachments, closeServers };
+  const renewToken = (next: string, putInForce = Promise.resolve()) =>
+    served.renewToken(async () => {
+      await putInForce;
+      token = next;
+    });
+  const verify = (request: IncomingMessage) =>
+    (headerToken(request) ?? subprotocolToken(request)) === token;
+  return {
+    handler,
+    local,
+    lan,
+    other,
+    asked,
+    failures,
+    attachments,
+    renewToken,
+    verify,
+    closeServers,
+  };
 }
 
 const ws = (base: string, path: string) => `${base.replace('http', 'ws')}${path}`;
@@ -505,7 +533,26 @@ describe('the terminal’s switch', () => {
   });
 });
 
-describe('closing every browser-facing WebSocket, as a renewal of the token does', () => {
+/** A promise a test settles when it chooses: an `authorize`'s lookup, a renewal's write. */
+function gate<T>(): { readonly promise: Promise<T>; open(value: T): void } {
+  let open: (value: T) => void = () => {};
+  const promise = new Promise<T>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
+}
+
+/** The retryable answer to a request whose admission overlapped a renewal of the token. */
+const RETRY_LATER = { status: 503, headers: expect.objectContaining({ 'retry-after': '1' }) };
+
+/** What refused a handshake, its status and headers; `undefined` for one that opened. */
+async function handshakeRefusal(url: string, options: CallOptions) {
+  const outcome = await openSocket(url, options);
+  if ('open' in outcome) outcome.open.socket.close();
+  return 'refused' in outcome ? outcome.refused : undefined;
+}
+
+describe('a renewal of the token', () => {
   async function openTerminal(base: string, options: CallOptions): Promise<OpenSocket> {
     const terminal = await openedSocket(ws(base, '/terminal/explain-a'), options);
     terminal.socket.send(JSON.stringify({ type: 'resize', columns: 80, rows: 24 }));
@@ -513,8 +560,21 @@ describe('closing every browser-facing WebSocket, as a renewal of the token does
     return terminal;
   }
 
-  it('closes every socket, local and remote, detaches every terminal, and goes on serving', async () => {
-    const { handler, local, lan, attachments } = await serve({
+  /**
+   * An app that opens remote access by the link and looks the person up
+   * besides: `verify` passes at once, the lookup waits on the test.
+   */
+  async function serveVerifyThenLookUp() {
+    const lookup = gate<boolean>();
+    const served: Served = await serve({
+      authorize: async (request) => served.verify(request) && (await lookup.promise),
+      origins: lanOrigin,
+    });
+    return { ...served, lookup };
+  }
+
+  it('closes every socket, local and remote, detaches every terminal, and goes on serving with the new token', async () => {
+    const { renewToken, local, lan, attachments } = await serve({
       authorize: () => true,
       origins: lanOrigin,
     });
@@ -525,29 +585,97 @@ describe('closing every browser-facing WebSocket, as a renewal of the token does
       await openTerminal(lan, {}),
     ];
 
-    await handler.closeAllSockets();
+    await renewToken('the-new-token');
 
     expect(attachments.map((attachment) => attachment.detached)).toEqual([true, true]);
     for (const opened of sockets) await opened.closed;
-    expect(await everySurface(ALL, local, { token: TOKEN })).toEqual(served(ALL));
+    expect(await everySurface(ALL, local, { token: 'the-new-token' })).toEqual(served(ALL));
+    expect(await everySurface(ALL, local, { token: TOKEN })).toEqual(
+      refusedAll(ALL, { code: 'no-token' }),
+    );
   });
 
-  it('checks again only the token of a handshake under way when they closed: authorize is asked once, its verdict kept', async () => {
-    let release: (accepted: boolean) => void = () => {};
-    const pending = new Promise<boolean>((resolve) => {
-      release = resolve;
-    });
-    const { handler, lan, asked } = await serve({ authorize: () => pending, origins: lanOrigin });
-    const outcome = handshake(ws(lan, '/follow/sessions'), {});
+  it('refuses a remote request verify passed with the old token while authorize was still out: 503 to retry, authorize asked once; the next attempt is asked afresh', async () => {
+    const { renewToken, lan, asked, lookup } = await serveVerifyThenLookUp();
+    const answer = call(`${lan}/sessions`, { token: TOKEN });
     await eventually(() => expect(asked).toHaveLength(1));
 
-    await handler.closeAllSockets();
-    release(true);
+    await renewToken('the-new-token');
+    lookup.open(true);
 
-    expect(await outcome).toEqual({ status: 101 });
+    expect(await answer).toMatchObject(RETRY_LATER);
     expect(asked).toHaveLength(1);
+    expect((await call(`${lan}/sessions`, { token: 'the-new-token' })).status).toBe(200);
+    expect((await call(`${lan}/sessions`, { token: TOKEN })).status).toBe(403);
+    expect(asked).toHaveLength(3);
   });
 
+  it('refuses a remote terminal handshake verify passed with the old token while authorize was still out: 503 to retry, no shell; the next attempt is asked afresh', async () => {
+    const { renewToken, lan, asked, attachments, lookup } = await serveVerifyThenLookUp();
+    const refusal = handshakeRefusal(ws(lan, '/terminal/explain-a'), { token: TOKEN });
+    await eventually(() => expect(asked).toHaveLength(1));
+
+    await renewToken('the-new-token');
+    lookup.open(true);
+
+    expect(await refusal).toMatchObject(RETRY_LATER);
+    expect(asked).toHaveLength(1);
+    expect(attachments).toEqual([]);
+    (await openTerminal(lan, { token: 'the-new-token' })).socket.close();
+    expect(await handshakeRefusal(ws(lan, '/terminal/explain-a'), { token: TOKEN })).toMatchObject({
+      status: 403,
+    });
+    expect(asked).toHaveLength(3);
+  });
+
+  it('refuses a remote request whose admission began while a renewal was under way and ended after it', async () => {
+    const { renewToken, lan, asked, lookup } = await serveVerifyThenLookUp();
+    const written = gate<void>();
+    const renewal = renewToken('the-new-token', written.promise);
+    const http = call(`${lan}/sessions`, { token: TOKEN });
+    const upgrade = handshakeRefusal(ws(lan, '/follow/sessions'), { token: TOKEN });
+    await eventually(() => expect(asked).toHaveLength(2));
+
+    written.open();
+    await renewal;
+    lookup.open(true);
+
+    expect(await http).toMatchObject(RETRY_LATER);
+    expect(await upgrade).toMatchObject(RETRY_LATER);
+  });
+
+  it('refuses a local request and handshake admitted by the old token while the renewal was under way: 503 to retry; the next attempt needs the new token', async () => {
+    const { renewToken, local, attachments } = await serve();
+    const written = gate<void>();
+    const renewal = renewToken('the-new-token', written.promise);
+
+    expect(await call(`${local}/sessions`, { token: TOKEN })).toMatchObject(RETRY_LATER);
+    expect(
+      await handshakeRefusal(ws(local, '/terminal/explain-a'), { token: TOKEN }),
+    ).toMatchObject(RETRY_LATER);
+    written.open();
+    await renewal;
+
+    expect(attachments).toEqual([]);
+    expect(
+      await handshakeRefusal(ws(local, '/terminal/explain-a'), { token: TOKEN }),
+    ).toMatchObject({ status: 401 });
+    (await openTerminal(local, { token: 'the-new-token' })).socket.close();
+  });
+
+  it('lets a refusal overlapping it stand: told its cause, not to retry', async () => {
+    const { renewToken, lan, asked, lookup } = await serveVerifyThenLookUp();
+    const answer = call(`${lan}/sessions`, { token: TOKEN });
+    await eventually(() => expect(asked).toHaveLength(1));
+
+    await renewToken('the-new-token');
+    lookup.open(false);
+
+    expect(await answer).toMatchObject({ status: 403 });
+  });
+});
+
+describe('closing the handler', () => {
   it('answers 503 to a request whose admission was under way when the handler closed', async () => {
     let release: (accepted: boolean) => void = () => {};
     const pending = new Promise<boolean>((resolve) => {

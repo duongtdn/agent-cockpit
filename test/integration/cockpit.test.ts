@@ -357,6 +357,46 @@ describe.each([
       }
     });
 
+    it('refuses a remote request and handshake that verify passed with the token renewed while authorize looked the person up: 503 to retry; the next ones are asked afresh', async () => {
+      let lookUp: (found: boolean) => void = () => {};
+      const lookup = new Promise<boolean>((resolve) => {
+        lookUp = resolve;
+      });
+      let asked = 0;
+      let cockpit: Cockpit | undefined;
+      const started = await start(undefined, {
+        authorize: async (request) => {
+          asked += 1;
+          return (cockpit?.verify(request) ?? false) && (await lookup);
+        },
+      });
+      cockpit = started.cockpit;
+      const { token, base } = started;
+      const http = call(`${base}/sessions`, { token, headers: forwarded });
+      const upgrade = openSocket(ws(base, '/follow/sessions'), { token, headers: forwarded });
+      await vi.waitFor(() => expect(asked).toBe(2));
+
+      await cockpit.renewToken();
+      lookUp(true);
+
+      const retryLater = {
+        status: 503,
+        headers: expect.objectContaining({ 'retry-after': '1' }),
+      };
+      expect(await http).toMatchObject(retryLater);
+      expect(await upgrade).toMatchObject({ refused: retryLater });
+      expect(asked).toBe(2);
+      const renewed = tokenOf(cockpit);
+      expect((await call(`${base}/sessions`, { token: renewed, headers: forwarded })).status).toBe(
+        200,
+      );
+      (
+        await openedSocket(ws(base, '/follow/sessions'), { token: renewed, headers: forwarded })
+      ).socket.close();
+      expect((await call(`${base}/sessions`, { token, headers: forwarded })).status).toBe(403);
+      expect(asked).toBe(5);
+    });
+
     it('admits an origin the app allowed, and a Host naming it', async () => {
       const { token, base } = await start(undefined, { origins: ['http://app.example:8080'] });
       const headers = { origin: 'http://app.example:8080', host: 'app.example:8080' };

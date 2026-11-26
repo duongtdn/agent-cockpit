@@ -17,7 +17,6 @@ import { type BridgedSessions, bridgeTerminal } from './pty-bridge.js';
 import {
   type AccessRules,
   type Admission,
-  admissionAfterRenewal,
   admissionOf,
   type Reach,
   terminalRefusalOf,
@@ -82,16 +81,22 @@ export interface Handler {
   /** Serves a WebSocket upgrade under the mount. */
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
-   * Closes every browser-facing WebSocket — the sessions' followers and
-   * every terminal — so that each reconnect passes the checks again, as a
-   * renewal of the app's token needs (a live terminal is a shell). A
-   * handshake whose admission is under way is checked again for the token
-   * alone: a verdict of the app's `authorize` stands. Later requests are
-   * served as before.
+   * Renews the app's token: puts the new one in force, then closes every
+   * browser-facing WebSocket — the sessions' followers and every terminal
+   * — so that each reconnect passes the checks again (a live terminal is a
+   * shell). A request or handshake whose admission overlaps the renewal
+   * was checked, or let in by the app's `authorize`, against a token that
+   * may be revoked: it is never admitted, but answered 503 with
+   * `Retry-After`, and comes back as a new request, checked afresh, so
+   * that `authorize` is still asked once a request. A refusal stands.
+   * Later requests are served as before.
    *
-   * @returns A promise fulfilled once every terminal is detached.
+   * @param putInForce - Puts the new token in force; once it settles,
+   * `tokenMatches` compares with the new token.
+   * @returns A promise fulfilled once every terminal is detached; rejected
+   * with what `putInForce` rejected with, no socket closed.
    */
-  closeAllSockets(): Promise<void>;
+  renewToken(putInForce: () => Promise<void>): Promise<void>;
   /**
    * Refuses every later request, ends every request whose admission is
    * under way (503: an `authorize` that never settles holds nothing open),
@@ -126,50 +131,47 @@ export function createHandler(options: HandlerOptions): Handler {
     reportAuthorizeFailure: (cause) => options.reportFailure('authorize', cause),
   };
   let closed = false;
-  // Counts the closings of every socket: a handshake admitted before one is
-  // checked again, since the token that admitted it may have been renewed.
-  let socketClosings = 0;
-  // Ends each request whose admission is under way: the app's `authorize`
-  // may never settle, and closing must not wait for it.
-  const admissionsUnderWay = new Set<() => void>();
+  // The renewals of the token under way: an admission that begins while one
+  // is may have been checked against the token it revokes.
+  let renewalsUnderWay = 0;
+  // Each admission under way: the handler's closing ends it, since the
+  // app's `authorize` may never settle; a renewal marks it as overlapped.
+  const admissionsUnderWay = new Set<AdmissionUnderWay>();
 
   /**
-   * Awaits a request's admission, unless the handler closes first: then
-   * `end` answers the request, and the admission, whenever it comes, is
-   * dropped.
-   *
-   * @returns The admission; `undefined` once the handler closed.
+   * Admits a request, as the request checks do, unless a renewal of the
+   * token overlaps its admission (it is to come again, as a new request)
+   * or the handler closes first (the admission, whenever it comes, is
+   * dropped).
    */
-  const awaitAdmission = (
-    admission: Promise<Admission>,
-    end: () => void,
-  ): Promise<Admission | undefined> =>
+  const admit = (request: IncomingMessage, token: string | undefined): Promise<Verdict> =>
     new Promise((resolve, reject) => {
-      const endNow = () => {
-        admissionsUnderWay.delete(endNow);
-        end();
-        resolve(undefined);
+      const underWay: AdmissionUnderWay = {
+        overlapsRenewal: renewalsUnderWay > 0,
+        end: () => {
+          admissionsUnderWay.delete(underWay);
+          resolve({ answer: CLOSING });
+        },
       };
-      admissionsUnderWay.add(endNow);
-      admission.then(
-        (given) => {
-          if (admissionsUnderWay.delete(endNow)) resolve(given);
+      admissionsUnderWay.add(underWay);
+      admissionOf(request, token, rules).then(
+        (admission) => {
+          if (admissionsUnderWay.delete(underWay)) {
+            resolve(verdictOf(admission, underWay.overlapsRenewal));
+          }
         },
         (error: unknown) => {
-          if (admissionsUnderWay.delete(endNow)) reject(error);
+          if (admissionsUnderWay.delete(underWay)) reject(error);
         },
       );
     });
 
   const handle: Handler['handle'] = (request, response) => {
-    if (closed) return writeAnswer(response, { status: 503 });
-    const closing = () => writeAnswer(response, { status: 503 });
-    awaitAdmission(admissionOf(request, headerToken(request), rules), closing)
-      .then((admission) => {
-        if (admission === undefined) return undefined;
-        if ('refused' in admission) return errorAnswer(admission.refused);
-        return serve(request, admission.admitted, options);
-      })
+    if (closed) return writeAnswer(response, CLOSING);
+    admit(request, headerToken(request))
+      .then((verdict) =>
+        'answer' in verdict ? verdict.answer : serve(request, verdict.admitted, options),
+      )
       .then(
         (answer) => {
           if (answer !== undefined) writeAnswer(response, answer);
@@ -182,16 +184,10 @@ export function createHandler(options: HandlerOptions): Handler {
   };
 
   const admitUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const closingsBefore = socketClosings;
-    const token = subprotocolToken(request);
-    const closing = () => refuseUpgrade(socket, { status: 503 });
-    awaitAdmission(admissionOf(request, token, rules), closing).then(
-      (given) => {
-        if (given === undefined) return;
-        const admission =
-          socketClosings === closingsBefore ? given : admissionAfterRenewal(given, token, rules);
-        if ('refused' in admission) return refuseUpgrade(socket, errorAnswer(admission.refused));
-        upgradeAdmitted(request, socket, head, admission.admitted);
+    admit(request, subprotocolToken(request)).then(
+      (verdict) => {
+        if ('answer' in verdict) return refuseUpgrade(socket, verdict.answer);
+        upgradeAdmitted(request, socket, head, verdict.admitted);
       },
       (error: unknown) => {
         options.reportFailure('handler', error);
@@ -222,8 +218,18 @@ export function createHandler(options: HandlerOptions): Handler {
     });
   };
 
+  const renewToken: Handler['renewToken'] = async (putInForce) => {
+    renewalsUnderWay += 1;
+    for (const underWay of admissionsUnderWay) underWay.overlapsRenewal = true;
+    try {
+      await putInForce();
+    } finally {
+      renewalsUnderWay -= 1;
+    }
+    await closeAllSockets();
+  };
+
   const closeAllSockets = async (): Promise<void> => {
-    socketClosings += 1;
     // Terminated, not closed with a handshake: a peer that never answers
     // the close must not keep a shell.
     for (const client of sockets.clients) client.terminate();
@@ -237,17 +243,41 @@ export function createHandler(options: HandlerOptions): Handler {
       // needed while the admission is under way, or a reset peer would
       // crash the server.
       socket.on('error', () => socket.destroy());
-      if (closed) return refuseUpgrade(socket, { status: 503 });
+      if (closed) return refuseUpgrade(socket, CLOSING);
       admitUpgrade(request, socket, head);
     },
-    closeAllSockets,
+    renewToken,
     async close() {
       closed = true;
-      for (const end of [...admissionsUnderWay]) end();
+      for (const underWay of [...admissionsUnderWay]) underWay.end();
       await closeAllSockets();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
     },
   };
+}
+
+/** An admission under way: how the handler's closing ends it, and whether a renewal overlapped it. */
+interface AdmissionUnderWay {
+  readonly end: () => void;
+  overlapsRenewal: boolean;
+}
+
+/** What becomes of a request once admitted or not: served, from where, or answered at once. */
+type Verdict = { readonly admitted: Reach } | { readonly answer: WireAnswer };
+
+/** The answer to a request the handler does not serve because it is closing. */
+const CLOSING: WireAnswer = { status: 503 };
+
+/**
+ * The answer to a request whose admission overlapped a renewal of the
+ * token: no verdict of the checks, which may admit it now, but a request
+ * to come again — the client's reconnection does — and be checked afresh.
+ */
+const RENEWED_MEANWHILE: WireAnswer = { status: 503, headers: { 'retry-after': '1' } };
+
+function verdictOf(admission: Admission, overlapsRenewal: boolean): Verdict {
+  if ('refused' in admission) return { answer: errorAnswer(admission.refused) };
+  return overlapsRenewal ? { answer: RENEWED_MEANWHILE } : admission;
 }
 
 async function serve(

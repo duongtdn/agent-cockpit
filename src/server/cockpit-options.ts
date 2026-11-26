@@ -54,7 +54,9 @@ export interface CockpitOptions {
    * in the driver's options. It must settle: the request waits for it, and
    * the cockpit sets no time limit on it (bounding it is the app's); one
    * still pending when the cockpit closes is answered 503. It is asked once
-   * a request: a renewal of the token while it runs keeps its verdict.
+   * a request: a request whose admission overlaps a renewal of the token
+   * (`renewToken`) is not admitted, whatever it resolves, but answered 503
+   * with `Retry-After`, and asked afresh when it comes back as a new one.
    */
   readonly authorize?: (request: IncomingMessage) => boolean | Promise<boolean>;
   /**

@@ -104,7 +104,11 @@ export interface Cockpit {
    * put in force, and the one before is refused at once (`no-token`). Every
    * browser-facing WebSocket is closed, the terminals' among them, so that
    * each page that reconnects is checked again: pages need the new link,
-   * which `link` then gives.
+   * which `link` then gives. A request or handshake whose admission
+   * overlaps the renewal — the old token compared, or the app's `authorize`
+   * still out — is never admitted: it is answered 503 with `Retry-After`,
+   * and comes back as a new request, checked afresh (the client and the
+   * terminal reconnect on their own).
    *
    * @returns A promise fulfilled once the new token is in force and every
    * socket closed.
@@ -121,11 +125,12 @@ export interface Cockpit {
   /** Serves a WebSocket upgrade of the browser's, mounted as `handle` is. */
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
-   * Closes the cockpit: refuses every later request and run, settles every
-   * run still pending (it rejects), closes every WebSocket and detaches
-   * every terminal, stops the agent-facing listener and releases the app's
-   * lock. The sessions go on in tmux: nothing is killed, and no timer of the
-   * cockpit's is left.
+   * Closes the cockpit: refuses every later request and run, answers 503 to
+   * each request whose admission is still pending (an `authorize` still
+   * out among them), settles every run still pending (it rejects), closes
+   * every WebSocket and detaches every terminal, stops the agent-facing
+   * listener and releases the app's lock. The sessions go on in tmux:
+   * nothing is killed, and no timer of the cockpit's is left.
    */
   close(): Promise<void>;
 }
@@ -222,8 +227,7 @@ async function openCockpit(
     const renewToken = async (): Promise<void> => {
       // Once closed the lock is another process's to take, and the token's file with it.
       if (closing !== undefined) throw new Error('The cockpit is closed: it renews no token.');
-      await appToken.renew();
-      await handler.closeAllSockets();
+      await handler.renewToken(appToken.renew);
     };
     return {
       run,

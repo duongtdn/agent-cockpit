@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   type AccessRules,
   type Admission,
-  admissionAfterRenewal,
   admissionOf,
   terminalRefusalOf,
 } from '../../src/server/http/request-checks.ts';
@@ -196,34 +195,6 @@ describe('the token, on a local request', () => {
 
   it('is asked after the request checks: a refused request is told its cause, not the token', async () => {
     expect(await causeOf({ token: undefined, headers: { host: 'evil.example' } })).toBe('host');
-  });
-});
-
-describe('an admission checked again after a renewal of the token', () => {
-  const renewed = { tokenMatches: (candidate: string | undefined) => candidate === 'new-token' };
-
-  it('keeps a local request admitted by the old token out: no-token', () => {
-    const admission = admissionAfterRenewal({ admitted: 'local' }, TOKEN, renewed);
-
-    expect('refused' in admission && isCockpitError(admission.refused, 'no-token')).toBe(true);
-  });
-
-  it('keeps a local request in that carries the new token', () => {
-    expect(admissionAfterRenewal({ admitted: 'local' }, 'new-token', renewed)).toEqual({
-      admitted: 'local',
-    });
-  });
-
-  it('keeps the verdict authorize gave a remote request, which no token made', () => {
-    expect(admissionAfterRenewal({ admitted: 'remote' }, undefined, renewed)).toEqual({
-      admitted: 'remote',
-    });
-  });
-
-  it('lets a refusal stand', async () => {
-    const refused = await admit({ token: undefined });
-
-    expect(admissionAfterRenewal(refused, 'new-token', renewed)).toBe(refused);
   });
 });
 
