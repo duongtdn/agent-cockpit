@@ -59,7 +59,8 @@
     "test:coverage": "vitest run --project unit --project integration --coverage",
     "test:contract": "vitest run --project contract --reporter=default --reporter=./test/contract/results-reporter.ts",
     "test:browser": "vitest run --project browser",
-    "check": "pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm test:browser && pnpm test:contract && pnpm build && pnpm test:pack",
+    "test:e2e": "vitest run --project e2e",
+    "check": "pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm test:browser && pnpm test:contract && pnpm build && pnpm test:pack && pnpm test:e2e",
     "test:pack": "vitest run --project pack"
   },
   "dependencies": {

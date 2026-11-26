@@ -39,6 +39,16 @@ export default defineConfig({
           testTimeout: 30_000,
         },
       },
+      {
+        // A browser through an example app, as a person uses it: the example
+        // runs as its own process on the built package (after `pnpm build`).
+        test: {
+          name: 'e2e',
+          include: ['test/e2e/**/*.test.ts'],
+          testTimeout: 60_000,
+          hookTimeout: 60_000,
+        },
+      },
     ],
     coverage: {
       provider: 'v8',

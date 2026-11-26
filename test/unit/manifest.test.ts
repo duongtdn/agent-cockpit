@@ -123,14 +123,14 @@ describe('package.json', () => {
 
 describe('the check script and CI', () => {
   const workflow = readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8');
-  const scriptsOfCheck = [...manifest.scripts.check.matchAll(/pnpm ([a-z:]+)/g)].map(
+  const scriptsOfCheck = [...manifest.scripts.check.matchAll(/pnpm ([a-z0-9:]+)/g)].map(
     ([, script]) => script,
   );
-  const scriptsOfCi = [...workflow.matchAll(/run: pnpm ([a-z:]+)$/gm)]
+  const scriptsOfCi = [...workflow.matchAll(/run: pnpm ([a-z0-9:]+)$/gm)]
     .map(([, script]) => script)
     .filter((script) => script !== 'install');
 
-  it('check typechecks, lints, tests, runs the browser and the contract suites, builds and packs', () => {
+  it('check typechecks, lints, tests, runs the browser and the contract suites, builds, packs, and runs the end-to-end tests on the build', () => {
     expect(scriptsOfCheck).toEqual([
       'typecheck',
       'lint',
@@ -139,6 +139,7 @@ describe('the check script and CI', () => {
       'test:contract',
       'build',
       'test:pack',
+      'test:e2e',
     ]);
   });
 
@@ -150,6 +151,12 @@ describe('the check script and CI', () => {
     const install = workflow.indexOf('run: pnpm exec playwright install --with-deps chromium');
     expect(install).toBeGreaterThan(-1);
     expect(install).toBeLessThan(workflow.indexOf('run: pnpm test:browser'));
+  });
+
+  it("CI installs Playwright's Chromium before the end-to-end tests", () => {
+    const install = workflow.indexOf('run: pnpm exec playwright install --with-deps chromium');
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(workflow.indexOf('run: pnpm test:e2e'));
   });
 
   it('CI installs with the lockfile frozen', () => {

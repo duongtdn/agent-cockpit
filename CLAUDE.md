@@ -45,15 +45,20 @@ Packages: `server/` `node-pty`, `ws` and `zod`; `fastify/` `fastify`;
 ## Commands
 
 - `pnpm check` — typecheck, lint, unit, integration and contract tests,
-  build, `npm pack --dry-run`: what CI runs. Green before every commit that
+  build, `npm pack --dry-run`, the end-to-end tests: what CI runs. Green before every commit that
   ends a piece of work.
 - `pnpm test:coverage` — the unit and the integration tests in one run, with
   the coverage gate (90% of `src/`): only real tmux exercises the code that
   speaks to it, so the gate counts both.
 - `pnpm test` (unit, quick), `pnpm test:integration` (real tmux),
-  `pnpm test:contract` (the real agent, below), `pnpm test:pack` (after a
-  build). The end-to-end and the live suites (`test/e2e/`, `test/live/`:
-  the real model, by hand only) are not written yet.
+  `pnpm test:contract` (the real agent, below), `pnpm test:pack` and
+  `pnpm test:e2e` (both after a build). The live suite (`test/live/`: the
+  real model, by hand only) is not written yet.
+- `pnpm test:e2e` runs `test/e2e/`: Playwright's Chromium through an
+  example app of `examples/`, started as its `DEMO.md` says
+  (`test/support/example-app.ts`), on the built package, against the
+  scripted API. Each example imports the package by its name (the package's
+  self-reference), never `src/`, and is not in the package.
 - `pnpm build`, `pnpm typecheck`, `pnpm lint` (Biome, which also formats).
 
 ## The contract suite
