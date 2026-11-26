@@ -13,8 +13,8 @@ cockpit, runs a job on a key with no session, follows the sessions live, and
 mounts a session's terminal in its page. Access is built: the cockpit serves
 the loopback by default, with a token from the app's link, and the app may
 open it beyond the machine with its own `authorize`; every session's
-settings keep the agent from the cockpit's files, the app's port and every
-file that would start code at its next launch. The Claude Code driver is complete: its options
+settings keep the agent from the cockpit's files, the app's port and the
+files the cockpit can name that would start code at its next launch. The Claude Code driver is complete: its options
 (mode, rules, model, plugin, sources of settings, the sandbox), a job's
 own driver part, the agent's version checked before each launch, start-up
 dialogs, failed turns, background tasks and compaction. Most operations

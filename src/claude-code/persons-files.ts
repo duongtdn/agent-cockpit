@@ -1,3 +1,4 @@
+import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { givenAndRealPaths, holdsRuleSyntax } from '../server/confinement.js';
@@ -7,12 +8,26 @@ import { agentConfigFolder } from './conversations.js';
 /** The person's own files and folders that start code at the agent's next launch. */
 export interface PersonsStartUpFiles {
   /**
-   * Their settings (`<config>/settings.json`: hooks) and configuration
-   * files (`<config>/.claude.json`, `~/.claude.json`: MCP servers), each by
-   * the path the agent reads it at and by its real path.
+   * Their settings (`<config>/settings.json`: hooks), the legacy
+   * configuration file (`<config>/.config.json`, which the agent reads over
+   * `.claude.json` when it holds anything: MCP servers), and each
+   * configuration file found in the configuration folder or the home under
+   * any of its names (`.claude*.json`), each by the path the agent reads it
+   * at and by its real path.
    */
   readonly personsFiles: readonly string[];
-  /** Their plugins' folder (`<config>/plugins`), by both paths. */
+  /**
+   * The folders the agent reads its configuration file in, under any of
+   * its names (`.claude*.json`: `.claude.json`, or a suffixed one), whether
+   * it exists yet or not: the configuration folder and the home, by both
+   * paths.
+   */
+  readonly configurationFileFolders: readonly string[];
+  /**
+   * Their folders every file of which is denied: plugins, agents and skills
+   * (`<config>/plugins`, `agents`, `skills`: an agent's or a skill's
+   * frontmatter may hold hooks), by both paths.
+   */
   readonly personsFolders: readonly string[];
 }
 
@@ -53,6 +68,9 @@ function homeOf(environment: Readonly<Record<string, string>>): string {
   return home !== undefined && home !== '' ? home : homedir();
 }
 
+/** How the agent names its configuration file: `.claude.json`, or with a suffix. */
+const CONFIGURATION_FILE_NAME = /^\.claude.*\.json$/;
+
 /**
  * Gives the person's files that start code at the agent's next launch,
  * for the `Edit` denies of a launch with this environment.
@@ -64,14 +82,38 @@ export async function personsStartUpFiles(
   environment: Readonly<Record<string, string>>,
 ): Promise<PersonsStartUpFiles> {
   const { config, home } = personsFolders(environment);
+  const configurationFiles = [
+    ...(await configurationFilesIn(config.path)),
+    ...(await configurationFilesIn(home.path)),
+  ];
   return {
     personsFiles: await givenAndRealPaths([
       join(config.path, 'settings.json'),
-      join(config.path, '.claude.json'),
-      join(home.path, '.claude.json'),
+      join(config.path, '.config.json'),
+      ...configurationFiles,
     ]),
-    personsFolders: await givenAndRealPaths([join(config.path, 'plugins')]),
+    configurationFileFolders: await givenAndRealPaths([config.path, home.path]),
+    personsFolders: await givenAndRealPaths(
+      ['plugins', 'agents', 'skills'].map((name) => join(config.path, name)),
+    ),
   };
+}
+
+/**
+ * The configuration files a folder holds, under any of their names: the
+ * pattern of the denies names each by the path the agent reads it at, and
+ * this list leads to the real path of one that is a link.
+ */
+async function configurationFilesIn(folder: string): Promise<string[]> {
+  try {
+    const names = await readdir(folder);
+    return names
+      .filter((name) => CONFIGURATION_FILE_NAME.test(name))
+      .map((name) => join(folder, name));
+  } catch {
+    // A folder the agent cannot read gives it no configuration file either.
+    return [];
+  }
 }
 
 /**

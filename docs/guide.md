@@ -381,9 +381,12 @@ switch (`terminal-off`), it stays `closed` and stops trying.
 launches `claude` from the server's `PATH` in a tmux session, with settings
 of its own: the hooks that report to the cockpit, the app's rules, and the
 lines that keep the agent from the cockpit's files, the app's port and
-every file that starts code at its next launch: its settings, its
-configuration files and `.mcp.json`, the person's plugins
-([security](security.md#keeping-the-agent-out)).
+the files the cockpit can name that start code at its next launch: its
+settings, its configuration files and `.mcp.json`, the hooks' scripts,
+agents and skills of a `.claude` folder, the person's plugins, agents and
+skills ([security](security.md#keeping-the-agent-out)). In
+`bypassPermissions` the agent's file tools act as the person: those denies
+are defense in depth, not a boundary.
 The person's own Claude Code settings still load below them, unless the app
 narrows them. Its options ([reference](api.md#claudecodeoptions)):
 

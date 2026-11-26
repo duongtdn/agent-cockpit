@@ -123,15 +123,19 @@ Nothing is published yet.
   `otherMcpServers: false` keeps every other MCP server out
   (`--strict-mcp-config`). Any other option is refused with
   `invalid-options`.
-- Every session's settings carry an `Edit` deny on every file that starts
-  code at the agent's next launch: `.claude/settings.json`,
-  `.claude/settings.local.json` and `.mcp.json` wherever they are; the
-  person's own `settings.json` and `.claude.json` in the agent's
-  configuration folder, `.claude.json` in the home, and their plugins
-  folder. In a cockpit session the agent can never edit one, even when
-  asked, so that it cannot plant a hook, an MCP server or a plugin that
-  would run outside the sandbox at the next start (a project's `.mcp.json`
-  runs with no one asked in `bypassPermissions`). A `CLAUDE_CONFIG_DIR` or
+- Every session's settings carry an `Edit` deny on the files the cockpit
+  can name that start code at the agent's next launch:
+  `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json`
+  wherever they are, and every file of a `.claude/hooks`, `.claude/agents`
+  or `.claude/skills` folder; the person's own `settings.json`, the legacy
+  `.config.json` and every `.claude*.json` in the agent's configuration
+  folder, every `.claude*.json` in the home, and their `plugins`, `agents`
+  and `skills` folders. In a cockpit session the agent can never edit one,
+  even when asked, so that it cannot plant a hook, an MCP server or a
+  plugin that would run outside the sandbox at the next start (a project's
+  `.mcp.json` runs with no one asked in `bypassPermissions`). In
+  `bypassPermissions` the agent's file tools act as the person: the denies
+  are defense in depth, not a boundary. A `CLAUDE_CONFIG_DIR` or
   a `HOME` those denies could miss (relative, or holding a character a
   permission rule reads as its own) is refused with `invalid-options`
   (issues with an empty path), by `createCockpit` and again by each launch.

@@ -300,10 +300,16 @@ describe('the settings of a launch', () => {
         'Edit(//**/.claude/settings.json)',
         'Edit(//**/.claude/settings.local.json)',
         'Edit(//**/.mcp.json)',
+        'Edit(//**/.claude/hooks/**)',
+        'Edit(//**/.claude/agents/**)',
+        'Edit(//**/.claude/skills/**)',
         'Edit(//home/someone/.config/claude/settings.json)',
-        'Edit(//home/someone/.config/claude/.claude.json)',
-        'Edit(//home/someone/.claude.json)',
+        'Edit(//home/someone/.config/claude/.config.json)',
+        'Edit(//home/someone/.config/claude/.claude*.json)',
+        'Edit(//home/someone/.claude*.json)',
         'Edit(//home/someone/.config/claude/plugins/**)',
+        'Edit(//home/someone/.config/claude/agents/**)',
+        'Edit(//home/someone/.config/claude/skills/**)',
       ],
     });
   });

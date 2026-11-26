@@ -22,21 +22,33 @@ const HOME = '/home/someone';
 
 /**
  * The denies that keep the agent's tools from every file a project or a
- * folder holds that starts code at the next launch: its settings, its MCP servers.
+ * folder holds that starts code at the next launch: its settings, its MCP
+ * servers, its hooks' scripts, its agents and skills (whose frontmatter
+ * may hold hooks).
  */
 const START_UP_FILE_DENIES = [
   'Edit(//**/.claude/settings.json)',
   'Edit(//**/.claude/settings.local.json)',
   'Edit(//**/.mcp.json)',
+  'Edit(//**/.claude/hooks/**)',
+  'Edit(//**/.claude/agents/**)',
+  'Edit(//**/.claude/skills/**)',
 ];
 
-/** The person's own files that start code at the next launch, in the configuration folder and the home. */
+/**
+ * The person's own files that start code at the next launch, in the
+ * configuration folder and the home: settings, the legacy configuration
+ * file, a configuration file under any name, plugins, agents and skills.
+ */
 function personsDenies(config = CONFIG, home = HOME): string[] {
   return [
     `Edit(/${config}/settings.json)`,
-    `Edit(/${config}/.claude.json)`,
-    `Edit(/${home}/.claude.json)`,
+    `Edit(/${config}/.config.json)`,
+    `Edit(/${config}/.claude*.json)`,
+    `Edit(/${home}/.claude*.json)`,
     `Edit(/${config}/plugins/**)`,
+    `Edit(/${config}/agents/**)`,
+    `Edit(/${config}/skills/**)`,
   ];
 }
 
@@ -146,7 +158,7 @@ describe('the state roots in the settings of a launch', () => {
 });
 
 describe("Claude Code's files that start code at the next launch, in the settings of a launch", () => {
-  it("are denied to Edit wherever a project or a folder holds them (settings, MCP servers), and the person's own (settings, the configuration file of each folder, plugins), after the state roots", async () => {
+  it("are denied to Edit wherever a project or a folder holds them (settings, MCP servers, hooks, agents, skills), and the person's own (settings, the configuration files of each folder under any name, plugins, agents, skills), after the state roots", async () => {
     const { permissions } = await settingsOf(confinementOf());
 
     expect(permissions.deny).toEqual([
@@ -185,14 +197,53 @@ describe("Claude Code's files that start code at the next launch, in the setting
       expect(permissions.deny).toEqual(
         expect.arrayContaining([
           `Edit(/${config}/settings.json)`,
-          `Edit(/${config}/.claude.json)`,
+          `Edit(/${config}/.config.json)`,
+          `Edit(/${config}/.claude*.json)`,
           `Edit(/${config}/plugins/**)`,
+          `Edit(/${config}/agents/**)`,
+          `Edit(/${config}/skills/**)`,
         ]),
       );
     }
   });
 
-  it("deny the person's configuration file in the home by the path given and the real one", async () => {
+  it('deny the file a linked configuration file of any name leads to, in the configuration folder and the home', async () => {
+    const folder = realpathSync(files);
+    const config = join(folder, 'config');
+    const home = join(folder, 'home');
+    mkdirSync(config);
+    mkdirSync(home);
+    const dotfiles = join(folder, 'dotfiles');
+    mkdirSync(dotfiles);
+    for (const [linkedFrom, name] of [
+      [config, '.claude-custom-oauth.json'],
+      [config, '.config.json'],
+      [home, '.claude.json'],
+    ] as const) {
+      const dotfile = join(dotfiles, `${linkedFrom === home ? 'home' : 'config'}${name}`);
+      writeFileSync(dotfile, '{}');
+      symlinkSync(dotfile, join(linkedFrom, name));
+    }
+    const launch = launchOf(confinementOf(), config);
+
+    const { args } = await claudeCode().launch({
+      ...launch,
+      environment: { ...launch.environment, HOME: home },
+    });
+    const { permissions }: Settings = JSON.parse(
+      readFileSync(args[args.indexOf('--settings') + 1] as string, 'utf8'),
+    );
+
+    expect(permissions.deny).toEqual(
+      expect.arrayContaining([
+        `Edit(/${dotfiles}/config.claude-custom-oauth.json)`,
+        `Edit(/${dotfiles}/config.config.json)`,
+        `Edit(/${dotfiles}/home.claude.json)`,
+      ]),
+    );
+  });
+
+  it("deny the person's configuration files of any name in the home by the path given and the real one", async () => {
     const folder = realpathSync(files);
     const real = join(folder, 'real-home');
     mkdirSync(real);
@@ -208,8 +259,8 @@ describe("Claude Code's files that start code at the next launch, in the setting
       readFileSync(args[args.indexOf('--settings') + 1] as string, 'utf8'),
     );
 
-    expect(permissions.deny).toContain(`Edit(/${linked}/.claude.json)`);
-    expect(permissions.deny).toContain(`Edit(/${real}/.claude.json)`);
+    expect(permissions.deny).toContain(`Edit(/${linked}/.claude*.json)`);
+    expect(permissions.deny).toContain(`Edit(/${real}/.claude*.json)`);
   });
 
   it("deny the file a linked settings file leads to, as the person's dotfiles do", async () => {

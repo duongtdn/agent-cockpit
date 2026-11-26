@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { eventually } from '../support/eventually.ts';
 import { toolUse, turn } from '../support/fake-api/index.ts';
 import { BYPASS_ACCEPTED, SAID_KEY, startContractCockpit } from './cockpit-harness.ts';
 import { toolResults } from './confinement-probes.ts';
@@ -219,4 +220,111 @@ it("97 — In bypassPermissions, the driver's Edit deny on the person's plugins 
   expect(results).toEqual([{ isError: true, text: expect.stringMatching(/denied/i) }]);
   expect(existsSync(hooks)).toBe(false);
   expect(readdirSync(root).filter((name) => name.startsWith('planted-'))).toEqual([]);
+});
+
+it("98 — In bypassPermissions, the driver's Edit denies on the agent's configuration file under every name hold: Write on the legacy .config.json and on a suffixed .claude-custom-oauth.json is refused, and no planted server runs at the next start; the same server written to .config.json by hand runs at the start after", async () => {
+  const cockpit = await startContractCockpit({
+    driver: {
+      permissionMode: 'bypassPermissions',
+      permissions: { allow: ['Read', 'Write', 'Edit'] },
+    },
+    personsSettings: BYPASS_ACCEPTED,
+  });
+  const { root, configFolder } = cockpit;
+  // The agent's own configuration, the recipe kept, so the next start shows no dialog: a legacy
+  // file that holds anything is read in place of .claude.json.
+  const recipe = JSON.parse(readFileSync(join(configFolder, '.claude.json'), 'utf8'));
+  const legacy = join(configFolder, '.config.json');
+  const legacyContent = JSON.stringify({ ...recipe, mcpServers: plantedServers(root, 'legacy') });
+  const suffixed = join(configFolder, '.claude-custom-oauth.json');
+  const calls = [
+    toolUse('Write', { file_path: legacy, content: legacyContent }),
+    toolUse('Write', {
+      file_path: suffixed,
+      content: JSON.stringify({ ...recipe, mcpServers: plantedServers(root, 'suffixed') }),
+    }),
+  ];
+  cockpit.api.script(
+    ...calls.map((call) => turn(call)),
+    turn('Done.'),
+    turn('Again.'),
+    turn('Once more.'),
+  );
+
+  await cockpit.say('plant the servers');
+  await cockpit.sessionIn(SAID_KEY, 'idle');
+  const results = toolResults(cockpit.api);
+  // Killed: an agent that exits saves its own configuration on its way out.
+  await cockpit.killAgent(SAID_KEY);
+  await cockpit.say('start again', 'again');
+  await cockpit.sessionIn('again', 'idle');
+  const plantedAfterTheRefusal = readdirSync(root).filter((name) => name.startsWith('planted-'));
+  await cockpit.killAgent('again');
+  // What the refused Write would have written, written by the person: the file starts the server.
+  writeFileSync(legacy, legacyContent);
+  await cockpit.say('start once more', 'by-hand');
+  await cockpit.sessionIn('by-hand', 'idle');
+
+  expect(results).toHaveLength(calls.length);
+  for (const refused of results) {
+    expect(refused).toMatchObject({ isError: true, text: expect.stringMatching(/denied/i) });
+  }
+  expect(existsSync(suffixed)).toBe(false);
+  expect(plantedAfterTheRefusal).toEqual([]);
+  await eventually(() => expect(existsSync(join(root, 'planted-legacy'))).toBe(true));
+});
+
+/** An agent's or a skill's definition whose frontmatter holds a command hook that leaves a mark. */
+function plantedDefinition(root: string, name: string): string {
+  return [
+    '---',
+    `name: planted-${name}`,
+    'description: Leaves a mark.',
+    'hooks:',
+    '  Stop:',
+    '    - hooks:',
+    '        - type: command',
+    `          command: touch ${join(root, `planted-${name}`)}`,
+    '---',
+    'Leave a mark.',
+    '',
+  ].join('\n');
+}
+
+it("99 — In bypassPermissions, the driver's Edit denies on agents, skills and hooks' scripts hold: Write of an agent or a skill whose frontmatter holds hooks, in a project's .claude, the home's or the configuration folder, and of a script in a .claude/hooks folder, is refused", async () => {
+  const cockpit = await startContractCockpit({
+    driver: {
+      permissionMode: 'bypassPermissions',
+      permissions: { allow: ['Read', 'Write', 'Edit'] },
+    },
+    personsSettings: BYPASS_ACCEPTED,
+  });
+  const { root, configFolder, home, workFolder } = cockpit;
+  const written = {
+    'project-agent': join(workFolder, '.claude', 'agents', 'planted.md'),
+    'project-skill': join(workFolder, '.claude', 'skills', 'planted', 'SKILL.md'),
+    'home-agent': join(home, '.claude', 'agents', 'planted.md'),
+    'persons-agent': join(configFolder, 'agents', 'planted.md'),
+    'persons-skill': join(configFolder, 'skills', 'planted', 'SKILL.md'),
+  };
+  const script = join(workFolder, '.claude', 'hooks', 'start.sh');
+  const calls = [
+    ...Object.entries(written).map(([name, file_path]) =>
+      toolUse('Write', { file_path, content: plantedDefinition(root, name) }),
+    ),
+    toolUse('Write', { file_path: script, content: `#!/bin/sh\ntouch ${root}/planted-script\n` }),
+  ];
+  cockpit.api.script(...calls.map((call) => turn(call)), turn('Done.'));
+
+  await cockpit.say('plant the definitions');
+  await cockpit.sessionIn(SAID_KEY, 'idle');
+  const results = toolResults(cockpit.api);
+
+  expect(results).toHaveLength(calls.length);
+  for (const refused of results) {
+    expect(refused).toMatchObject({ isError: true, text: expect.stringMatching(/denied/i) });
+  }
+  for (const file of [...Object.values(written), script]) {
+    expect(existsSync(file), file).toBe(false);
+  }
 });

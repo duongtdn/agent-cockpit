@@ -1,5 +1,6 @@
 import { isIPv6 } from 'node:net';
 import type { Confinement, NetworkAddress } from '../server/driver.js';
+import type { PersonsStartUpFiles } from './persons-files.js';
 
 /** The sandbox's section of a session's settings: what its commands' network may reach. */
 export interface SandboxLines {
@@ -24,7 +25,7 @@ export interface SandboxLines {
  */
 export function stateRootDenies(stateRoots: readonly string[]): string[] {
   return stateRoots.flatMap((root) => {
-    const pattern = `/${root.replace(/\/+$/, '')}/**`;
+    const pattern = `/${withoutTrailingSlash(root)}/**`;
     return [`Read(${pattern})`, `Edit(${pattern})`];
   });
 }
@@ -32,42 +33,55 @@ export function stateRootDenies(stateRoots: readonly string[]): string[] {
 /**
  * Claude Code's files that start code at its next launch wherever a
  * project or a folder holds them: the project's settings and its local
- * ones, a parent repository's, the session's `~/.claude` (their hooks),
- * and a project's MCP servers (`.mcp.json`).
+ * ones, a parent repository's, the session's `.claude` in its home (their
+ * hooks), a project's MCP servers (`.mcp.json`), and the hooks' scripts,
+ * agents and skills of a `.claude` folder (an agent's or a skill's
+ * frontmatter may hold hooks and MCP servers).
  */
 const START_UP_FILES_ANYWHERE: readonly string[] = [
   '//**/.claude/settings.json',
   '//**/.claude/settings.local.json',
   '//**/.mcp.json',
+  '//**/.claude/hooks/**',
+  '//**/.claude/agents/**',
+  '//**/.claude/skills/**',
 ];
 
+/** Every name the agent gives its configuration file: `.claude.json`, or a suffixed one. */
+const CONFIGURATION_FILE_PATTERN = '.claude*.json';
+
 /**
- * Gives the permission rules that keep the agent's own tools from every
- * file that starts code at its next launch: settings (their hooks), the
- * configuration files and a project's `.mcp.json` (their MCP servers), the
- * person's plugins. Its `Write` and `Edit` tools run outside the sandbox,
- * and what such a file starts runs, unsandboxed, at the next start; in
- * `bypassPermissions` nothing asks first. The rules stop the tools and the
- * shell commands Claude Code recognizes; code the agent runs outside the
- * sandbox still writes (as for the state roots).
+ * Gives the permission rules that keep the agent's own tools from the
+ * files the cockpit can name that start code at its next launch: settings
+ * (their hooks), configuration files and a project's `.mcp.json` (their
+ * MCP servers), hooks' scripts, agents and skills, the person's plugins.
+ * Its `Write` and `Edit` tools run outside the sandbox, and what such a
+ * file starts runs, unsandboxed, at the next start. The rules stop the
+ * tools and the shell commands Claude Code recognizes; code the agent runs
+ * outside the sandbox still writes (as for the state roots).
  *
- * @param personsFiles - The person's own such files, absolute, each by
- * every path that names it: their settings (`<config>/settings.json`) and
- * configuration files (`<config>/.claude.json`, `~/.claude.json`).
- * @param personsFolders - The person's own folders every file of which
- * is denied, absolute, each by every path that names it: their plugins
- * (`<config>/plugins`).
+ * They are defense in depth, not a boundary: in `bypassPermissions`
+ * nothing asks first, and the agent's file tools act as the person, who
+ * can name files that start code (a script a hook runs, a shell's startup
+ * file) that no rule here names.
+ *
+ * @param persons - The person's own such files and folders, each by every
+ * path that names it: see {@link PersonsStartUpFiles}.
  * @returns The `Edit` deny rules.
  */
-export function startUpFileDenies(
-  personsFiles: readonly string[],
-  personsFolders: readonly string[],
-): string[] {
+export function startUpFileDenies(persons: PersonsStartUpFiles): string[] {
   return [
     ...START_UP_FILES_ANYWHERE,
-    ...personsFiles.map((file) => `/${file}`),
-    ...personsFolders.map((folder) => `/${folder.replace(/\/+$/, '')}/**`),
+    ...persons.personsFiles.map((file) => `/${file}`),
+    ...persons.configurationFileFolders.map(
+      (folder) => `/${withoutTrailingSlash(folder)}/${CONFIGURATION_FILE_PATTERN}`,
+    ),
+    ...persons.personsFolders.map((folder) => `/${withoutTrailingSlash(folder)}/**`),
   ].map((pattern) => `Edit(${pattern})`);
+}
+
+function withoutTrailingSlash(path: string): string {
+  return path.replace(/\/+$/, '');
 }
 
 /**

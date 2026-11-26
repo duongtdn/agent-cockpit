@@ -164,7 +164,9 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   a local command as the launch prompt), `sandbox-option` (90, the app's
   sandbox and `sandbox-unavailable`), `settings-files` (92 the `Edit`
   denies on every Claude settings file, 96 on every file that gives MCP
-  servers, 97 on the person's plugins, in `bypassPermissions`).
+  servers, 97 on the person's plugins, 98 on the configuration file under
+  every name, the legacy `.config.json` among them, 99 on agents, skills
+  and hooks' scripts, in `bypassPermissions`).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:
@@ -222,8 +224,8 @@ person's `/compact`, a turn of its own: the only local command it plays),
 and a background subagent (`task`: its work runs once the turn ended and
 the test released tasks, then its end starts the next turn by itself with
 a `<task-notification>` prompt). A script's tool call on a path a deny
-rule of its settings names (the state roots, every file that starts code
-at the next launch) is not played: nothing tells what Claude Code answers there.
+rule of its settings names (the state roots, the files the cockpit names
+that start code at the next launch) is not played: nothing tells what Claude Code answers there.
 
 The fake agent is held to the real one by
 `test/contract/fake-agent-parity.test.ts`: each scenario is played once on

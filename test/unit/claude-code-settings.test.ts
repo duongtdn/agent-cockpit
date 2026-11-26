@@ -11,8 +11,9 @@ const PARTS: SettingsParts = {
     appAddresses: [{ host: '127.0.0.1', port: 8765 }],
     listener: { host: '127.0.0.1', port: 4100 },
   },
-  personsFiles: ['/config/settings.json', '/config/.claude.json', '/home/a/.claude.json'],
-  personsFolders: ['/config/plugins'],
+  personsFiles: ['/config/settings.json', '/config/.config.json', '/dotfiles/claude.json'],
+  configurationFileFolders: ['/config', '/home/a'],
+  personsFolders: ['/config/plugins', '/config/agents', '/config/skills'],
 };
 
 interface Document {
@@ -88,7 +89,7 @@ describe('the sandbox section', () => {
 });
 
 describe('the deny rules', () => {
-  it("are the app's, the state roots', every project's start-up files', and the person's files' and folders', in that order", () => {
+  it("are the app's, the state roots', every project's start-up files', and the person's files', configuration files' and folders', in that order", () => {
     expect(documentOf().permissions.deny).toEqual([
       'WebFetch',
       'Read(//state/**)',
@@ -96,10 +97,17 @@ describe('the deny rules', () => {
       'Edit(//**/.claude/settings.json)',
       'Edit(//**/.claude/settings.local.json)',
       'Edit(//**/.mcp.json)',
+      'Edit(//**/.claude/hooks/**)',
+      'Edit(//**/.claude/agents/**)',
+      'Edit(//**/.claude/skills/**)',
       'Edit(//config/settings.json)',
-      'Edit(//config/.claude.json)',
-      'Edit(//home/a/.claude.json)',
+      'Edit(//config/.config.json)',
+      'Edit(//dotfiles/claude.json)',
+      'Edit(//config/.claude*.json)',
+      'Edit(//home/a/.claude*.json)',
       'Edit(//config/plugins/**)',
+      'Edit(//config/agents/**)',
+      'Edit(//config/skills/**)',
     ]);
   });
 
@@ -107,12 +115,15 @@ describe('the deny rules', () => {
     expect(
       documentOf({
         personsFiles: ['/home/a/.claude/settings.json', '/dotfiles/c.json'],
+        configurationFileFolders: ['/home/a/', '/dotfiles/home'],
         personsFolders: ['/home/a/.claude/plugins/', '/dotfiles/plugins'],
       }).permissions.deny,
     ).toEqual(
       expect.arrayContaining([
         'Edit(//home/a/.claude/settings.json)',
         'Edit(//dotfiles/c.json)',
+        'Edit(//home/a/.claude*.json)',
+        'Edit(//dotfiles/home/.claude*.json)',
         'Edit(//home/a/.claude/plugins/**)',
         'Edit(//dotfiles/plugins/**)',
       ]),

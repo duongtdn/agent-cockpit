@@ -2,9 +2,14 @@ import type { Confinement } from '../server/driver.js';
 import { sandboxLines, startUpFileDenies, stateRootDenies } from './confinement-lines.js';
 import { HTTP_HOOK_EVENTS } from './hook-payloads.js';
 import type { ClaudeCodeSandbox, PermissionRules } from './options.js';
+import type { PersonsStartUpFiles } from './persons-files.js';
 
-/** What a session's settings are written from. */
-export interface SettingsParts {
+/**
+ * What a session's settings are written from: among them the person's own
+ * files that start code at the agent's next launch, which the agent may
+ * not edit.
+ */
+export interface SettingsParts extends PersonsStartUpFiles {
   /** Where the HTTP hooks post: the session's hook URL, the driver's path included. */
   readonly hookUrl: string;
   /** The session's token for this launch, written literally in the hooks' header. */
@@ -19,14 +24,6 @@ export interface SettingsParts {
   readonly permissions: PermissionRules;
   /** What the agent must not reach, written whatever the app's rules say. */
   readonly confinement: Confinement;
-  /**
-   * The person's own files that start code at the agent's next launch, by
-   * every path that names each: their settings and configuration files.
-   * The agent may not edit them.
-   */
-  readonly personsFiles: readonly string[];
-  /** The person's own folders of such files, by every path that names each: their plugins. */
-  readonly personsFolders: readonly string[];
   /**
    * The sandbox the app asks for, with its exceptions; left out, the
    * person's own settings decide whether it runs.
@@ -86,7 +83,7 @@ function permissionsOf(parts: SettingsParts): PermissionRules {
     deny: [
       ...(deny ?? []),
       ...stateRootDenies(parts.confinement.stateRoots),
-      ...startUpFileDenies(parts.personsFiles, parts.personsFolders),
+      ...startUpFileDenies(parts),
     ],
   };
 }

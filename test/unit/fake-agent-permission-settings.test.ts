@@ -42,6 +42,15 @@ describe("the permissions of the fake agent's settings file", () => {
     ]);
   });
 
+  it('give the folders they deny to Edit wherever they lie, and the files of a folder they deny by a name with a wildcard', () => {
+    const deny = ['Edit(//**/.claude/hooks/**)', 'Edit(//config/.claude*.json)'];
+
+    expect(parsePermissions(settings({ deny })).deniedPaths).toEqual([
+      '.claude/hooks/',
+      '/config/.claude*.json',
+    ]);
+  });
+
   it('give no rule when the file has no permissions, or permissions that allow nothing', () => {
     const none = { allowRules: [], deniedPaths: [] };
 
@@ -59,9 +68,14 @@ describe("the permissions of the fake agent's settings file", () => {
       /the deny rule "Read\(\/\/config\/settings\.json\)"/,
     ],
     [
-      'a denial to Edit by a pattern other than a path under every folder',
-      settings({ deny: ['Edit(//config/*.json)'] }),
-      /the deny rule "Edit\(\/\/config\/\*\.json\)"/,
+      'a denial to Edit by a pattern other than a path under every folder, or a name in a folder',
+      settings({ deny: ['Edit(//config/*/settings.json)'] }),
+      /the deny rule "Edit\(\/\/config\/\*\/settings\.json\)"/,
+    ],
+    [
+      'a denial of a folder by a pattern',
+      settings({ deny: ['Edit(//**/projects/*/**)'] }),
+      /the deny rule "Edit\(\/\/\*\*\/projects\/\*\/\*\*\)"/,
     ],
     [
       'a denial of a folder by a relative path',
@@ -98,6 +112,27 @@ describe('the denied path a call names', () => {
     expect(deniedPathNamedBy({ file_path: '/state/root/token' }, folders)).toBe('/state/root');
     expect(deniedPathNamedBy({ command: 'rm -f /state/root/token' }, folders)).toBe('/state/root');
     expect(deniedPathNamedBy({ edits: [{ path: '/state/root/a' }] }, folders)).toBe('/state/root');
+  });
+
+  it('is a file named in a folder by a name with a wildcard, the wildcard within the name', () => {
+    const named = ['/home/a/.claude*.json'];
+
+    expect(deniedPathNamedBy({ file_path: '/home/a/.claude-custom-oauth.json' }, named)).toBe(
+      '/home/a/.claude*.json',
+    );
+    expect(deniedPathNamedBy({ file_path: '/home/a/.claude.json' }, named)).toBe(
+      '/home/a/.claude*.json',
+    );
+    expect(deniedPathNamedBy({ file_path: '/home/a/.claude/settings.json' }, named)).toBe(
+      undefined,
+    );
+    expect(deniedPathNamedBy({ file_path: '/home/a/.claudeXjson' }, named)).toBe(undefined);
+  });
+
+  it('is a folder denied wherever it lies, by its path within any folder', () => {
+    expect(
+      deniedPathNamedBy({ file_path: '/work/.claude/hooks/start.sh' }, ['.claude/hooks/']),
+    ).toBe('.claude/hooks/');
   });
 
   it('is none for a call on other folders', () => {

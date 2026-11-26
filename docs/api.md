@@ -229,13 +229,16 @@ the token is never on a command line or in the environment.
 
 Every session's settings also carry, whatever the app sets, the lines that
 keep the agent from the cockpit: a `Read` and an `Edit` deny on each state
-root, after the app's own denies; an `Edit` deny on every file that
-starts code at the agent's next launch (`.claude/settings.json`,
-`.claude/settings.local.json` and `.mcp.json` wherever they are; the
-person's own `settings.json` and `.claude.json` in the agent's
-configuration folder, `.claude.json` in the home, and their plugins
-folder), so that in a cockpit session the agent can never edit one, even
-when asked; the app's
+root, after the app's own denies; an `Edit` deny on the files the
+cockpit can name that start code at the agent's next launch
+(`.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json`
+wherever they are, and every file of a `.claude/hooks`, `.claude/agents`
+or `.claude/skills` folder; the person's own `settings.json`, the legacy
+`.config.json` and every `.claude*.json` in the agent's configuration
+folder, every `.claude*.json` in the home, and their `plugins`, `agents`
+and `skills` folders), so that in a cockpit session the agent can never
+edit one, even when asked (in `bypassPermissions`, where the agent's file
+tools act as the person, they are defense in depth, not a boundary); the app's
 ports denied to the sandbox's network on every local address and loopback
 name; the agent-facing listener allowed; and no command let out of the
 sandbox (unless the app's `sandbox` allows it). They do not turn the

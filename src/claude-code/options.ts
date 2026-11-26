@@ -75,7 +75,11 @@ export interface ClaudeCodeOptions {
   /**
    * The mode every session is launched in; `default` when left out. It is
    * always passed, so the person's own `defaultMode` never applies by
-   * accident.
+   * accident. In `bypassPermissions` nothing asks before a file is written:
+   * the agent's own file tools act as the person, and the denies on the
+   * files that start code at its next launch are defense in depth, not a
+   * boundary (a script a hook runs, a shell's startup file, is no file the
+   * cockpit can name).
    */
   readonly permissionMode?: PermissionMode;
   /** Rules every session's settings carry, above the person's and the project's. */

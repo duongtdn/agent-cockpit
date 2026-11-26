@@ -4,22 +4,28 @@ export interface PlayedPermissions {
   readonly allowRules: readonly string[];
   /**
    * The paths denied: folders to `Read` and to `Edit`, and files to `Edit`,
-   * each absolute or, for a file denied under every folder, the end of its
-   * path (`.claude/settings.json`).
+   * each absolute or, for one denied under every folder, the end of its
+   * path (`.claude/settings.json`, a folder's ending in `/`:
+   * `.claude/hooks/`); a file's name may hold a wildcard (`*`), which
+   * stands for any part of a name (`/config/.claude*.json`).
    */
   readonly deniedPaths: readonly string[];
 }
 
 /**
  * The deny rules the cockpit's confinement writes, each with the path it
- * denies: a folder to `Read` or `Edit` (`Read(//abs/**)`), a file to `Edit`
- * under every folder (`Edit(//**\/.claude/settings.json)`) or at one path
- * (`Edit(//abs/settings.json)`).
+ * denies: a folder to `Read` or `Edit` (`Read(//abs/**)`), a folder to
+ * `Edit` under every folder (`Edit(//**\/.claude/hooks/**)`), a file to
+ * `Edit` under every folder (`Edit(//**\/.claude/settings.json)`), at one
+ * path (`Edit(//abs/settings.json)`), or by a name with a wildcard in one
+ * folder (`Edit(//abs/.claude*.json)`).
  */
 const PATH_DENIES: readonly RegExp[] = [
-  /^(?:Read|Edit)\(\/(\/.+)\/\*\*\)$/,
+  /^(?:Read|Edit)\(\/(\/[^*]+)\/\*\*\)$/,
+  /^Edit\(\/\/\*\*\/([^*]+\/)\*\*\)$/,
   /^Edit\(\/\/\*\*\/([^*]+)\)$/,
   /^Edit\(\/(\/[^*]+)\)$/,
+  /^Edit\(\/(\/[^*]+\/[^/*]*\*[^/*]*)\)$/,
 ];
 
 /**
@@ -70,7 +76,18 @@ function deniedPathOf(rule: string): string {
  */
 export function deniedPathNamedBy(input: unknown, paths: readonly string[]): string | undefined {
   const texts = textsIn(input);
-  return paths.find((path) => texts.some((text) => text.includes(path)));
+  return paths.find((path) => texts.some((text) => namesPath(text, path)));
+}
+
+/** Whether a text names a denied path: holds it, a wildcard standing for any part of a name. */
+function namesPath(text: string, path: string): boolean {
+  if (!path.includes('*')) return text.includes(path);
+  const [before = '', after = ''] = path.split('*');
+  return new RegExp(`${escaped(before)}[^/\\s]*${escaped(after)}`).test(text);
+}
+
+function escaped(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function textsIn(value: unknown): string[] {

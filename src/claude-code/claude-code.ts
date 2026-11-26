@@ -100,8 +100,10 @@ function namedHostsReason(mode: PermissionMode): string {
  * the cockpit's state folder: the hooks that report to the cockpit, the
  * app's permission rules (and a job's), the sandbox when the app asks for
  * it, and the lines that keep the agent from the cockpit's state, the
- * app's ports and every file that starts code at the agent's next launch
- * (settings, configuration files and `.mcp.json`, plugins).
+ * app's ports and the files it can name that start code at the agent's
+ * next launch (settings, configuration files and `.mcp.json`, the hooks'
+ * scripts, agents and skills of a `.claude` folder, the person's plugins,
+ * agents and skills).
  *
  * A session in `default`, `acceptEdits` or `dontAsk` counts as keeping
  * its network to the cockpit's allow-list (its sandboxed commands were
