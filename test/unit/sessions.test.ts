@@ -14,6 +14,7 @@ import {
 import { CockpitError, isCockpitError } from '../../src/shared/cockpit-error.ts';
 import type { RunResult, Session } from '../../src/shared/session.ts';
 import {
+  CONVERSATION_PATH,
   createFakeHost,
   createRecordingHookAccess,
   createStubDriver,
@@ -33,6 +34,9 @@ const CONFINEMENT: Confinement = {
 };
 const KEY = 'explain-readme';
 const DIRECTORY = '/apps/demo';
+const ENVIRONMENT = { PATH: '/usr/bin', HOME: '/home/someone' };
+/** The conversation a `/clear` moves the agent to. */
+const CLEARED = '779ad0f7-5a3c-4e0b-9d1f-2b6c8e4a7f10';
 
 let host: FakeHost;
 let driver: StubDriver;
@@ -53,7 +57,7 @@ beforeEach(() => {
     driver,
     hooks: access,
     folders: stubFolders(),
-    environment: () => ({ PATH: '/usr/bin', HOME: '/home/someone' }),
+    environment: () => ENVIRONMENT,
     admitAgent: (environment) => admitAgent(environment),
     confinement: () => confinement(),
   });
@@ -711,14 +715,50 @@ describe('a launch prompt that no hook says was taken', () => {
     expect(host.screenReads).toBe(reads);
   });
 
-  it('is `busy` when the screen shows neither: the agent works on it, and its hooks tell the rest', async () => {
+  it('stays `starting` while the screen shows neither, read until the input box is back: then `idle`', async () => {
     const { result } = await ready();
+    let settled = false;
+    void result.then(() => {
+      settled = true;
+    });
 
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS + SCREEN_INTERVAL_MS * 3);
+    expect(sessionOf()?.state).toBe('starting');
+    expect(settled).toBe(false);
+    expect(host.screenReads).toBe(4);
+
+    host.show(KEY, stubScreen('ready'));
+    await nextRead();
+
+    await expect(result).resolves.toEqual({ action: 'started', state: 'idle' });
+    const reads = host.screenReads;
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+    expect(host.screenReads).toBe(reads);
+  });
+
+  it('goes on as the hooks tell once one comes while the screen shows neither, and is read no more', async () => {
+    const { result } = await ready();
     await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS);
 
+    hook('/prompt-taken');
+
     await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
-    hook('/turn-ended');
-    expect(sessionOf()?.state).toBe('idle');
+    const reads = host.screenReads;
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+    expect(host.screenReads).toBe(reads);
+  });
+
+  it('is read again when the screen cannot be read: a person scrolled it back', async () => {
+    const { result } = await ready();
+    host.show(KEY, stubScreen('ready'));
+    host.scrollBack(KEY, true);
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS + SCREEN_INTERVAL_MS);
+    expect(sessionOf()?.state).toBe('starting');
+
+    host.scrollBack(KEY, false);
+    await nextRead();
+
+    await expect(result).resolves.toEqual({ action: 'started', state: 'idle' });
   });
 
   it('is not read when the prompt is taken in time', async () => {
@@ -880,6 +920,20 @@ describe('closing the sessions core', () => {
     expect(driver.launches).toEqual([]);
   });
 
+  it('hears nothing more of the agent: neither its hooks nor what the driver follows', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+
+    sessions.close();
+    hook('/ready');
+    hook('/turn-ended');
+    driver.follows[0]?.report([{ type: 'interrupted' }]);
+
+    expect(sessionOf()?.state).toBe('busy');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('leaves a run that already resolved as it was', async () => {
     const { result } = await launched();
     hook('/prompt-taken');
@@ -987,6 +1041,50 @@ describe("a session's states, from the driver's events", () => {
     expect(sessionOf()).toEqual(ended);
   });
 
+  it('reads the screen while a compaction begun idle runs: the input box back returns it to the idle session it left, when no hook tells the end', async () => {
+    await busy();
+    hook('/turn-ended');
+    const ended = sessionOf();
+    host.show(KEY, 'compacting');
+
+    hook('/compaction-began');
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 3);
+    expect(sessionOf()?.state).toBe('busy');
+    host.show(KEY, stubScreen('ready'));
+    await nextRead();
+
+    expect(sessionOf()).toEqual(ended);
+    const reads = host.screenReads;
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+    expect(host.screenReads).toBe(reads);
+  });
+
+  it('reads the screen no more once the end of the compaction is told, or a turn shows in it', async () => {
+    await busy();
+    hook('/turn-ended');
+    hook('/compaction-began');
+    await nextRead();
+    hook('/compaction-ended');
+    hook('/compaction-began');
+    await nextRead();
+    hook('/working');
+    const reads = host.screenReads;
+
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+
+    expect(reads).toBe(2);
+    expect(host.screenReads).toBe(reads);
+  });
+
+  it('reads no screen for a compaction inside a turn: the turn tells its end', async () => {
+    await busy();
+
+    hook('/compaction-began');
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+
+    expect(host.screenReads).toBe(0);
+  });
+
   it('ignores the hooks of a key it does not know', () => {
     hook('/prompt-taken', 'nobody');
 
@@ -1005,7 +1103,7 @@ describe("a session's states, from the driver's events", () => {
 });
 
 describe('what the driver tells of a session outside its hooks', () => {
-  it('is followed from its start on the host, for the conversation launched', async () => {
+  it('is followed from its start on the host, for the conversation launched, with its environment', async () => {
     const hold = host.holdNextStart();
     const { result } = await launched();
     expect(driver.follows).toEqual([]);
@@ -1014,7 +1112,11 @@ describe('what the driver tells of a session outside its hooks', () => {
     await settle();
 
     expect(driver.follows.map((following) => following.conversation)).toEqual([
-      { conversationId: driver.launches[0]?.conversationId, directory: DIRECTORY },
+      {
+        conversationId: driver.launches[0]?.conversationId,
+        directory: DIRECTORY,
+        environment: ENVIRONMENT,
+      },
     ]);
     hook('/prompt-taken');
     await result;
@@ -1033,6 +1135,72 @@ describe('what the driver tells of a session outside its hooks', () => {
       state: 'idle',
       since: new Date(T0.getTime() + 3000).toISOString(),
     });
+  });
+
+  it('leaves a new turn `busy` when the interruption it reads was recorded before the new prompt was taken', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+    vi.advanceTimersByTime(1000);
+    hook('/prompt-taken');
+    const report = driver.follows[0]?.report;
+
+    report?.([{ type: 'interrupted', at: at(500) }]);
+    expect(sessionOf()).toEqual({ key: KEY, state: 'busy', since: at(0) });
+
+    vi.advanceTimersByTime(1000);
+    report?.([{ type: 'interrupted', at: at(1500) }]);
+    expect(sessionOf()).toEqual({ key: KEY, state: 'idle', since: at(2000) });
+  });
+
+  it('follows the conversation the agent moves to (a `/clear`), in place of the one launched', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+    hook('/turn-ended');
+
+    hook(`${CONVERSATION_PATH}${CLEARED}`);
+
+    expect(driver.follows.map(({ conversation, stopped }) => ({ conversation, stopped }))).toEqual([
+      {
+        conversation: {
+          conversationId: driver.launches[0]?.conversationId,
+          directory: DIRECTORY,
+          environment: ENVIRONMENT,
+        },
+        stopped: true,
+      },
+      {
+        conversation: { conversationId: CLEARED, directory: DIRECTORY, environment: ENVIRONMENT },
+        stopped: false,
+      },
+    ]);
+    hook('/prompt-taken');
+    driver.follows[1]?.report([{ type: 'interrupted' }]);
+    expect(sessionOf()?.state).toBe('idle');
+  });
+
+  it('asks whether the conversation the agent moved to can resume, once the session ended', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+    hook(`${CONVERSATION_PATH}${CLEARED}`);
+
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    expect(driver.resumeQuestions.map((asked) => asked.conversationId)).toEqual([CLEARED]);
+    expect(driver.follows.every((following) => following.stopped)).toBe(true);
+  });
+
+  it('goes on following the conversation launched when the agent names it again', async () => {
+    const { result } = await launched();
+    hook(`${CONVERSATION_PATH}${driver.launches[0]?.conversationId}`);
+    hook('/prompt-taken');
+    await result;
+
+    expect(driver.follows).toHaveLength(1);
+    expect(driver.follows[0]?.stopped).toBe(false);
   });
 
   it('stops being followed once it ended, and what comes later changes nothing', async () => {
@@ -1095,7 +1263,11 @@ describe('the end of a session', () => {
       reason: 'lost',
     });
     expect(driver.resumeQuestions).toEqual([
-      { conversationId: driver.launches[0]?.conversationId, directory: DIRECTORY },
+      {
+        conversationId: driver.launches[0]?.conversationId,
+        directory: DIRECTORY,
+        environment: ENVIRONMENT,
+      },
     ]);
     expect(access.revoked).toEqual([KEY]);
   });

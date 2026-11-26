@@ -15,6 +15,11 @@ export interface SessionCourse {
    * did nothing meanwhile.
    */
   readonly compactingFrom?: IdleSession;
+  /**
+   * When the agent last took a prompt, as `since` holds it: an
+   * interruption recorded before it ended an earlier turn.
+   */
+  readonly promptTakenAt?: string;
 }
 
 /**
@@ -44,30 +49,58 @@ export function courseAfter(
   switch (event.type) {
     case 'ready':
       return session.state === 'starting' && !launchedWithPrompt
-        ? { session: { key: session.key, state: 'idle', since: now } }
+        ? { ...course, session: { key: session.key, state: 'idle', since: now } }
         : course;
     case 'prompt-taken':
+      return { ...inTurn(course, now), promptTakenAt: now };
     case 'working':
-      if (session.state !== 'busy') return { session: busySince(session, now) };
-      // A turn shows: a compaction that began idle is now inside it.
-      return compactingFrom === undefined ? course : { session };
+      return inTurn(course, now);
+    case 'interrupted':
+      return endsAnEarlierTurn(course, event.at) ? course : turnOver(course, event, now);
     case 'turn-ended':
     case 'turn-failed':
-    case 'interrupted':
       return turnOver(course, event, now);
     case 'compaction-began':
       return session.state === 'idle'
-        ? { session: busySince(session, now), compactingFrom: session }
+        ? { ...course, session: busySince(session, now), compactingFrom: session }
         : course;
     case 'compaction-ended':
-      return compactingFrom === undefined ? course : { session: compactingFrom };
+      return compactingFrom === undefined ? course : withSession(course, compactingFrom);
     case 'tasks':
       return withIdle(course, (idle) => withTasks(idle, event.running));
     case 'task-finished':
       return withIdle(course, (idle) => withoutTask(idle, event.id));
+    case 'conversation':
     case 'ending':
       return course;
   }
+}
+
+/** The course with this session, and no compaction to return from. */
+function withSession(course: SessionCourse, session: Session): SessionCourse {
+  return course.promptTakenAt === undefined
+    ? { session }
+    : { session, promptTakenAt: course.promptTakenAt };
+}
+
+/**
+ * The course of a session whose turn shows: `busy`, its `since` kept when
+ * it was already; a compaction that began idle is now inside the turn.
+ */
+function inTurn(course: SessionCourse, now: string): SessionCourse {
+  const { session, compactingFrom } = course;
+  if (session.state !== 'busy') return withSession(course, busySince(session, now));
+  return compactingFrom === undefined ? course : withSession(course, session);
+}
+
+/**
+ * Whether an interruption was recorded before the last prompt was taken:
+ * it ended the turn before, which the transcript tells later than the
+ * hooks tell the next prompt.
+ */
+function endsAnEarlierTurn(course: SessionCourse, recordedAt: string | undefined): boolean {
+  if (recordedAt === undefined || course.promptTakenAt === undefined) return false;
+  return Date.parse(recordedAt) < Date.parse(course.promptTakenAt);
 }
 
 function busySince(session: Session, now: string): Session {
@@ -87,9 +120,11 @@ function turnOver(
   const { key, state } = course.session;
   if (state === 'idle') return course;
   const idle: IdleSession = { key, state: 'idle', since: now };
-  if (event.type === 'turn-failed') return { session: { ...idle, error: event.error } };
-  if (event.type === 'interrupted' || event.lastMessage === undefined) return { session: idle };
-  return { session: { ...idle, lastMessage: event.lastMessage } };
+  if (event.type === 'turn-failed') return withSession(course, { ...idle, error: event.error });
+  if (event.type === 'interrupted' || event.lastMessage === undefined) {
+    return withSession(course, idle);
+  }
+  return withSession(course, { ...idle, lastMessage: event.lastMessage });
 }
 
 /**
@@ -103,11 +138,11 @@ function withIdle(
   const { session, compactingFrom } = course;
   if (compactingFrom !== undefined) {
     const changed = change(compactingFrom);
-    return changed === compactingFrom ? course : { session, compactingFrom: changed };
+    return changed === compactingFrom ? course : { ...course, compactingFrom: changed };
   }
   if (session.state !== 'idle') return course;
   const changed = change(session);
-  return changed === session ? course : { session: changed };
+  return changed === session ? course : { ...course, session: changed };
 }
 
 /** The idle session without the task; the same one when it does not list it. */

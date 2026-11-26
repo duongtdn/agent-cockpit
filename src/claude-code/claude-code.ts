@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { givenAndRealPaths } from '../server/confinement.js';
 import {
+  type Conversation,
   type Driver,
   type DriverPart,
   HOOKS_PATH,
@@ -13,7 +14,7 @@ import { writePrivateFile } from '../server/state/private-files.js';
 import { CockpitError } from '../shared/cockpit-error.js';
 import type { KeyRule } from '../shared/wire.js';
 import { agentVersionReader } from './agent-version.js';
-import { agentConfigFolder, keepsConversation } from './conversations.js';
+import { agentConfigFolder, keepsConversation, type TranscriptLookup } from './conversations.js';
 import { readHook } from './hook-payloads.js';
 import {
   AGENT_COMMAND,
@@ -153,12 +154,18 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
     readScreen,
     launch: (launch) => launchSession(launch, checked),
     readHook,
-    follow: ({ conversationId }, report) =>
-      followTranscript({ configFolder: agentConfigFolder(process.env), conversationId }, report)
-        .stop,
-    canResume: ({ conversationId }) =>
-      keepsConversation(agentConfigFolder(process.env), conversationId),
+    follow: (conversation, report) => followTranscript(lookupOf(conversation), report).stop,
+    canResume: (conversation) => keepsConversation(lookupOf(conversation)),
   };
+}
+
+/**
+ * Where the agent of a session keeps its conversation: the configuration
+ * folder of the environment it was launched with, never the server's,
+ * which may hold a `CLAUDE_CONFIG_DIR` the app hid from its sessions.
+ */
+function lookupOf({ conversationId, directory, environment }: Conversation): TranscriptLookup {
+  return { configFolder: agentConfigFolder(environment), conversationId, directory };
 }
 
 function jobPart(part: ClaudeCodeJobPart): ClaudeCodeJobPart {

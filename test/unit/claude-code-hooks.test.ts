@@ -89,21 +89,45 @@ describe("what Claude Code's hooks tell the core", () => {
       'a resumed one with no answer yet',
       sessionStart({ source: 'resume', secondsSinceLastResponse: undefined }),
     ],
-  ])('SessionStart of %s: the agent is ready', (_, hookEvent) => {
-    expect(eventsOf(hookEvent)).toEqual([{ type: 'ready' }]);
+  ])(
+    'SessionStart of %s: the agent is ready, in the conversation the hook names',
+    (_, hookEvent) => {
+      expect(eventsOf(hookEvent)).toEqual([
+        { type: 'ready' },
+        { type: 'conversation', conversationId: session.sessionId },
+      ]);
+    },
+  );
+
+  it('SessionStart after a compaction is no start of the session: the conversation goes on', () => {
+    const body = {
+      ...payloadOf(session, sessionStart({ source: 'startup', model: 'm' })),
+      source: 'compact',
+    };
+
+    expect(eventsOfPayload(body)).toEqual([
+      { type: 'conversation', conversationId: session.sessionId },
+    ]);
   });
 
-  it('SessionStart after a compaction or a clear is no start of the session', () => {
-    expect(
-      readHook({
-        key: 'chapter-1',
-        path: HOOKS_PATH,
-        body: {
-          ...payloadOf(session, sessionStart({ source: 'startup', model: 'm' })),
-          source: 'compact',
-        },
-      }).events,
-    ).toEqual([]);
+  it('SessionStart after a /clear names the new conversation, which the session goes on in', () => {
+    const cleared = '779ad0f7-5a3c-4e0b-9d1f-2b6c8e4a7f10';
+    const body = {
+      ...payloadOf(session, sessionStart({ source: 'startup', model: 'm' })),
+      source: 'clear',
+      session_id: cleared,
+    };
+
+    expect(eventsOfPayload(body)).toEqual([{ type: 'conversation', conversationId: cleared }]);
+  });
+
+  it('SessionStart that names no conversation tells only what its source does', () => {
+    const body = {
+      ...payloadOf(session, sessionStart({ source: 'startup', model: 'm' })),
+      session_id: '',
+    };
+
+    expect(eventsOfPayload(body)).toEqual([{ type: 'ready' }]);
   });
 
   it('UserPromptSubmit: a prompt was taken', () => {

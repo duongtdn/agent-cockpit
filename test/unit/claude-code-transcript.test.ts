@@ -60,12 +60,25 @@ describe('the events in what a transcript was written with', () => {
   const marker = JSON.stringify(userBlocks('[Request interrupted by user]'));
   const prompt = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Go é' } });
 
+  const interrupted = { type: 'interrupted', at: '2026-11-26T10:00:00.000Z' };
+
   it('reads whole lines, and keeps a line not yet whole for later', () => {
     const { events, rest } = eventsIn(Buffer.from(`${prompt}\n${marker}\n${marker.slice(0, 20)}`));
 
-    expect(events).toEqual([{ type: 'interrupted' }]);
+    expect(events).toEqual([interrupted]);
     expect(rest.toString()).toBe(marker.slice(0, 20));
     expect(eventsIn(Buffer.concat([rest, Buffer.from(`${marker.slice(20)}\n`)])).events).toEqual([
+      interrupted,
+    ]);
+  });
+
+  it('tells when the agent recorded an interruption, as its entry says', () => {
+    const untimed = JSON.stringify({ ...JSON.parse(marker), timestamp: undefined });
+    const unreadable = JSON.stringify({ ...JSON.parse(marker), timestamp: 'soon' });
+
+    expect(eventsIn(Buffer.from(`${marker}\n${untimed}\n${unreadable}\n`)).events).toEqual([
+      interrupted,
+      { type: 'interrupted' },
       { type: 'interrupted' },
     ]);
   });
@@ -82,8 +95,6 @@ describe('the events in what a transcript was written with', () => {
   });
 
   it('skips a line that is no JSON, and blank lines', () => {
-    expect(eventsIn(Buffer.from(`not json\n\n${marker}\n`)).events).toEqual([
-      { type: 'interrupted' },
-    ]);
+    expect(eventsIn(Buffer.from(`not json\n\n${marker}\n`)).events).toEqual([interrupted]);
   });
 });

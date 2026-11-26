@@ -244,6 +244,12 @@ export const STUB_EVENTS: Readonly<Record<string, readonly DriverEvent[]>> = {
 };
 
 /**
+ * The start of the path of a stub hook that names the conversation the
+ * agent works in: the id follows it.
+ */
+export const CONVERSATION_PATH = '/conversation/';
+
+/**
  * The screens a stub driver reads: `ready`, `dialog` (one it does not
  * know), `dialog:<name>`; any other text shows nothing.
  */
@@ -317,6 +323,12 @@ export function createStubDriver(): StubDriver {
       return STUB_COMMAND;
     },
     readHook(request: HookRequest) {
+      const conversationId = request.path.startsWith(CONVERSATION_PATH)
+        ? request.path.slice(CONVERSATION_PATH.length)
+        : undefined;
+      if (conversationId !== undefined) {
+        return { events: [{ type: 'conversation', conversationId }] };
+      }
       return { events: STUB_EVENTS[request.path] ?? [] };
     },
     follow(conversation, report) {

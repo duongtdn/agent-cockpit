@@ -42,6 +42,11 @@ export class ScreenWatch {
     this.#schedule();
   }
 
+  /** Starts reading: the first read at once. */
+  startNow(): void {
+    void this.#tick();
+  }
+
   /** Stops reading: no reading is given from now on, even of a read under way. */
   stop(): void {
     this.#stopped = true;

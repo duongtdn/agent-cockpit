@@ -251,7 +251,49 @@ describe('a compaction', () => {
   ])('is forgotten once a turn shows: %s', (_, event, session) => {
     const course = afterEvents({ session: idle }, [{ type: 'compaction-began' }, event]);
 
-    expect(course).toEqual({ session });
+    expect(course.session).toEqual(session);
+    expect(course.compactingFrom).toBeUndefined();
     expect(afterEvents(course, [{ type: 'compaction-ended' }])).toBe(course);
+  });
+});
+
+describe('an interruption the transcript recorded', () => {
+  const EARLIER = '2026-11-26T10:04:59.000Z';
+  const LATER = '2026-11-26T10:05:01.000Z';
+
+  it('ends the turn when it was recorded after the last prompt was taken', () => {
+    const course = afterEvents({ session: busy }, [
+      { type: 'prompt-taken' },
+      { type: 'interrupted', at: LATER },
+    ]);
+
+    expect(course.session).toEqual({ key: KEY, state: 'idle', since: NOW });
+  });
+
+  it('ended an earlier turn when it was recorded before the last prompt was taken: the new one stays busy', () => {
+    const taken = afterEvents({ session: busy }, [{ type: 'prompt-taken' }]);
+
+    const course = afterEvents(taken, [{ type: 'interrupted', at: EARLIER }]);
+
+    expect(course.session).toBe(busy);
+  });
+
+  it('ends the turn when it says not when it was recorded', () => {
+    const course = afterEvents({ session: busy }, [
+      { type: 'prompt-taken' },
+      { type: 'interrupted' },
+    ]);
+
+    expect(course.session.state).toBe('idle');
+  });
+});
+
+describe('the conversation the agent names', () => {
+  it.each([starting, busy, idle, waiting])('changes no state: %s', (session) => {
+    const course = { session };
+
+    expect(courseAfter(course, { type: 'conversation', conversationId: 'c2' }, true, NOW)).toBe(
+      course,
+    );
   });
 });

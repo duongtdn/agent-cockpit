@@ -26,7 +26,7 @@ const NOTHING: HookOutcome = { events: [] };
 /**
  * How a session came to take input that is the start of a launch. A
  * `SessionStart` of another source (after `/clear` or a compaction) is the
- * same process going on.
+ * same process going on, in the conversation it names.
  */
 const LAUNCH_SOURCES: readonly unknown[] = ['startup', 'resume'];
 
@@ -73,7 +73,10 @@ export function readHook(request: HookRequest): HookOutcome {
 function eventsOf(payload: Record<string, unknown>): DriverEvent[] {
   switch (payload.hook_event_name) {
     case 'SessionStart':
-      return LAUNCH_SOURCES.includes(payload.source) ? [{ type: 'ready' }] : [];
+      return [
+        ...(LAUNCH_SOURCES.includes(payload.source) ? [{ type: 'ready' } as const] : []),
+        ...conversation(payload.session_id),
+      ];
     case 'UserPromptSubmit':
       return [{ type: 'prompt-taken' }];
     case 'PreToolUse':
@@ -92,6 +95,14 @@ function eventsOf(payload: Record<string, unknown>): DriverEvent[] {
     default:
       return [];
   }
+}
+
+/**
+ * The conversation a `SessionStart` names: after a `/clear` a new one, its
+ * id the only place the agent tells it (its `SessionEnd` names the old).
+ */
+function conversation(id: unknown): DriverEvent[] {
+  return isText(id) ? [{ type: 'conversation', conversationId: id }] : [];
 }
 
 function turnEnded(lastMessage: unknown): DriverEvent {

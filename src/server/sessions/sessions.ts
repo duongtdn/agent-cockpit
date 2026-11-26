@@ -19,6 +19,7 @@ import {
 import type {
   AgentEndReason,
   Confinement,
+  Conversation,
   Driver,
   DriverEvent,
   DriverPart,
@@ -47,7 +48,8 @@ export { READY_BOUND_MS, START_DEADLINE_MS } from './start-up-watch.js';
  * it took the prompt, before the cockpit reads its screen instead. Claude
  * Code's `UserPromptSubmit` comes 0.1–0.17 s after its `SessionStart`; a
  * local command (`/help`, `/clear`, `/context`) given as the prompt fires
- * none, and only the screen tells what the agent does then.
+ * none, and only the screen tells what the agent does then. The screen is
+ * read from then on until it tells, or a hook does.
  */
 export const PROMPT_BOUND_MS = 5_000;
 
@@ -284,12 +286,17 @@ function departure(): Departure {
 interface Entry {
   readonly key: string;
   readonly directory: string;
-  readonly conversationId: string;
+  /** The environment the launch starts from, which the driver is given. */
+  readonly environment: Readonly<Record<string, string>>;
+  /** The conversation the agent works in: the one launched, until the agent names another. */
+  conversationId: string;
   readonly launchedWithPrompt: boolean;
   readonly departure: Departure;
   session: Session;
   /** What a compaction begun while `idle` returns the session to. */
   compactingFrom?: SessionCourse['compactingFrom'];
+  /** When the agent last took a prompt. */
+  promptTakenAt?: SessionCourse['promptTakenAt'];
   phase: Phase;
   /** Why the cockpit itself ends the session, which prevails over the agent's word. */
   endedBecause?: EndReason;
@@ -302,10 +309,15 @@ interface Entry {
   heard: boolean;
   /** Reads the screen from the launch until {@link heard}. */
   startUp?: StartUpWatch;
-  /** Reads the screen once the launch prompt was not taken in time. */
+  /** Starts reading the screen once the launch prompt was not taken in time. */
   promptBound?: NodeJS.Timeout;
-  /** Reads the screen while a panel the prompt opened waits for a key. */
-  panel?: ScreenWatch;
+  /** Reads the screen for what became of a launch prompt no hook said was taken. */
+  promptWatch?: ScreenWatch;
+  /**
+   * Reads the screen while a compaction begun `idle` runs: an agent whose
+   * compaction fails or is interrupted tells its end by no hook.
+   */
+  compactionWatch?: ScreenWatch;
   /** Stops following what the agent tells outside its hooks. */
   stopFollowing?: () => void;
 }
@@ -346,7 +358,8 @@ class SessionRegistry implements Sessions {
 
   /** Follows the session's state from what its agent told, a hook's events or others. */
   #told(entry: Entry, events: readonly DriverEvent[]): void {
-    if (!isListened(entry) || events.length === 0) return;
+    // Closed, the core runs no timer of its own: nothing it hears would be watched.
+    if (this.#closed || !isListened(entry) || events.length === 0) return;
     const at = now();
     // One hook is one change: its followers never see a session half told.
     let course: SessionCourse = courseOf(entry);
@@ -356,11 +369,70 @@ class SessionRegistry implements Sessions {
       // gone: declining a dialog may say so too, before any other hook.
       if (event.type === 'ending') entry.agentSaid = event.reason;
       else this.#hear(entry);
+      if (event.type === 'conversation') this.#moveTo(entry, event.conversationId);
       course = courseAfter(course, event, entry.launchedWithPrompt, at);
     }
-    entry.compactingFrom = course.compactingFrom;
-    this.#update(entry, course.session);
+    this.#take(entry, course);
     if (events.some((event) => event.type === 'ready')) this.#awaitPrompt(entry);
+  }
+
+  /** Takes the course the session is on now: its state, and the watch of a compaction begun `idle`. */
+  #take(entry: Entry, course: SessionCourse): void {
+    entry.compactingFrom = course.compactingFrom;
+    entry.promptTakenAt = course.promptTakenAt;
+    this.#update(entry, course.session);
+    if (entry.compactingFrom === undefined) this.#stopWatchingTheCompaction(entry);
+    else if (entry.compactionWatch === undefined) this.#watchTheCompaction(entry);
+  }
+
+  /**
+   * Reads the screen while the session compacts from `idle`: the input box
+   * back with no hook to say so (a compaction that failed, or that a
+   * person interrupted) is its end, and the session returns to the state
+   * it left, as at `PostCompact`.
+   */
+  #watchTheCompaction(entry: Entry): void {
+    const watch = new ScreenWatch({
+      read: () => this.#readScreen(entry.key),
+      onReading: (reading) => {
+        if (reading.shows !== 'ready') return;
+        const ended = courseAfter(
+          courseOf(entry),
+          { type: 'compaction-ended' },
+          entry.launchedWithPrompt,
+          now(),
+        );
+        this.#take(entry, ended);
+      },
+    });
+    entry.compactionWatch = watch;
+    watch.start();
+  }
+
+  #stopWatchingTheCompaction(entry: Entry): void {
+    entry.compactionWatch?.stop();
+    delete entry.compactionWatch;
+  }
+
+  /**
+   * Follows the conversation the agent moved to, when it is another (Claude
+   * Code's `/clear` starts one under a new id): what the driver tells
+   * outside the hooks is read from it, and the session's end asks whether
+   * it can resume.
+   */
+  #moveTo(entry: Entry, conversationId: string): void {
+    if (conversationId === entry.conversationId) return;
+    entry.conversationId = conversationId;
+    // Not followed yet, during the launch: the following starts on the new one.
+    if (entry.stopFollowing === undefined) return;
+    entry.stopFollowing();
+    this.#follow(entry);
+  }
+
+  #follow(entry: Entry): void {
+    entry.stopFollowing = this.#options.driver.follow(conversationOf(entry), (events) =>
+      this.#told(entry, events),
+    );
   }
 
   async attach(key: string, size: TerminalSize): Promise<Attachment | undefined> {
@@ -396,6 +468,7 @@ class SessionRegistry implements Sessions {
     this.#watch.close();
     for (const entry of this.#entries.values()) {
       stopReadingTheScreen(entry);
+      this.#stopWatchingTheCompaction(entry);
       entry.stopFollowing?.();
       entry.departure.reject(new SessionsClosedError(entry.key));
     }
@@ -406,6 +479,7 @@ class SessionRegistry implements Sessions {
     const entry: Entry = {
       key,
       directory,
+      environment: this.#options.environment(),
       conversationId: randomUUID(),
       launchedWithPrompt,
       departure: departure(),
@@ -444,7 +518,7 @@ class SessionRegistry implements Sessions {
     let granted = false;
     try {
       this.#refuseIfClosed(entry);
-      const environment = this.#options.environment();
+      const { environment } = entry;
       await this.#options.admitAgent(environment);
       this.#refuseIfClosed(entry);
       this.#setPhase(entry, 'launching');
@@ -485,10 +559,7 @@ class SessionRegistry implements Sessions {
     // Closed while the host started it: the session goes on, unwatched.
     if (this.#closed) return;
     this.#watch.watch(entry.key);
-    entry.stopFollowing = driver.follow(
-      { conversationId: entry.conversationId, directory: entry.directory },
-      (events) => this.#told(entry, events),
-    );
+    this.#follow(entry);
     if (!entry.heard) this.#watchStartUp(entry);
   }
 
@@ -534,45 +605,30 @@ class SessionRegistry implements Sessions {
    */
   #awaitPrompt(entry: Entry): void {
     if (!entry.launchedWithPrompt || entry.session.state !== 'starting') return;
-    entry.promptBound = setTimeout(() => void this.#readForPrompt(entry), PROMPT_BOUND_MS);
+    entry.promptBound = setTimeout(() => this.#watchForPrompt(entry), PROMPT_BOUND_MS);
   }
 
   /**
-   * Reads what became of a launch prompt no hook said was taken: the input
-   * box back means the agent took it without a turn (a local command), and
-   * waits for the next (`idle`); a panel waits for a person's key in the
-   * terminal (`waiting`, until the box is back); anything else, the agent
-   * works on it (`busy`), and its hooks tell the rest.
+   * Reads what became of a launch prompt no hook said was taken, from now
+   * on until the screen or a hook tells: the input box back means the agent
+   * took it without a turn (a local command), and waits for the next
+   * (`idle`); a panel waits for a person's key in the terminal (`waiting`,
+   * until the box is back). A screen that tells neither, or cannot be read,
+   * is read again: the session stays `starting`, never guessed `busy`, and
+   * any hook ends the watch.
    */
-  async #readForPrompt(entry: Entry): Promise<void> {
-    const reading = await this.#readScreen(entry.key);
-    if (entry.phase !== 'live' || entry.session.state !== 'starting') return;
-    switch (reading?.shows) {
-      case 'ready':
-        this.#update(entry, { key: entry.key, state: 'idle', since: now() });
-        return;
-      case 'dialog':
-        this.#waitInTerminal(entry, reading.dialog === undefined ? {} : { dialog: reading.dialog });
-        this.#watchPanel(entry);
-        return;
-      default:
-        this.#update(entry, { key: entry.key, state: 'busy', since: now() });
-    }
-  }
-
-  /** Reads the screen until the panel the launch prompt opened is closed: then `idle`. */
-  #watchPanel(entry: Entry): void {
-    const panel = new ScreenWatch({
+  #watchForPrompt(entry: Entry): void {
+    const watch = new ScreenWatch({
       read: () => this.#readScreen(entry.key),
       onReading: (reading) => {
         if (reading.shows === 'dialog') this.#waitInTerminal(entry, reading);
         if (reading.shows !== 'ready') return;
-        panel.stop();
+        watch.stop();
         this.#update(entry, { key: entry.key, state: 'idle', since: now() });
       },
     });
-    entry.panel = panel;
-    panel.start();
+    entry.promptWatch = watch;
+    watch.startNow();
   }
 
   /**
@@ -654,11 +710,12 @@ class SessionRegistry implements Sessions {
     if (entry?.phase !== 'live' && entry?.phase !== 'killing') return;
     entry.phase = 'going';
     stopReadingTheScreen(entry);
+    this.#stopWatchingTheCompaction(entry);
     entry.stopFollowing?.();
     this.#watch.unwatch(key);
     this.#options.hooks.revoke(key);
     const canResume = await this.#options.driver
-      .canResume({ conversationId: entry.conversationId, directory: entry.directory })
+      .canResume(conversationOf(entry))
       // A conversation the driver cannot find is one it cannot resume.
       .catch(() => false);
     entry.phase = 'ended';
@@ -698,11 +755,23 @@ function endOf(entry: Entry): Pick<EndedSession, 'reason' | 'dialog'> {
     : { reason: 'declined', dialog: declined.dialog };
 }
 
-/** Stops every read of the session's screen, and every wait for one. */
+/**
+ * Stops every read of the session's screen for its start and its launch
+ * prompt, and every wait for one: a hook of the agent's tells from then on.
+ */
 function stopReadingTheScreen(entry: Entry): void {
   entry.startUp?.stop();
-  entry.panel?.stop();
+  entry.promptWatch?.stop();
   clearTimeout(entry.promptBound);
+}
+
+/** The conversation the session's agent works in now, as the driver is asked about it. */
+function conversationOf(entry: Entry): Conversation {
+  return {
+    conversationId: entry.conversationId,
+    directory: entry.directory,
+    environment: entry.environment,
+  };
 }
 
 /** Whether what a session's agent tells is listened to: from its launch until the cockpit ends it. */
@@ -711,8 +780,12 @@ function isListened(entry: Entry | undefined): entry is Entry {
 }
 
 function courseOf(entry: Entry): SessionCourse {
-  const { session, compactingFrom } = entry;
-  return compactingFrom === undefined ? { session } : { session, compactingFrom };
+  const { session, compactingFrom, promptTakenAt } = entry;
+  return {
+    session,
+    ...(compactingFrom === undefined ? {} : { compactingFrom }),
+    ...(promptTakenAt === undefined ? {} : { promptTakenAt }),
+  };
 }
 
 function wrongState(session: Session): CockpitError<'wrong-state'> {

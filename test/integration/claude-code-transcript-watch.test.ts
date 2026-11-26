@@ -1,21 +1,22 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  followTranscript,
-  TRANSCRIPT_POLL_MS,
-  type TranscriptWatch,
-} from '../../src/claude-code/transcript-watch.ts';
+import { followTranscript, type TranscriptWatch } from '../../src/claude-code/transcript-watch.ts';
 import type { DriverEvent } from '../../src/server/driver.ts';
 import { eventually } from '../support/eventually.ts';
 
 const CONVERSATION = '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11';
+/** The work folder, whose project folder holds the conversation. */
+const DIRECTORY = '/work/chapter-1';
 const PROMPT = { type: 'user', message: { role: 'user', content: 'Explain a.ts' } };
+const RECORDED_AT = '2026-11-27T10:00:00.000Z';
 const MARKER = {
   type: 'user',
+  timestamp: RECORDED_AT,
   message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
 };
+const INTERRUPTED = { type: 'interrupted', at: RECORDED_AT };
 
 let configFolder: string;
 let transcript: string;
@@ -34,10 +35,15 @@ afterEach(() => {
   rmSync(configFolder, { recursive: true, force: true });
 });
 
-async function follow(): Promise<void> {
-  watch = followTranscript({ configFolder, conversationId: CONVERSATION }, (events) =>
-    reported.push(...events),
+function followInto(into: DriverEvent[]): TranscriptWatch {
+  return followTranscript(
+    { configFolder, conversationId: CONVERSATION, directory: DIRECTORY },
+    (events) => into.push(...events),
   );
+}
+
+async function follow(): Promise<void> {
+  watch = followInto(reported);
   await watch.begun;
 }
 
@@ -59,7 +65,7 @@ describe("the Claude Code driver's watch of a transcript", () => {
 
     write(PROMPT, MARKER);
 
-    await eventually(() => expect(reported).toEqual([{ type: 'interrupted' }]));
+    await eventually(() => expect(reported).toEqual([INTERRUPTED]));
   });
 
   it('reports each marker written while it watches, and nothing for the other entries', async () => {
@@ -70,9 +76,7 @@ describe("the Claude Code driver's watch of a transcript", () => {
     write({ type: 'assistant', message: { role: 'assistant', content: [] } }, MARKER, PROMPT);
     write(MARKER);
 
-    await eventually(() =>
-      expect(reported).toEqual([{ type: 'interrupted' }, { type: 'interrupted' }]),
-    );
+    await eventually(() => expect(reported).toEqual([INTERRUPTED, INTERRUPTED]));
   });
 
   it('never reports what the transcript held before the watch began: a resumed conversation', async () => {
@@ -87,12 +91,26 @@ describe("the Claude Code driver's watch of a transcript", () => {
     await follow();
     write(PROMPT);
     await readUpToNow();
+    // A watch that goes on: once it read the marker, the stopped one has had its rounds too.
+    const control: DriverEvent[] = [];
+    const going = followInto(control);
+    await going.begun;
 
     watch?.stop();
     write(MARKER);
-    // Nothing announces a read that does not happen: a few of the watch's rounds go by.
-    await new Promise((resolve) => setTimeout(resolve, 3 * TRANSCRIPT_POLL_MS));
+    await eventually(() => expect(control).toEqual([INTERRUPTED]));
+    going.stop();
 
     expect(reported).toEqual([]);
+  });
+
+  it('reads a transcript that shrank again from its start: the agent wrote it anew', async () => {
+    write(PROMPT, PROMPT, PROMPT);
+    await follow();
+    await readUpToNow();
+
+    writeFileSync(transcript, `${JSON.stringify(MARKER)}\n`);
+
+    await eventually(() => expect(reported).toEqual([INTERRUPTED]));
   });
 });

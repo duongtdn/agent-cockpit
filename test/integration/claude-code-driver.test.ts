@@ -81,8 +81,9 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  // The driver looks conversations up where the agents it launches keep them.
-  vi.stubEnv('CLAUDE_CONFIG_DIR', configFolder);
+  // The server's own, which the app hid from its sessions: the driver looks
+  // conversations up where the agents it launches keep them, never here.
+  vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, 'the-servers-own'));
 });
 
 afterEach(async () => {
@@ -142,7 +143,7 @@ describe('the Claude Code driver, with the fake agent in tmux', () => {
   it('reports the start, the prompt, the work and the end of the turn with its message', async () => {
     const driver = claudeCode({ permissions: { allow: ['Bash'] } });
     const touch = { do: 'tool', name: 'Bash', input: { command: 'touch a.txt' } } as const;
-    const { listener } = await launchThroughDriver(
+    const { launch, listener } = await launchThroughDriver(
       driver,
       [[touch, { do: 'reply', text: 'Done.' }]],
       'Touch a.txt',
@@ -151,6 +152,7 @@ describe('the Claude Code driver, with the fake agent in tmux', () => {
     await eventually(() =>
       expect(listener.events).toEqual([
         { type: 'ready' },
+        { type: 'conversation', conversationId: launch.conversationId },
         { type: 'prompt-taken' },
         { type: 'working' },
         { type: 'working' },
@@ -172,6 +174,7 @@ describe('the Claude Code driver, with the fake agent in tmux', () => {
     await eventually(() =>
       expect(listener.events).toEqual([
         { type: 'ready' },
+        { type: 'conversation', conversationId: launch.conversationId },
         { type: 'prompt-taken' },
         { type: 'ending', reason: 'agent-exit' },
       ]),
@@ -192,11 +195,13 @@ describe('the Claude Code driver, with the fake agent in tmux', () => {
     const told: DriverEvent[] = [];
     const stop = driver.follow(launch, (events) => told.push(...events));
     try {
-      await eventually(() => expect(listener.events).toHaveLength(4));
+      await eventually(() => expect(listener.events).toHaveLength(5));
 
       await host.sendKeys(name, ['Escape']);
 
-      await eventually(() => expect(told).toEqual([{ type: 'interrupted' }]));
+      await eventually(() =>
+        expect(told).toEqual([{ type: 'interrupted', at: expect.any(String) }]),
+      );
       expect(listener.events.at(-1)).toEqual({ type: 'working' });
     } finally {
       stop();

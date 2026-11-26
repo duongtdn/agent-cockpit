@@ -189,6 +189,17 @@ export type DriverEvent =
       readonly type: 'ready';
     }
   | {
+      /**
+       * The conversation the agent keeps the session's work in, as it
+       * starts one: the one launched, or a new one under another id (Claude
+       * Code's `/clear`). From then on the core follows that one, and an
+       * ended session resumes it.
+       */
+      readonly type: 'conversation';
+      /** The conversation's id. */
+      readonly conversationId: string;
+    }
+  | {
       /** The agent took a prompt and started a turn: `busy`. */
       readonly type: 'prompt-taken';
     }
@@ -208,6 +219,13 @@ export type DriverEvent =
        * reports: `idle`, with no last message.
        */
       readonly type: 'interrupted';
+      /**
+       * When the agent recorded it, an ISO 8601 time, when it says. Told
+       * later than the hooks, an interruption recorded before the last
+       * prompt was taken ended an earlier turn, and leaves the new one as
+       * it is.
+       */
+      readonly at?: string;
     }
   | {
       /** The turn ended on an error of the model's API, after the agent's own retries: `idle`. */
@@ -254,12 +272,18 @@ export interface HookOutcome {
   readonly events: readonly DriverEvent[];
 }
 
-/** A conversation the agent may keep, as a launch named it. */
+/** A conversation the agent may keep: the one a launch named, or one the agent moved to. */
 export interface Conversation {
-  /** The conversation's id, as the launch gave it. */
+  /** The conversation's id. */
   readonly conversationId: string;
   /** The folder the session worked in: the agent may keep conversations by folder. */
   readonly directory: string;
+  /**
+   * The environment the session was launched with, as the driver's launch
+   * was given it: where the agent keeps its conversations may follow from
+   * it, and differ from the server's own.
+   */
+  readonly environment: Readonly<Record<string, string>>;
 }
 
 /**

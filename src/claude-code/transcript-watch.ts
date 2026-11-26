@@ -1,6 +1,6 @@
 import { open, stat } from 'node:fs/promises';
 import type { DriverEvent } from '../server/driver.js';
-import { findTranscript } from './conversations.js';
+import { type TranscriptLookup, transcriptSearch } from './conversations.js';
 
 /**
  * How often a watched transcript is looked at. An interruption is written
@@ -22,14 +22,6 @@ const INTERRUPTION_MARKERS: ReadonlySet<unknown> = new Set([
 
 const LINE_END = 0x0a;
 
-/** The conversation a watch follows. */
-export interface WatchedTranscript {
-  /** The agent's configuration folder, which holds its conversations. */
-  readonly configFolder: string;
-  /** The conversation's id. */
-  readonly conversationId: string;
-}
-
 /** A watch of a transcript. */
 export interface TranscriptWatch {
   /**
@@ -43,17 +35,19 @@ export interface TranscriptWatch {
 
 /**
  * Follows a conversation's transcript and reports each interruption written
- * into it from now on: what the transcript held before is not reported, so
- * that a resumed conversation's earlier interruptions are not told again.
- * The transcript may not exist yet: a new conversation writes it with its
- * first prompt.
+ * into it from now on, with when the agent recorded it: what the transcript
+ * held before is not reported, so that a resumed conversation's earlier
+ * interruptions are not told again. The transcript may not exist yet: a new
+ * conversation writes it with its first prompt, and it is looked for as
+ * {@link transcriptSearch} does until found. A transcript that shrank was
+ * written anew, and is read again from its start.
  *
- * @param transcript - The conversation.
+ * @param transcript - The conversation, and where to look for it.
  * @param report - Receives the events of each round that found any.
  * @returns The watch.
  */
 export function followTranscript(
-  transcript: WatchedTranscript,
+  transcript: TranscriptLookup,
   report: (events: readonly DriverEvent[]) => void,
 ): TranscriptWatch {
   let stopped = false;
@@ -62,7 +56,7 @@ export function followTranscript(
   let offset = 0;
   let unread: Buffer = Buffer.alloc(0);
 
-  const find = () => findTranscript(transcript.configFolder, transcript.conversationId);
+  const find = transcriptSearch(transcript);
 
   async function begin(): Promise<void> {
     path = await find();
@@ -73,7 +67,11 @@ export function followTranscript(
     path ??= await find();
     if (path === undefined) return;
     const size = (await stat(path)).size;
-    if (size <= offset) return;
+    if (size < offset) {
+      offset = 0;
+      unread = Buffer.alloc(0);
+    }
+    if (size === offset) return;
     const read = await readBytes(path, offset, size);
     offset += read.length;
     const { events, rest } = eventsIn(Buffer.concat([unread, read]));
@@ -128,9 +126,19 @@ export function eventsIn(unread: Buffer): { events: DriverEvent[]; rest: Buffer 
     .subarray(0, end)
     .toString('utf8')
     .split('\n')
-    .filter((line) => isInterruption(parsed(line)))
-    .map(() => ({ type: 'interrupted' }));
+    .map(parsed)
+    .filter(isInterruption)
+    .map(interruption);
   return { events, rest: unread.subarray(end) };
+}
+
+/** The interruption an entry marks, with when the agent recorded it when the entry says. */
+function interruption(entry: unknown): DriverEvent {
+  const { timestamp } = entry as { readonly timestamp?: unknown };
+  const at = typeof timestamp === 'string' ? Date.parse(timestamp) : Number.NaN;
+  return Number.isNaN(at)
+    ? { type: 'interrupted' }
+    : { type: 'interrupted', at: new Date(at).toISOString() };
 }
 
 function parsed(line: string): unknown {

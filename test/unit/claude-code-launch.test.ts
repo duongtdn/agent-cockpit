@@ -570,42 +570,54 @@ describe("the network of a session that runs a job's driver part", () => {
 });
 
 describe('whether a conversation can resume', () => {
-  it('is whether its transcript exists, in any project folder of the configuration folder', async () => {
-    vi.stubEnv('CLAUDE_CONFIG_DIR', files);
+  /** The conversation of a session launched with this configuration folder, in `/work/app`. */
+  function launchedWith(configFolder: string, directory = '/work/app') {
+    return {
+      conversationId: CONVERSATION,
+      directory,
+      environment: { HOME: '/home/someone', CLAUDE_CONFIG_DIR: configFolder },
+    };
+  }
+
+  beforeEach(() => {
+    // The server's own, which the app may hide from its sessions: never where the agent looked.
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(files, 'the-servers-own'));
+  });
+
+  it('is whether its transcript exists, in any project folder of the configuration folder it was launched with', async () => {
     const project = join(files, 'projects', '-elsewhere-app');
     mkdirSync(project, { recursive: true });
     writeFileSync(join(project, 'not-a-folder.jsonl'), '');
     const driver = claudeCode();
 
-    expect(await driver.canResume({ conversationId: CONVERSATION, directory: '/work/app' })).toBe(
-      false,
-    );
+    expect(await driver.canResume(launchedWith(files))).toBe(false);
     writeFileSync(join(project, `${CONVERSATION}.jsonl`), '{}\n');
-    expect(await driver.canResume({ conversationId: CONVERSATION, directory: '/work/app' })).toBe(
-      true,
-    );
+    expect(await driver.canResume(launchedWith(files))).toBe(true);
+  });
+
+  it('is whether its transcript exists in the project folder Claude Code names after the work folder', async () => {
+    const project = join(files, 'projects', '-work-my-app-v2');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, `${CONVERSATION}.jsonl`), '{}\n');
+
+    expect(await claudeCode().canResume(launchedWith(files, '/work/my_app.v2'))).toBe(true);
   });
 
   it('is false when the agent keeps no conversation at all', async () => {
-    vi.stubEnv('CLAUDE_CONFIG_DIR', join(files, 'never-ran'));
-
-    expect(await claudeCode().canResume({ conversationId: CONVERSATION, directory: '/w' })).toBe(
-      false,
-    );
+    expect(await claudeCode().canResume(launchedWith(join(files, 'never-ran')))).toBe(false);
   });
 
   it('fails when the configuration folder cannot be read', async () => {
     writeFileSync(join(files, 'projects'), '');
-    vi.stubEnv('CLAUDE_CONFIG_DIR', files);
 
-    await expect(
-      claudeCode().canResume({ conversationId: CONVERSATION, directory: '/w' }),
-    ).rejects.toThrow(/ENOTDIR/);
+    await expect(claudeCode().canResume(launchedWith(files))).rejects.toThrow(/ENOTDIR/);
   });
 
-  it("is looked up in CLAUDE_CONFIG_DIR, else in .claude of the user's home", () => {
+  it("is looked up in CLAUDE_CONFIG_DIR, else in .claude of the agent's home", () => {
     expect(agentConfigFolder({ CLAUDE_CONFIG_DIR: '/config' })).toBe('/config');
-    expect(agentConfigFolder({ CLAUDE_CONFIG_DIR: '' })).toBe(join(homedir(), '.claude'));
+    expect(agentConfigFolder({ CLAUDE_CONFIG_DIR: '', HOME: '/home/someone' })).toBe(
+      '/home/someone/.claude',
+    );
     expect(agentConfigFolder({})).toBe(join(homedir(), '.claude'));
   });
 });
