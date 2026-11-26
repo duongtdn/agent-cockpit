@@ -1000,10 +1000,12 @@ describe('the host’s settings', () => {
     await start('whole', 'sh', ['-c', 'stty size; exec cat'], { size: terminal });
 
     await attach('whole', terminal);
+    // Keys that reach the terminal before the program has written are echoed
+    // above what it writes: the text is typed once the program has shown its size.
+    await expectScreen('whole', '30 80');
     await host.sendText('whole', 'typed\n', pacing);
 
-    await expectScreen('whole', 'typed\ntyped');
-    expect(await screenOf('whole')).toContain('30 80');
+    await expectScreen('whole', '30 80\ntyped\ntyped');
     expect((await screenOf('whole')).split('\n')).toHaveLength(30);
   });
 
