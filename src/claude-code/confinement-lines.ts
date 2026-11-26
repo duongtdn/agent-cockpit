@@ -1,13 +1,6 @@
 import { isIPv6 } from 'node:net';
 import type { Confinement, NetworkAddress } from '../server/driver.js';
 
-/**
- * The names that reach the loopback whatever the machine's interfaces.
- * `[::]` is among them: a sandboxed command reached an app on every address
- * through it when it was not listed.
- */
-const LOOPBACK_NAMES: readonly string[] = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '::'];
-
 /** The sandbox's section of a session's settings: what its commands' network may reach. */
 export interface SandboxLines {
   readonly network: {
@@ -34,8 +27,9 @@ export function stateRootDenies(stateRoots: readonly string[]): string[] {
 }
 
 /**
- * Gives the sandbox's lines: the app's ports denied on every address of the
- * app's and every loopback name, the listener the one address allowed, and
+ * Gives the sandbox's lines: every address of the app's the confinement
+ * names denied (the core's list: every loopback name and local address, on
+ * every port of the app's), the listener the one address allowed, and
  * no command let out of the sandbox. They do not turn the sandbox on: that
  * stays the person's choice, and without it they change nothing.
  *
@@ -53,9 +47,7 @@ export function sandboxLines(confinement: Confinement): SandboxLines {
 }
 
 function deniedDomains(appAddresses: readonly NetworkAddress[]): string[] {
-  const ports = new Set(appAddresses.map(({ port }) => port));
-  const onLoopback = [...ports].flatMap((port) => LOOPBACK_NAMES.map((host) => ({ host, port })));
-  return [...new Set([...appAddresses, ...onLoopback].map(domain))];
+  return [...new Set(appAddresses.map(domain))];
 }
 
 /** An address as the sandbox's domain lists write it: an IPv6 address in brackets. */

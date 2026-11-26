@@ -26,7 +26,7 @@ describe("a launch's confinement", () => {
     expect((await read()).stateRoots).toEqual([linked, real, missing]);
   });
 
-  it("gives each of the app's ports on the loopback names and every local address, read at each launch", async () => {
+  it("gives each of the app's ports on every loopback name and every local address, read at each launch", async () => {
     const ports = [8765];
     const read = confinementReader({ stateRoots: [], appPorts: () => ports, listener: LISTENER });
     ports.push(8443);
@@ -36,7 +36,7 @@ describe("a launch's confinement", () => {
     const local = Object.values(networkInterfaces()).flatMap((addresses) =>
       (addresses ?? []).map(({ address }) => address),
     );
-    for (const host of ['localhost', '0.0.0.0', '127.0.0.1', ...local]) {
+    for (const host of ['localhost', '127.0.0.1', '0.0.0.0', '::1', '::', ...local]) {
       expect(appAddresses).toContainEqual({ host, port: 8765 });
       expect(appAddresses).toContainEqual({ host, port: 8443 });
     }

@@ -60,8 +60,11 @@ export interface Confinement {
   readonly stateRoots: readonly string[];
   /**
    * Every address the app's browser-facing surfaces may be reached at: each
-   * of the app's ports on every local address, read at this launch, and on
-   * the loopback names. A sandboxed agent's network may reach none of them.
+   * of the app's ports on every loopback name (`localhost`, `127.0.0.1`,
+   * `0.0.0.0`, `::1`, `::`) and on every address of every interface. The
+   * ports and the interfaces are read at each launch; a running session
+   * keeps the lines it was launched with. A sandboxed agent's network may
+   * reach none of them; a driver writes them as they are, adding none.
    */
   readonly appAddresses: readonly NetworkAddress[];
   /** The agent-facing listener, which the session's hooks must reach. */

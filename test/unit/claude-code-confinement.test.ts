@@ -105,7 +105,7 @@ describe('the state roots in the settings of a launch', () => {
 });
 
 describe('the sandbox lines in the settings of a launch', () => {
-  it("deny every address of the app's, and every loopback name, on each of the app's ports", async () => {
+  it("deny every address of the app's it is given, and nothing of its own", async () => {
     const { sandbox } = await settingsOf(
       confinementOf({
         appAddresses: [
@@ -122,15 +122,27 @@ describe('the sandbox lines in the settings of a launch', () => {
       '172.28.119.214:8765',
       'localhost:8443',
       '172.28.119.214:8443',
-      '127.0.0.1:8765',
-      '0.0.0.0:8765',
-      '[::1]:8765',
-      '[::]:8765',
-      '127.0.0.1:8443',
-      '0.0.0.0:8443',
-      '[::1]:8443',
-      '[::]:8443',
     ]);
+  });
+
+  it('deny every loopback name the core gives, among them [::]', async () => {
+    const confinement = await confinementReader({
+      stateRoots: [],
+      appPorts: () => [8765],
+      listener: { host: '127.0.0.1', port: 4100 },
+    })();
+
+    const { sandbox } = await settingsOf(confinement);
+
+    expect(sandbox.network.deniedDomains).toEqual(
+      expect.arrayContaining([
+        'localhost:8765',
+        '127.0.0.1:8765',
+        '0.0.0.0:8765',
+        '[::1]:8765',
+        '[::]:8765',
+      ]),
+    );
   });
 
   it('write an IPv6 address in brackets before its port', async () => {

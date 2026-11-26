@@ -5,10 +5,12 @@ import { CockpitError } from '../shared/cockpit-error.js';
 import type { Confinement, NetworkAddress } from './driver.js';
 
 /**
- * The names that reach every local address, or the loopback, whatever the
- * machine's interfaces: an app's port is denied on them too.
+ * The names that reach the loopback, or every local address, whatever the
+ * machine's interfaces: an app's port is denied on each. `::` is among
+ * them: a sandboxed command reached an app listening on every address
+ * through it when it was not listed.
  */
-const LOCAL_NAMES: readonly string[] = ['localhost', '0.0.0.0'];
+const LOOPBACK_NAMES: readonly string[] = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '::'];
 
 /**
  * The characters a permission rule reads as its own: a pattern's (`*`, `?`,
@@ -88,9 +90,9 @@ export function holdsRuleSyntax(path: string): boolean {
   return RULE_SYNTAX.test(path);
 }
 
-/** Every port on the local names and on every address of every interface, each once. */
+/** Every port on the loopback names and on every address of every interface, each once. */
 function appAddresses(ports: readonly number[]): NetworkAddress[] {
-  const hosts = new Set([...LOCAL_NAMES, ...interfaceAddresses()]);
+  const hosts = new Set([...LOOPBACK_NAMES, ...interfaceAddresses()]);
   return ports.flatMap((port) => [...hosts].map((host) => ({ host, port })));
 }
 
