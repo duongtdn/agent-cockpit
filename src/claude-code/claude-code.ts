@@ -1,7 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import { rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Driver, HookAddress, Launch, LaunchCommand } from '../server/driver.js';
+import { writePrivateFile } from '../server/state/private-files.js';
 import type { KeyRule } from '../shared/wire.js';
 import { agentConfigFolder, keepsConversation } from './conversations.js';
 import { HOOK_PATH, readHook } from './hook-payloads.js';
@@ -86,15 +85,4 @@ async function launchSession(launch: Launch, options: CheckedOptions): Promise<L
 
 function hookUrl(base: string): string {
   return `${base.replace(/\/+$/, '')}${HOOK_PATH}`;
-}
-
-/**
- * Writes a file only the app's user can read, whole or not at all: written
- * aside, then put in place, so the agent never reads half of it and a file
- * of an earlier launch never keeps wider rights.
- */
-async function writePrivateFile(path: string, content: string): Promise<void> {
-  const aside = `${path}.${randomUUID()}`;
-  await writeFile(aside, content, { mode: 0o600, flag: 'wx' });
-  await rename(aside, path);
 }
