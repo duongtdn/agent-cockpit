@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import type { AgentSession } from '../support/agent-session.ts';
 import type { Question, Step } from '../support/fake-agent/script.ts';
 import { INTERRUPTED } from '../support/fake-agent/transcript.ts';
-import { userTexts } from './harness.ts';
+import { submitPrompt, userTexts } from './harness.ts';
 import { hooksOfBothAgents, type ParityAgent, type Scenario } from './parity-agents.ts';
 
 /**
@@ -48,12 +48,6 @@ async function turnEnded(agent: ParityAgent): Promise<void> {
   await agent.hook('Stop');
 }
 
-async function typed(agent: ParityAgent, session: AgentSession, prompt: string): Promise<void> {
-  await session.type(prompt);
-  await session.press('Enter');
-  await agent.hook('UserPromptSubmit');
-}
-
 /** Ends a session by SIGTERM, and waits for the two hooks that tell of it: the post and the command. */
 async function terminated(agent: ParityAgent, session: AgentSession): Promise<void> {
   await agent.end(session, 'SIGTERM');
@@ -90,7 +84,7 @@ agreeOn('a typed prompt, answered after a tool call that needs no permission', {
   async play(agent) {
     const session = await agent.startNew();
     await agent.hook('SessionStart');
-    await typed(agent, session, 'touch it');
+    await submitPrompt(agent, session, 'touch it');
     await turnEnded(agent);
     await terminated(agent, session);
   },
@@ -133,12 +127,12 @@ agreeOn('Esc during a turn that has run a tool, then a prompt', {
   async play(agent) {
     const session = await agent.startNew();
     await agent.hook('SessionStart');
-    await typed(agent, session, 'touch, then think');
+    await submitPrompt(agent, session, 'touch, then think');
     await agent.staysBusy(session);
     await session.press('Escape');
     await agent.eventually(() => expect(userTexts(session)).toContain(INTERRUPTED));
     // The barrier: a hook of the interrupted turn would come before this prompt's own.
-    await typed(agent, session, 'go on');
+    await submitPrompt(agent, session, 'go on');
     await turnEnded(agent);
     await terminated(agent, session);
   },
@@ -149,11 +143,12 @@ agreeOn('the resume of a conversation, then a prompt', {
   async play(agent) {
     const session = await agent.startNew({ prompt: 'the earlier prompt' });
     await agent.hook('SessionStart');
+    await agent.hook('UserPromptSubmit');
     await turnEnded(agent);
     await terminated(agent, session);
     const resumed = await agent.resume(session.id);
     await agent.hook('SessionStart');
-    await typed(agent, resumed, 'the later prompt');
+    await submitPrompt(agent, resumed, 'the later prompt');
     await turnEnded(agent);
     await terminated(agent, resumed);
   },

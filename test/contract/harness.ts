@@ -1,3 +1,4 @@
+import { setTimeout as pause } from 'node:timers/promises';
 import { expect, onTestFinished } from 'vitest';
 import { eventually } from '../support/eventually.ts';
 import { type FakeApi, type LoggedRequest, startFakeApi } from '../support/fake-api/index.ts';
@@ -87,6 +88,15 @@ export interface ContractAgentOptions {
    */
   readonly permissions?: object;
 }
+
+/**
+ * How long an Enter is given to submit before the box is looked at again: a
+ * few seconds, as the driver gives it, far more than a taken Enter needs.
+ */
+const SUBMIT_PATIENCE_MS = 3000;
+
+/** How many times Enter is pressed on a prompt that stays in the box, as the driver does. */
+const ENTER_PRESSES = 3;
 
 /** Far longer than the agent takes (a start is under a second), short enough to fail with the reason. */
 const PATIENCE_MS = 15_000;
@@ -381,4 +391,56 @@ export function inputBoxText(screen: string): string | undefined {
     .slice(top + 1, bottom)
     .join('\n')
     .replace(/^❯\s/u, '');
+}
+
+/**
+ * Types a prompt into an idle session and submits it as the driver does:
+ * Enter, then a few seconds for the `UserPromptSubmit` that carries it; when
+ * none came and the prompt is still in the input box, Enter again, up to
+ * three times. The agent has been seen to miss an Enter, so a submit is
+ * confirmed, never assumed.
+ *
+ * @param agent - The agent, real or fake, whose hooks tell of the submit.
+ * @param session - An idle session, its input box empty.
+ * @param prompt - The prompt, on one line.
+ * @returns The `UserPromptSubmit` hook, which carries the prompt.
+ * @throws Error when the prompt stays in the box after the last Enter, or
+ * as every wait of the agent's.
+ */
+export async function submitPrompt(
+  agent: DrivenAgent,
+  session: AgentSession,
+  prompt: string,
+): Promise<ReceivedHook> {
+  await session.type(prompt);
+  const submitted = agent.hook('UserPromptSubmit');
+  // Awaited below; until then, only raced against the time an Enter is given.
+  submitted.catch(() => {});
+  for (let enters = 1; ; enters++) {
+    await session.press('Enter');
+    if (await settlesWithin(submitted, SUBMIT_PATIENCE_MS)) break;
+    // Out of the box, the prompt was taken and its hook is on its way: another Enter would be the agent's next key.
+    if (inputBoxText(await session.screen()) !== prompt) break;
+    if (enters === ENTER_PRESSES) {
+      throw new Error(
+        `The prompt "${prompt}" is still in the input box after ${ENTER_PRESSES} Enters, ${SUBMIT_PATIENCE_MS} ms apart, and no UserPromptSubmit came.`,
+      );
+    }
+  }
+  const hook = await submitted;
+  expect(hook.payload.prompt).toBe(prompt);
+  return hook;
+}
+
+/** Tells whether a promise settles, either way, within a time. */
+async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  const timeout = new AbortController();
+  const settled = promise.then(
+    () => true,
+    () => true,
+  );
+  const late = pause(ms, false, { signal: timeout.signal }).catch(() => false);
+  const outcome = await Promise.race([settled, late]);
+  timeout.abort();
+  return outcome;
 }

@@ -1,8 +1,11 @@
 import { expect, it } from 'vitest';
 import { turn } from '../support/fake-api/index.ts';
-import { inputBoxText, startContractAgent } from './harness.ts';
+import { type ContractAgent, inputBoxText, startContractAgent, submitPrompt } from './harness.ts';
 
-it('4 — Keys typed before SessionStart lose their Enter; keys typed after it are submitted', async () => {
+/** Typed once every key before it was read, it shows where the early keys left the input box. */
+const BARRIER = '.';
+
+it('4 — Keys typed before SessionStart keep their text, not surely their Enter; keys typed after it are submitted', async () => {
   const agent = await startContractAgent();
   agent.api.script(turn('First answer.'), turn('Second answer.'));
 
@@ -12,27 +15,55 @@ it('4 — Keys typed before SessionStart lose their Enter; keys typed after it a
   const hooksWhenTyped = agent.hooks.events();
   await agent.hook('SessionStart');
 
-  // The barrier: a key typed after the start is drawn once every earlier key was read. The
-  // early text is still in the box before it, so the early Enter submitted nothing.
-  await session.type('!');
-  await agent.eventually(async () =>
-    expect(inputBoxText(await session.screen())).toBe('typed too early!'),
+  // The input takes keys a little before SessionStart reaches the receiver, more so under load,
+  // so the early Enter is lost or submits: what holds is that the text is not lost.
+  await session.type(BARRIER);
+  const outcome = await agent.eventually(async () =>
+    earlyKeysOutcome(await session.screen(), agent),
   );
   expect(hooksWhenTyped).toEqual([]);
-  expect(agent.hooks.events()).toEqual(['SessionStart']);
 
-  await session.press('Enter');
-  const early = await agent.hook('UserPromptSubmit');
-  await agent.hook('Stop');
-  await session.type('typed after the start');
-  await session.press('Enter');
-  const late = await agent.hook('UserPromptSubmit');
+  if (outcome === 'kept') {
+    expect(agent.hooks.events()).toEqual(['SessionStart']);
+    await session.press('Enter');
+    const submitted = await agent.hook('UserPromptSubmit');
+    expect(submitted.payload.prompt).toMatch(KEPT_IN_THE_BOX);
+  } else {
+    const submitted = await agent.hook('UserPromptSubmit');
+    expect(submitted.payload.prompt).toBe('typed too early');
+    await session.press('BSpace');
+    await agent.eventually(async () => expect(inputBoxText(await session.screen())).toBe(''));
+  }
   await agent.hook('Stop');
 
-  expect(early.payload.prompt).toBe('typed too early!');
+  const late = await submitPrompt(agent, session, 'typed after the start');
+  await agent.hook('Stop');
+
   expect(late.payload.prompt).toBe('typed after the start');
   expect(agent.hooks.events().filter((event) => event === 'UserPromptSubmit')).toHaveLength(2);
 });
+
+/** The early text, then the barrier, maybe on a line of its own: where the early Enter was lost, or became a line break. */
+const KEPT_IN_THE_BOX = /^typed too early\s*\.$/;
+
+/** Where the early keys went: still in the box, or submitted, once. */
+type EarlyKeysOutcome = 'kept' | 'submitted';
+
+/**
+ * Tells where the early keys went, once the barrier shows.
+ *
+ * @throws Error until the barrier shows the early keys either in the box,
+ * with no submit, or submitted once, the barrier alone in the box.
+ */
+function earlyKeysOutcome(screen: string, agent: ContractAgent): EarlyKeysOutcome {
+  const box = inputBoxText(screen) ?? '';
+  const submits = agent.hooks.received.filter((hook) => hook.event === 'UserPromptSubmit');
+  if (submits.length === 0 && KEPT_IN_THE_BOX.test(box)) return 'kept';
+  if (submits.length === 1 && box === BARRIER) return 'submitted';
+  throw new Error(
+    `The early keys are neither in the box nor submitted once: the box holds ${JSON.stringify(box)}, ${submits.length} UserPromptSubmit came.`,
+  );
+}
 
 it('5 — A submitted prompt fires UserPromptSubmit', async () => {
   const agent = await startContractAgent();
@@ -41,9 +72,7 @@ it('5 — A submitted prompt fires UserPromptSubmit', async () => {
   const session = await agent.startNew({ prompt: 'given on the command line' });
   const given = await agent.hook('UserPromptSubmit');
   await agent.hook('Stop');
-  await session.type('typed into the terminal');
-  await session.press('Enter');
-  const typed = await agent.hook('UserPromptSubmit');
+  const typed = await submitPrompt(agent, session, 'typed into the terminal');
   await agent.hook('Stop');
 
   for (const [hook, prompt] of [

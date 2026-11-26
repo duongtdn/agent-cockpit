@@ -5,7 +5,7 @@ import { expect, it } from 'vitest';
 import { INTERRUPTED, INTERRUPTED_FOR_TOOL_USE } from '../support/fake-agent/transcript.ts';
 import { heldTurn, toolUse, turn } from '../support/fake-api/index.ts';
 import type { AgentSession } from '../support/real-agent/runner.ts';
-import { type ContractAgent, startContractAgent, userTexts } from './harness.ts';
+import { type ContractAgent, startContractAgent, submitPrompt, userTexts } from './harness.ts';
 
 /** The file a running tool call leaves, for the test to know the tool runs. */
 const TOOL_STARTED = 'tool-started';
@@ -45,10 +45,7 @@ async function expectInterruption(
   await session.press('Escape');
 
   await agent.eventually(() => expect(userTexts(session)).toContain(interrupted.marker));
-  await session.type(NEXT_PROMPT);
-  await session.press('Enter');
-  const next = await agent.hook('UserPromptSubmit');
-  expect(next.payload.prompt).toBe(NEXT_PROMPT);
+  await submitPrompt(agent, session, NEXT_PROMPT);
   expect(hooksSince()).toEqual(['UserPromptSubmit']);
   const stop = await agent.hook('Stop');
   expect(stop.payload.last_assistant_message).toBe('Going on.');
