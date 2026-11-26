@@ -17,7 +17,12 @@ import {
   agentEnvironment,
   sessionStartCommand,
 } from './launching.js';
-import { type CheckedOptions, type ClaudeCodeOptions, checkOptions } from './options.js';
+import {
+  type CheckedOptions,
+  type ClaudeCodeOptions,
+  checkOptions,
+  type PermissionMode,
+} from './options.js';
 import { settingsDocument } from './settings-document.js';
 
 /** The session's settings, which carry the token in the HTTP hooks' header. */
@@ -37,16 +42,35 @@ const SILENT_START_CAUSE =
   '(disableAllHooks, or managed settings that allow only their own), or the agent ' +
   'stopped before it took input.';
 
+/** How the app accepts an open network, and what it accepts: the end of every reason. */
+const ACCEPTANCE =
+  "With authorize, a token read from a browser's storage works from afar: " +
+  'claudeCode({ acceptOpenNetwork: true }) accepts it.';
+
 /**
  * Why a session in `bypassPermissions` reaches the network beyond the
  * allow-list: its sandbox's proxies let a command through without asking,
- * where another mode asks.
+ * where `default` asks.
  */
-const OPEN_NETWORK_REASON =
+const BYPASS_REASON =
   'In bypassPermissions, a sandboxed command of Claude Code reaches the network beyond the ' +
   "cockpit's allow-list without asking: the app's other addresses, other local ports, the " +
-  "internet, and the person's files, a browser's stored token among them. With authorize, " +
-  'that token works from afar: claudeCode({ acceptOpenNetwork: true }) accepts it.';
+  "internet, and the person's files, a browser's stored token among them. " +
+  ACCEPTANCE;
+
+/**
+ * Why a mode not yet measured counts as open: a mode is held to the
+ * allow-list only once the agent was seen to ask there before reaching
+ * beyond it, and only `default` was.
+ */
+function unmeasuredReason(mode: PermissionMode): string {
+  return (
+    `In ${mode}, Claude Code is not known to ask before a sandboxed command reaches the ` +
+    "network beyond the cockpit's allow-list (only default is), so its sessions count as " +
+    "reaching other local ports, the internet, and the person's files, a browser's stored " +
+    `token among them. ${ACCEPTANCE}`
+  );
+}
 
 /**
  * Creates the Claude Code driver, which `createCockpit` takes as its
@@ -56,9 +80,13 @@ const OPEN_NETWORK_REASON =
  * app's permission rules, and the lines that keep the agent from the
  * cockpit's state and the app's ports.
  *
+ * Only a session in `default` counts as keeping its network to the
+ * cockpit's allow-list; any other mode counts as open, which an app opened
+ * beyond loopback must accept.
+ *
  * @param options - The permission mode every session is launched in
  * (`default` when left out), the permission rules its settings carry, and
- * whether the app accepts the open network of `bypassPermissions`.
+ * whether the app accepts the open network of a mode other than `default`.
  * @returns The driver.
  * @throws `CockpitError` `invalid-options` when the options do not fit,
  * any option other than these three among them.
@@ -77,8 +105,10 @@ export function claudeCode(options?: ClaudeCodeOptions): Driver {
 }
 
 function networkOf({ permissionMode, acceptOpenNetwork }: CheckedOptions): SessionNetwork {
-  if (permissionMode !== 'bypassPermissions') return { reach: 'confined' };
-  return { reach: 'open', accepted: acceptOpenNetwork, reason: OPEN_NETWORK_REASON };
+  if (permissionMode === 'default') return { reach: 'confined' };
+  const reason =
+    permissionMode === 'bypassPermissions' ? BYPASS_REASON : unmeasuredReason(permissionMode);
+  return { reach: 'open', accepted: acceptOpenNetwork, reason };
 }
 
 async function launchSession(launch: Launch, options: CheckedOptions): Promise<LaunchCommand> {

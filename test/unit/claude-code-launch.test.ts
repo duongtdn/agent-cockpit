@@ -257,27 +257,26 @@ describe("the driver's other parts", () => {
     expect(claudeCode().silentStartCause).toMatch(/SessionStart hook/);
   });
 
-  it.each(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk'] as const)(
-    'keeps the network of a session in %s to the allow-list: it asks beyond it',
+  it('keeps the network of a session in default to the allow-list: it asks beyond it', () => {
+    expect(claudeCode({ permissionMode: 'default' }).network).toEqual({ reach: 'confined' });
+    expect(claudeCode().network).toEqual({ reach: 'confined' });
+  });
+
+  it.each(['acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'] as const)(
+    'counts the network of a session in %s as open, naming the mode, accepted only when the app says so',
     (permissionMode) => {
-      expect(claudeCode({ permissionMode }).network).toEqual({ reach: 'confined' });
+      const refused = claudeCode({ permissionMode }).network;
+      const accepted = claudeCode({ permissionMode, acceptOpenNetwork: true }).network;
+
+      expect(refused).toEqual({
+        reach: 'open',
+        accepted: false,
+        reason: expect.stringContaining(permissionMode),
+      });
+      expect(refused).toMatchObject({ reason: expect.stringContaining('acceptOpenNetwork') });
+      expect(accepted).toEqual({ ...refused, accepted: true });
     },
   );
-
-  it('opens the network of a session in bypassPermissions, accepted only when the app says so', () => {
-    const refused = claudeCode({ permissionMode: 'bypassPermissions' }).network;
-    const accepted = claudeCode({
-      permissionMode: 'bypassPermissions',
-      acceptOpenNetwork: true,
-    }).network;
-
-    expect(refused).toEqual({
-      reach: 'open',
-      accepted: false,
-      reason: expect.stringContaining('acceptOpenNetwork'),
-    });
-    expect(accepted).toMatchObject({ reach: 'open', accepted: true });
-  });
 });
 
 describe('whether a conversation can resume', () => {
