@@ -1,8 +1,8 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { HTTP_HOOK_EVENTS } from '../../src/claude-code/hook-payloads.ts';
 import type { PermissionMode } from '../../src/claude-code/index.ts';
-import { HTTP_HOOK_EVENTS } from '../../src/claude-code/settings-document.ts';
 import type { LaunchCommand } from '../../src/server/driver.ts';
 import { toolUse, turn } from '../support/fake-api/index.ts';
 import {

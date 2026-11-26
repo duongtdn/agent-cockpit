@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-import { HTTP_HOOK_EVENTS } from '../../src/claude-code/settings-document.ts';
+import { HTTP_HOOK_EVENTS } from '../../src/claude-code/hook-payloads.ts';
 import type { HookRequest, LaunchCommand } from '../../src/server/driver.ts';
 import { toolUse, turn } from '../support/fake-api/index.ts';
 import { type ContractCockpit, SAID_KEY, startContractCockpit } from './cockpit-harness.ts';

@@ -5,6 +5,15 @@ import {
   type HookRequest,
 } from '../server/driver.js';
 
+/** The events posted to the cockpit as HTTP hooks: every one the driver reads but `SessionStart`. */
+export const HTTP_HOOK_EVENTS: readonly string[] = [
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'Stop',
+  'SessionEnd',
+];
+
 /** What tells nothing. */
 const NOTHING: HookOutcome = { events: [] };
 

@@ -1,15 +1,7 @@
 import type { Confinement } from '../server/driver.js';
 import { sandboxLines, stateRootDenies } from './confinement-lines.js';
+import { HTTP_HOOK_EVENTS } from './hook-payloads.js';
 import type { PermissionRules } from './options.js';
-
-/** The events posted to the cockpit as HTTP hooks: every one the driver reads but `SessionStart`. */
-export const HTTP_HOOK_EVENTS: readonly string[] = [
-  'UserPromptSubmit',
-  'PreToolUse',
-  'PostToolUse',
-  'Stop',
-  'SessionEnd',
-];
 
 /** What a session's settings are written from. */
 export interface SettingsParts {
