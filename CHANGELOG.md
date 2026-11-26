@@ -13,7 +13,7 @@ Nothing is published yet.
 - The package's six entry points: `.`, `./fastify`, `./claude-code`,
   `./channel`, `./client`, `./terminal`. `./channel` exports nothing yet.
 - `createCockpit({ name, directory, driver, jobs, stateDirectory?,
-  agentPort? })` from `.`, with the types `Cockpit`, `CockpitOptions`,
+  agentPort?, authorize?, origins?, terminal?, port? })` from `.`, with the types `Cockpit`, `CockpitOptions`,
   `Job`, `RunResult`, `Session` and `EndReason`: checks its options
   (`invalid-options`, any other option refused) and the machine
   (`unsupported-machine`), takes the app's lock (`cockpit-locked`), opens
@@ -35,7 +35,9 @@ Nothing is published yet.
   only member in `/etc/group`, nobody else's primary group in `/etc/passwd`),
   else `invalid-options` with nothing created; the missing ones are created
   `0755` whatever the umask. On WSL2, a state folder on a Windows drive is
-  refused.
+  refused. A state root (the default one, or `stateDirectory`, as given or
+  resolved) whose path holds `*`, `?`, `[`, `]`, `{` or `}` is refused
+  (`invalid-options`): a permission rule would read it as a pattern.
 - The app's lock: a Linux abstract unix socket named from an id in the state
   folder. A second process of the app waits 5 seconds, then rejects with
   `cockpit-locked`, whose `holder` is the holding process's id or
@@ -47,10 +49,36 @@ Nothing is published yet.
 - The handler's request checks, for every request and upgrade: refused
   (`refused`) from beyond the loopback, through a forwarding header, to a
   local address other than `127.0.0.1` or `::1`, or with a `Host` or
-  `Origin` other than `127.0.0.1` or `localhost`; then `no-token` without
-  the app's token.
+  `Origin` other than `127.0.0.1`, `localhost` or one of the app's
+  `origins`; then `no-token` without the app's token.
+- Opening beyond loopback: `authorize(request)` alone admits a remote
+  request (from another address, or with a forwarding header), with no
+  token; a throw or a rejection refuses it and is reported. `origins` lists
+  the origins allowed beyond `127.0.0.1` and `localhost`. `terminal: 'on' |
+  'loopback' | 'off'` switches the terminal (`refused`, `'terminal-off'`).
+  `createCockpit` refuses `authorize` with a driver whose sessions reach an
+  open network the app did not accept.
+- `cockpit.verify(request)`, for the app's own API routes, and
+  `cockpitHeaders()` from `./client`, the header a page sends them.
+- `cockpit.renewToken()`: a new token in force, the old one refused at once,
+  every browser-facing WebSocket closed.
+- `cockpit.on('error', handler)` and the code `internal-failure` (`where`:
+  `'handler'`, `'authorize'` or `'agent-listener'`; `cause`): the
+  failures the cockpit answered with a bare 500, and an `authorize` that
+  threw. Never on the wire; `console.error` while there is no handler.
+- The confinement lines, written into every Claude Code session: a `Read`
+  and an `Edit` deny on each state root; the app's ports denied to the
+  sandbox's network on every local address and loopback name; the
+  agent-facing listener allowed; `allowUnsandboxedCommands: false`. They do
+  not turn the sandbox on. The app's ports: `port` (one or several), or
+  read by `cockpitFastify` from the server at each launch; a launch with
+  none known is refused with `no-app-port` (503).
+- The agent-facing listener refuses 403 a request that looks like a
+  browser's (an `Origin`, or a `Host` other than exactly
+  `127.0.0.1:<port>`) before its token is read.
 - `cockpitFastify(cockpit)` from `./fastify`: mounts the cockpit under the
-  prefix it is registered with, its WebSocket upgrades included.
+  prefix it is registered with, its WebSocket upgrades included, and tells
+  it the ports the server listens on.
 - `CockpitError` and `isCockpitError`, from `.`, `./client` and
   `./terminal`, with the types `CockpitErrorCode`, `CockpitErrorFields` and
   `Issue`: one error class, a
@@ -68,12 +96,15 @@ Nothing is published yet.
   doubling up to 10 s); `on('error', handler)` tells why a stream could not
   connect (`no-token`, `refused`, `unreachable`). `invalid-options` for a
   `baseUrl` that is not a path or an HTTP URL.
-- `claudeCode({ permissionMode?, permissions? })` from `./claude-code`, with
-  the types `ClaudeCodeOptions`, `PermissionMode` and `PermissionRules`: the
-  Claude Code driver, which launches `claude` with settings of its own in the
+- `claudeCode({ permissionMode?, permissions?, acceptOpenNetwork? })` from
+  `./claude-code`, with the types `ClaudeCodeOptions`, `PermissionMode` and
+  `PermissionRules`: the Claude Code driver, which launches `claude` with settings of its own in the
   cockpit's state folder and without the inherited `CLAUDE_CODE_*` and
-  `CLAUDECODE` variables. Any other option is refused with
-  `invalid-options`.
+  `CLAUDECODE` variables. A session in `default`, `acceptEdits` or
+  `dontAsk` counts as keeping its network to the cockpit's allow-list; one
+  in `plan`, `auto` or `bypassPermissions` as open, which an app opened
+  beyond loopback accepts with `acceptOpenNetwork: true`. Any other option
+  is refused with `invalid-options`.
 - `mountTerminal(element, key, { baseUrl, theme?, fontFamily?, fontSize? })`
   from `./terminal`: a session's terminal (xterm.js) in the app's element,
   fitted to it, attached over a WebSocket with the app's token, reconnecting
@@ -88,7 +119,8 @@ Nothing is published yet.
 ### Not yet: refused or missing in this version
 
 - `createCockpit` refuses every option but `name`, `directory`, `driver`,
-  `jobs`, `stateDirectory` and `agentPort`, and every job field but `id`,
+  `jobs`, `stateDirectory`, `agentPort`, `authorize`, `origins`, `terminal`
+  and `port`, and every job field but `id`,
   `title`, `description`, `args`, `key` and `prompt`, with
   `invalid-options`.
 - A run on a key that has a session, whatever its state, is refused with
@@ -102,7 +134,7 @@ Nothing is published yet.
   the run rejects with an error that is not a `CockpitError` (500 on the
   wire, `unreachable` in the client). Such sessions are not listed, and a
   restarted server lists none of the earlier ones.
-- The cockpit serves the loopback only; nothing opens it beyond.
-- The agent's tools are not kept away from the cockpit's state folder.
+- A link pasted into a tab that already shows the page is not read until
+  the page is reloaded: the page keeps the token it had.
 - `createCockpit` checks the platform and tmux, not Node's version.
 - The client has no `sessions.list()`; no events are built.

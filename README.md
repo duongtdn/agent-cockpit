@@ -10,9 +10,12 @@ It works through drivers; Claude Code is the first.
 
 **Status:** a first path works, end to end: an app creates and mounts a
 cockpit, runs a job on a key with no session, follows the sessions live, and
-mounts a session's terminal in its page. Most operations are still to come
-(resume, send, asks, the channel, activity), and the cockpit only serves the
-loopback. Nothing is published to npm so far.
+mounts a session's terminal in its page. Access is built: the cockpit serves
+the loopback by default, with a token from the app's link, and the app may
+open it beyond the machine with its own `authorize`; every session's
+settings keep the agent from the cockpit's files and the app's port. Most
+operations are still to come (resume, send, asks, the channel, activity).
+Nothing is published to npm so far.
 
 This project is not affiliated with or endorsed by Anthropic. "Claude Code"
 names the agent the first driver drives.
@@ -22,6 +25,8 @@ names the agent the first driver drives.
 - Linux (WSL2 included), with tmux 3.2a or later.
 - Node 22 or later.
 - The coding agent, installed and logged in: Claude Code for the first driver.
+- For the agent's sandbox, which the person turns on in their own settings:
+  `bubblewrap` and `socat`, and user namespaces.
 
 [docs/machines.md](docs/machines.md) has the details.
 
@@ -60,7 +65,8 @@ the network refused, then served once the app opens itself with
 - [docs/api.md](docs/api.md) — the reference: every entry point, export and
   error code.
 - [docs/security.md](docs/security.md) — whom the cockpit defends against,
-  and what an app must do.
+  opening beyond loopback, the token, what the agent is kept from in each
+  permission mode, and what an app must do.
 - [docs/machines.md](docs/machines.md) — supported platforms and versions.
 - [CHANGELOG.md](CHANGELOG.md) — what changed, release by release.
 

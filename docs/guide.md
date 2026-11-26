@@ -4,11 +4,14 @@ The concepts an app meets when it uses `@duongtdn/agent-cockpit`. For the
 exact names and types, read the [API reference](api.md).
 
 **Status:** the first path is built: a cockpit mounted in the app's server,
-a job run on a key with no session, the sessions followed live, and a
-session's terminal in the page. The sections after "Getting started" are
+a job run on a key with no session, the sessions followed live, a
+session's terminal in the page, and access: the app's own API routes,
+opening beyond loopback, and renewing the token. The sections after "Getting started" are
 written as the parts they describe are built; until then they only say what
 they will cover. [examples/jobs-console](../examples/jobs-console/DEMO.md) is
-a whole app that does what this guide shows.
+a whole app that does what this guide shows;
+[examples/translate-and-access](../examples/translate-and-access/DEMO.md)
+shows access.
 
 ## Getting started
 
@@ -53,16 +56,31 @@ On a stop, `await cockpit.close()` before closing the server: it closes the
 page's WebSockets, which would hold the server open. The sessions go on in
 tmux.
 
-Listen on `127.0.0.1` (or `::1`): the cockpit serves the loopback only, and
-refuses what reaches it otherwise ([security](security.md)).
+Listen on `127.0.0.1` (or `::1`): by default the cockpit serves the
+loopback only, and refuses what reaches it otherwise
+([security](security.md)). The Fastify adapter tells the cockpit the ports
+the server listens on, so that the agent's sandbox is kept from them; a run
+before the server listens is refused with `no-app-port`.
 
 On a plain `node:http` server, the app gives the cockpit only the requests
-under its prefix, the prefix removed from the URL, and keeps the rest:
+under its prefix, the prefix removed from the URL, and keeps the rest. It
+gives the cockpit its port too, which the cockpit cannot read from the
+server (`port`; a list for several), or every run is refused with
+`no-app-port`:
 
 ```js
 import { createServer } from 'node:http';
 
+const PORT = 4310;
 const PREFIX = '/cockpit';
+
+const cockpit = await createCockpit({
+  name: 'my-app',
+  directory: process.cwd(),
+  driver: claudeCode(),
+  jobs,
+  port: PORT, // the port the server listens on, below
+});
 
 /** Removes the prefix from the request's URL; false when the request is not under it. */
 function underPrefix(request) {
@@ -83,7 +101,7 @@ server.on('upgrade', (request, socket, head) => {
   if (underPrefix(request)) cockpit.upgrade(request, socket, head);
   else socket.destroy();
 });
-server.listen(4310, '127.0.0.1');
+server.listen(PORT, '127.0.0.1');
 ```
 
 A server that serves nothing but the cockpit gives it every request as it
@@ -157,6 +175,63 @@ local storage, so a reload needs no link. A page without the token is
 refused with `no-token`: the app tells the person to open the link. The
 token stays the same from one start of the app to the next.
 
+### The app's own API routes
+
+The cockpit checks only the requests under its mount. A route of the app's
+that should answer only the person's page checks the same token: the page
+sends `cockpitHeaders()` (from `./client`), the server calls
+`cockpit.verify(request)`.
+
+```js
+// The page
+import { cockpitHeaders } from '@duongtdn/agent-cockpit/client';
+const answer = await fetch('/api/whoami', { headers: cockpitHeaders() });
+
+// The server (Fastify)
+app.get('/api/whoami', async (request, reply) => {
+  if (!cockpit.verify(request)) return reply.code(401).send();
+  return { from: request.socket.remoteAddress };
+});
+```
+
+Guard the API routes, not the pages: opening the link, or reloading, is a
+navigation, which carries no header, so a page guarded by `verify` would
+never load.
+
+### Renewing the token
+
+`await cockpit.renewToken()` replaces the token: the old link stops working
+at once, every page's WebSockets are closed (its terminals too), and each
+page needs the new link, which `cockpit.link(…)` now gives. An app offers it
+when a link may have leaked.
+
+### Opening beyond loopback
+
+An app reached from other machines opens the cockpit itself, with its own
+proof of who the person is:
+
+```js
+const cockpit = await createCockpit({
+  // …
+  authorize: (request) => signedIn(request), // the app's sign-in, e.g. its session cookie
+  origins: ['https://app.example'], // where its pages are served from
+  terminal: 'loopback', // a shell stays on the machine
+});
+cockpit.on('error', (failure) => log(failure.where, failure.cause)); // an authorize that threw, a 500
+```
+
+A request from another address, or one a proxy forwarded, is served only
+when `authorize` resolves `true`; a local request still needs the token.
+`authorize: (request) => cockpit.verify(request)` opens it by the link
+alone. `authorize` should check a proof the person holds, never a header a
+client sets itself, and with a browser's WebSockets it receives no header of
+the page's: a cookie of the app's sign-in reaches it. TLS, accounts and
+sign-in are the app's. A cockpit opened this way is refused with a Claude
+Code driver in `plan`, `auto` or `bypassPermissions`, whose sessions reach
+the network without asking, unless the app accepts it with
+`claudeCode({ acceptOpenNetwork: true })`. [Security](security.md#opening-beyond-loopback)
+has the details.
+
 ## Jobs
 
 What an app declares: a named piece of work for the agent. Built so far: a
@@ -227,6 +302,9 @@ person's clipboard; a selection of the terminal's own, made with Shift+drag
 (Option+drag on macOS), is copied by Ctrl+C, which then sends nothing to the
 agent. `dispose()` removes the terminal; the session goes on. Once the
 session has ended there is nothing to attach to: the status is `ended`.
+`terminal.on('error', handler)` tells why it could not connect (`no-token`,
+`refused` with its `cause`, `unreachable`); refused by the app's `terminal`
+switch (`terminal-off`), it stays `closed` and stops trying.
 
 ## Errors
 
@@ -240,3 +318,8 @@ rejects with the error the server raised, rebuilt with its code and fields;
 `unreachable` when the server cannot be reached. Why one of the client's live
 streams cannot connect goes to `client.on('error', handler)`, once per failed
 attempt, while the stream goes on trying.
+
+On the server, a failure the cockpit cannot tell a page of — its handler's
+own 500, an `authorize` that threw, the agent-facing listener's 500 — goes
+to `cockpit.on('error', handler)` as `internal-failure`, with `where` and
+the `cause` that was thrown; with no handler, to `console.error`.

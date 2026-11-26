@@ -91,6 +91,31 @@ pnpm runs a dependency's install script only when the app allows it: run
 the install succeeds but `node-pty` is not compiled, and loading it fails.
 npm runs the script by default.
 
+## The agent's sandbox
+
+The cockpit never turns the agent's sandbox on: the person does, in their
+own Claude Code settings (`"sandbox": { "enabled": true }`), and the cockpit
+then writes into every session the lines that keep a sandboxed command from
+the cockpit's files and the app's port ([security](security.md#keeping-the-agent-out)).
+Without the sandbox those lines change nothing, and a session runs as it
+would without them.
+
+On Linux, Claude Code's sandbox needs:
+
+- `bubblewrap` (`bwrap`) and `socat`, on the `PATH` the agent runs with (on
+  Debian or Ubuntu: `apt-get install bubblewrap socat`);
+- unprivileged user namespaces, which `bwrap` makes. Ubuntu 24.04 keeps an
+  unconfined `bwrap` from making them through AppArmor: allow them, for
+  instance with `sysctl kernel.apparmor_restrict_unprivileged_userns=0` (a
+  setting of the whole machine; an AppArmor profile for `bwrap` is the
+  narrower way). `bwrap --unshare-all --die-with-parent --ro-bind / / true`
+  must then run without an error.
+
+WSL2 runs it the same way. Claude Code's `sandbox.failIfUnavailable: true`
+in the person's settings makes the agent stop where the sandbox cannot run,
+rather than run unsandboxed. The cockpit's own tests run the sandbox on
+these programs, on CI too.
+
 ## The agent's tested range
 
 The range of agent versions each driver was tested on. Not set yet: the
