@@ -173,18 +173,30 @@ function sandboxNetworkProblem(network: unknown): string | undefined {
 }
 
 /**
+ * The switches of the sandbox that may be given, each only as `true`: the
+ * sandbox on (the person's own settings turn it on, in the tests of what
+ * the driver's lines do there), and a command refused where the sandbox
+ * cannot run, never run unconfined instead. Either only narrows.
+ */
+const NARROWING_SWITCHES: readonly string[] = ['enabled', 'failIfUnavailable'];
+
+function switchProblem(sandbox: Record<string, unknown>): string | undefined {
+  const loose = NARROWING_SWITCHES.find((name) => name in sandbox && sandbox[name] !== true);
+  return loose === undefined ? undefined : `its ${JSON.stringify(loose)} other than true`;
+}
+
+/**
  * The sandbox's lines may only narrow what a sandboxed command reaches:
  * any domain denied, a port of `127.0.0.1` allowed, no command let out of
- * the sandbox. Turning the sandbox on is no line of the driver's, and is
- * refused until a test needs it.
+ * the sandbox, the sandbox on and failing where it cannot run.
  */
 const sandboxThatOnlyNarrows: Check<unknown> = (sandbox) => {
   if (!isRecord(sandbox)) return 'no object';
   const { network = {}, allowUnsandboxedCommands = false, ...others } = sandbox;
-  const [other] = Object.keys(others);
+  const [other] = Object.keys(others).filter((name) => !NARROWING_SWITCHES.includes(name));
   if (other !== undefined) return `refused: its ${JSON.stringify(other)} has no rule here`;
   if (allowUnsandboxedCommands !== false) return 'commands let out of the sandbox';
-  return sandboxNetworkProblem(network);
+  return switchProblem(sandbox) ?? sandboxNetworkProblem(network);
 };
 
 /**
@@ -195,6 +207,9 @@ export const SETTINGS_RULES: Readonly<Record<string, Check<unknown>>> = {
   hooks: hooksThatStayLocal,
   permissions: allowedAsIs,
   sandbox: sandboxThatOnlyNarrows,
+  // The warning a session in bypassPermissions opens with, accepted once as a person does: the
+  // mode itself is the launch's, which its own rule checks.
+  skipDangerousModePermissionPrompt: (value) => (value === true ? undefined : 'not true'),
   env: refused('it would replace the variables checked here'),
   apiKeyHelper: refused('it would run a program for a key'),
 };

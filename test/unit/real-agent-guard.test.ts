@@ -271,10 +271,27 @@ describe("the guard of the real agent's settings", () => {
     expect(withSettings({ ...settings, sandbox })).not.toThrow();
   });
 
+  it('lets the sandbox be turned on, failing where it cannot run: both only narrow', () => {
+    const sandbox = { enabled: true, failIfUnavailable: true };
+
+    expect(withSettings({ ...settings, sandbox })).not.toThrow();
+  });
+
   it.each([
     ['no object', true, /"sandbox", no object/],
     ['commands let out of it', { allowUnsandboxedCommands: true }, /let out of the sandbox/],
-    ['turned on', { enabled: true }, /"sandbox".*"enabled" has no rule/],
+    ['turned off', { enabled: false }, /"sandbox".*"enabled" other than true/],
+    ['turned on by a text', { enabled: 'true' }, /"sandbox".*"enabled" other than true/],
+    [
+      'commands run unconfined where it cannot run',
+      { enabled: true, failIfUnavailable: false },
+      /"sandbox".*"failIfUnavailable" other than true/,
+    ],
+    [
+      'commands run without an ask in it',
+      { enabled: true, autoAllowBashIfSandboxed: true },
+      /"sandbox".*"autoAllowBashIfSandboxed" has no rule/,
+    ],
     [
       'a domain allowed off 127.0.0.1',
       { network: { allowedDomains: ['example.com'] } },
@@ -285,6 +302,13 @@ describe("the guard of the real agent's settings", () => {
     ['denied domains that are no list', { network: { deniedDomains: 'x' } }, /denied domains/],
   ])('refuses a sandbox with %s', (_what, sandbox, problem) => {
     expect(withSettings({ ...settings, sandbox })).toThrow(problem);
+  });
+
+  it("lets the person's acceptance of bypassPermissions' warning pass: the launch's mode is checked apart", () => {
+    expect(withSettings({ ...settings, skipDangerousModePermissionPrompt: true })).not.toThrow();
+    expect(withSettings({ ...settings, skipDangerousModePermissionPrompt: 'yes' })).toThrow(
+      /"skipDangerousModePermissionPrompt", not true/,
+    );
   });
 
   it('refuses a setting that has no rule, and says where a rule is added', () => {

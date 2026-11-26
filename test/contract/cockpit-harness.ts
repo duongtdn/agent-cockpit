@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
-import { claudeCode } from '../../src/claude-code/index.ts';
+import { type ClaudeCodeOptions, claudeCode } from '../../src/claude-code/index.ts';
 import type { Driver, HookRequest, LaunchCommand } from '../../src/server/driver.ts';
 import { type Cockpit, createCockpit, type Job } from '../../src/server/index.ts';
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
@@ -29,6 +31,12 @@ export interface ContractCockpit {
   readonly cockpit: Cockpit;
   /** The folder the sessions work in: the cockpit's `directory`. */
   readonly workFolder: string;
+  /** The cockpit's state folder, the app's `stateDirectory`: a state root no session may reach. */
+  readonly stateFolder: string;
+  /** The agent's `HOME`, where the person's own files are. */
+  readonly home: string;
+  /** The port of the app's browser-facing server, which the cockpit denies every session's sandbox. */
+  readonly appPort: number;
   /**
    * Every hook request the driver was given to read, in order of arrival.
    * The listener gives the driver only a request that carried the
@@ -86,6 +94,37 @@ const PATIENCE_MS = 15_000;
 const EXIT_PATIENCE_MS = 3000;
 const ENTER_PRESSES = 3;
 
+/** What a test chooses of the cockpit it starts. */
+export interface ContractCockpitOptions {
+  /** The driver's options, as an app gives them: the mode and the permission rules. */
+  readonly driver?: Pick<ClaudeCodeOptions, 'permissionMode' | 'permissions'>;
+  /**
+   * The person's own settings (the user's `settings.json` of the agent's
+   * configuration folder), which the agent reads beside the driver's and
+   * the guard checks as it checks them: none by default.
+   */
+  readonly personsSettings?: Readonly<Record<string, unknown>>;
+  /**
+   * The address the app's server listens on: `127.0.0.1` by default; `::`
+   * for every address of the machine, both families, where a sandboxed
+   * command could reach it by any of them were it not denied.
+   */
+  readonly appAddress?: string;
+}
+
+/**
+ * The person's own settings that turn the sandbox on, as a person does (the
+ * driver never turns it on): a command it cannot run in fails, never runs
+ * unconfined.
+ */
+export const PERSONS_SANDBOX = { sandbox: { enabled: true, failIfUnavailable: true } };
+
+/**
+ * The person's own acceptance of the warning a session in
+ * `bypassPermissions` opens with, given once as a person does.
+ */
+export const BYPASS_ACCEPTED = { skipDangerousModePermissionPrompt: true };
+
 /**
  * Starts a cockpit with the Claude Code driver for the running test, and
  * ends it when the test finishes, passed or failed: the cockpit, its tmux
@@ -94,11 +133,11 @@ const ENTER_PRESSES = 3;
  * others did. The test then fails if the agent sent a request nothing
  * scripted, or left something outside its root.
  *
- * @param permissions - The permission rules the driver writes in each session's settings.
+ * @param options - See {@link ContractCockpitOptions}.
  */
-export async function startContractCockpit(permissions?: {
-  readonly allow?: readonly string[];
-}): Promise<ContractCockpit> {
+export async function startContractCockpit(
+  options: ContractCockpitOptions = {},
+): Promise<ContractCockpit> {
   const closers: (() => Promise<void>)[] = [];
   const finalChecks: (() => void)[] = [];
   onTestFinished(() => runAll([...closers.reverse(), ...finalChecks]));
@@ -116,6 +155,12 @@ export async function startContractCockpit(permissions?: {
   });
   closers.push(async () => void vi.unstubAllEnvs());
   serveFrom(shim);
+  if (options.personsSettings !== undefined) {
+    writeFileSync(
+      join(shim.configFolder, 'settings.json'),
+      JSON.stringify(options.personsSettings),
+    );
+  }
 
   const hooksRead: HookRequest[] = [];
   const launches: LaunchCommand[] = [];
@@ -124,12 +169,12 @@ export async function startContractCockpit(permissions?: {
   const processIds: number[] = [];
   // The app's browser-facing server, on the neutral handler: it listens
   // first, then gives the cockpit its port, as an app does.
-  const app = await startNodeHttpApp('127.0.0.1');
+  const app = await startNodeHttpApp(options.appAddress ?? '127.0.0.1');
   closers.push(() => app.close());
   const cockpit = await createCockpit({
     name,
     directory: shim.workFolder,
-    driver: recorded(shim.guarded(claudeCode(permissions ? { permissions } : undefined)), {
+    driver: recorded(shim.guarded(claudeCode(options.driver)), {
       hooksRead,
       launches,
     }),
@@ -161,6 +206,9 @@ export async function startContractCockpit(permissions?: {
     api,
     cockpit,
     workFolder: shim.workFolder,
+    stateFolder: shim.stateFolder,
+    home: shim.home,
+    appPort: app.port,
     hooksRead,
     launches,
     async say(prompt) {

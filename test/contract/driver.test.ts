@@ -54,7 +54,7 @@ it("the driver's own launch: starting, busy, then idle with the answer; its Sess
 });
 
 it('14 — HTTP hooks carry the configured Authorization header', async () => {
-  const cockpit = await startContractCockpit({ allow: ['Bash'] });
+  const cockpit = await startContractCockpit({ driver: { permissions: { allow: ['Bash'] } } });
   cockpit.api.script(turn(toolUse('Bash', { command: 'touch a.txt' })), turn('Touched.'));
 
   await cockpit.say('touch a file');

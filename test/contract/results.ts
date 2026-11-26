@@ -6,10 +6,37 @@ export interface LostEnters {
   readonly lost: number;
 }
 
+import type { SandboxStatus } from '../support/real-agent/sandbox.ts';
+
+/** How a sandboxed command's reach of one address went. */
+export type ReachOutcome = 'reached' | 'asked' | 'refused';
+
+/** One address a sandboxed command tried, beyond the cockpit's allow-list. */
+export interface Reach {
+  /** What the address is, such as `an unlisted loopback port`. */
+  readonly target: string;
+  /** Whether the command named the address in its `allowed_domains`. */
+  readonly namedOnTheCommand: boolean;
+  /** Whether it was reached with no ask, asked about, or refused with no ask. */
+  readonly outcome: ReachOutcome;
+  /** Why the sandbox refused the connection, as it told the command; empty when it did not. */
+  readonly sandboxSaid: string;
+}
+
+/** What a sandboxed command reached in one permission mode. */
+export interface NetworkReach {
+  readonly mode: string;
+  readonly reaches: readonly Reach[];
+}
+
 declare module 'vitest' {
   interface TaskMeta {
     /** What a test's submits lost, for the run's results; absent when they lost nothing. */
     lostEnters?: LostEnters[];
+    /** What a sandboxed command reached, for a test that measures a mode's network. */
+    networkReach?: NetworkReach;
+    /** Set on a test that turns the agent's sandbox on. */
+    needsSandbox?: boolean;
   }
 }
 
@@ -45,6 +72,21 @@ export interface ContractResults {
    * lost Enter fails no test, since the driver absorbs it, but shows here.
    */
   readonly lostEnters: readonly TestLostEnters[];
+  /**
+   * Whether the agent's sandbox ran: when it could not, why, and the
+   * behaviors that did not run for it (only where CI declared its platform
+   * lacks it; elsewhere they failed).
+   */
+  readonly sandbox:
+    | { readonly available: true }
+    | {
+        readonly available: false;
+        readonly reason?: string;
+        readonly problem: string;
+        readonly notRun: readonly string[];
+      };
+  /** What a sandboxed command reached in each permission mode measured, with its test. */
+  readonly networkByMode: readonly (NetworkReach & { readonly test: string })[];
 }
 
 /** A test as the runner reports it, as far as the results need it. */
@@ -54,6 +96,10 @@ export interface FinishedTest {
   readonly state: string;
   /** What its submits lost, as the test noted it. */
   readonly lostEnters?: readonly LostEnters[];
+  /** What it measured of a mode's network, as the test noted it. */
+  readonly networkReach?: NetworkReach;
+  /** Whether it turns the agent's sandbox on. */
+  readonly needsSandbox?: boolean;
 }
 
 /** A behavior's test is titled with its number, a dash, and the behavior. */
@@ -86,12 +132,14 @@ export function behaviorResults(tests: readonly FinishedTest[]): BehaviorResult[
  * @param agentVersion - The agent's version, as its binary gave it.
  * @param endedAt - When the run ended.
  * @param tests - The tests of the run.
+ * @param sandbox - Whether the agent's sandbox could run.
  * @returns The document, to write as JSON.
  */
 export function contractResults(
   agentVersion: string,
   endedAt: Date,
   tests: readonly FinishedTest[],
+  sandbox: SandboxStatus,
 ): ContractResults {
   return {
     agent: 'claude-code',
@@ -101,5 +149,22 @@ export function contractResults(
     lostEnters: tests.flatMap((test) =>
       (test.lostEnters ?? []).map((lost) => ({ test: test.name, ...lost })),
     ),
+    sandbox: sandboxResult(sandbox, tests),
+    networkByMode: tests.flatMap(({ name, networkReach }) =>
+      networkReach === undefined ? [] : [{ test: name, ...networkReach }],
+    ),
   };
+}
+
+function sandboxResult(
+  sandbox: SandboxStatus,
+  tests: readonly FinishedTest[],
+): ContractResults['sandbox'] {
+  if (sandbox.kind === 'available') return { available: true };
+  const notRun = tests
+    .filter((test) => test.needsSandbox === true && test.state === 'skipped')
+    .map((test) => test.name)
+    .filter((name) => BEHAVIOR_TITLE.test(name));
+  const reason = sandbox.kind === 'declared-lacking' ? { reason: sandbox.reason } : {};
+  return { available: false, ...reason, problem: sandbox.problem, notRun };
 }
