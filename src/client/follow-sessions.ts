@@ -3,17 +3,6 @@ import type { Session } from '../shared/session.js';
 import { FOLLOW_SESSIONS_PATH } from '../shared/wire.js';
 import type { Connection } from './connection.js';
 
-/** What `sessions.follow` takes beside its handler. */
-export interface FollowOptions {
-  /**
-   * Called each time a connection could not be made, with why: the server's
-   * refusal (`no-token`, `refused`) or `unreachable`. Following goes on: it
-   * tries again after a wait, and the handler receives the list once
-   * connected. A connection that drops is only reconnected, not reported.
-   */
-  readonly onError?: (error: CockpitError) => void;
-}
-
 /** The first wait before a reconnection; it doubles after each failure. */
 const FIRST_DELAY_MS = 500;
 /**
@@ -27,12 +16,14 @@ const LONGEST_DELAY_MS = 10_000;
  * server sends at once, then at every change, and reconnects after a drop,
  * a refusal or an unreachable server, waiting longer after each failure.
  *
+ * @param report - Told why a connection could not be made, once per failed
+ * attempt; a drop that only needs a reconnection is not reported.
  * @returns A function that stops following and closes the socket.
  */
 export function followSessions(
   connection: Connection,
   handler: (sessions: readonly Session[]) => void,
-  { onError }: FollowOptions,
+  report: (error: CockpitError) => void,
 ): () => void {
   let stopped = false;
   let failures = 0;
@@ -47,7 +38,7 @@ export function followSessions(
   const explainThenReconnect = async (): Promise<void> => {
     const error = await connection.explainFailedSocket();
     if (stopped) return;
-    onError?.(error);
+    report(error);
     reconnectLater();
   };
 

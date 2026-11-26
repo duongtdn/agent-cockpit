@@ -17,4 +17,3 @@ export type {
 } from '../shared/session.js';
 export type { CockpitClient, CockpitClientOptions } from './create-cockpit-client.js';
 export { createCockpitClient } from './create-cockpit-client.js';
-export type { FollowOptions } from './follow-sessions.js';

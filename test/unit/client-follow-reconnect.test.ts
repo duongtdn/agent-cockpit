@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type CockpitError, createCockpitClient, type Session } from '../../src/client/index.ts';
+import {
+  type CockpitClient,
+  type CockpitError,
+  createCockpitClient,
+  type Session,
+} from '../../src/client/index.ts';
 import { openPage } from '../support/browser-page.ts';
 import { FakeWebSocket } from '../support/fake-web-socket.ts';
 
@@ -11,7 +16,9 @@ const snapshot = JSON.stringify({ type: 'sessions', sessions: [idle] });
 const FIRST_DELAY_MS = 500;
 const LONGEST_DELAY_MS = 10_000;
 
+let client: CockpitClient;
 let stop: () => void;
+let stopReporting: () => void;
 let lists: (readonly Session[])[];
 let errors: CockpitError[];
 
@@ -30,14 +37,14 @@ beforeEach(() => {
   vi.stubGlobal('fetch', async () => noTokenAnswer());
   lists = [];
   errors = [];
-  stop = createCockpitClient({ baseUrl: '/cockpit' }).sessions.follow(
-    (sessions) => lists.push(sessions),
-    { onError: (error) => errors.push(error) },
-  );
+  client = createCockpitClient({ baseUrl: '/cockpit' });
+  stopReporting = client.on('error', (error) => errors.push(error));
+  stop = client.sessions.follow((sessions) => lists.push(sessions));
 });
 
 afterEach(() => {
   stop();
+  stopReporting();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -178,6 +185,29 @@ describe('sessions.follow, across drops', () => {
     await refuseHandshake();
 
     expect(await socketsAfter(FIRST_DELAY_MS)).toBe(3);
+  });
+
+  it('tells every error handler, and none that was removed', async () => {
+    const others: CockpitError[] = [];
+    const stopOther = client.on('error', (error) => others.push(error));
+
+    await refuseHandshake();
+    stopReporting();
+    await socketsAfter(FIRST_DELAY_MS);
+    await refuseHandshake();
+    stopOther();
+
+    expect(errors.map((error) => error.code)).toEqual(['no-token']);
+    expect(others.map((error) => error.code)).toEqual(['no-token', 'no-token']);
+  });
+
+  it('keeps an error handler removed once removed, when removed twice', async () => {
+    stopReporting();
+    stopReporting();
+
+    await refuseHandshake();
+
+    expect(errors).toEqual([]);
   });
 
   it('stays stopped when stopped twice', () => {

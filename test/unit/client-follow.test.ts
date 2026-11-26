@@ -102,17 +102,17 @@ describe('sessions.follow, on a real WebSocket', () => {
     };
     server.refuseSockets(json(403, refusal));
     server.answer('/sessions', json(403, refusal));
+    const client = createCockpitClient({ baseUrl: server.baseUrl });
     const errors: CockpitError[] = [];
     const reported = new Promise<void>((resolve) => {
       stops.push(
-        createCockpitClient({ baseUrl: server.baseUrl }).sessions.follow(() => {}, {
-          onError: (error) => {
-            errors.push(error);
-            resolve();
-          },
+        client.on('error', (error) => {
+          errors.push(error);
+          resolve();
         }),
       );
     });
+    stops.push(client.sessions.follow(() => {}));
 
     await reported;
 
@@ -123,13 +123,11 @@ describe('sessions.follow, on a real WebSocket', () => {
   it('reports unreachable when the HTTP request passes but the WebSocket does not', async () => {
     server.refuseSockets({ status: 502, body: '' });
     server.answer('/sessions', json(200, { sessions: [] }));
+    const client = createCockpitClient({ baseUrl: server.baseUrl });
     const reported = new Promise<CockpitError>((resolve) => {
-      stops.push(
-        createCockpitClient({ baseUrl: server.baseUrl }).sessions.follow(() => {}, {
-          onError: resolve,
-        }),
-      );
+      stops.push(client.on('error', resolve));
     });
+    stops.push(client.sessions.follow(() => {}));
 
     expect((await reported).code).toBe('unreachable');
   });

@@ -1,7 +1,8 @@
+import type { CockpitError } from '../shared/cockpit-error.js';
 import type { RunResult, Session } from '../shared/session.js';
 import { RUN_PATH, type RunRequest } from '../shared/wire.js';
 import { createConnection } from './connection.js';
-import { type FollowOptions, followSessions } from './follow-sessions.js';
+import { followSessions } from './follow-sessions.js';
 import { takeTokenFromLink } from './token.js';
 
 /** What `createCockpitClient` takes. */
@@ -37,12 +38,26 @@ export interface CockpitClient {
      * every change. After a drop it reconnects by itself, waiting longer
      * after each failed attempt, and the handler receives the list again.
      *
+     * Why a connection could not be made goes to the client's `error`
+     * handlers.
+     *
      * @param handler - Receives every session the cockpit knows.
-     * @param options - `onError`, told why a connection could not be made.
      * @returns A function that stops following.
      */
-    follow(handler: (sessions: readonly Session[]) => void, options?: FollowOptions): () => void;
+    follow(handler: (sessions: readonly Session[]) => void): () => void;
   };
+  /**
+   * Tells why one of the client's streams (today `sessions.follow`) could not
+   * connect: the server's refusal (`no-token`, `refused`) or `unreachable`,
+   * once per failed attempt. The stream goes on trying, and its handler
+   * receives what it follows once connected. A connection that drops and
+   * reconnects is not reported.
+   *
+   * @param event - `'error'`.
+   * @param handler - Receives each error.
+   * @returns A function that removes the handler.
+   */
+  on(event: 'error', handler: (error: CockpitError) => void): () => void;
 }
 
 /**
@@ -60,13 +75,25 @@ export interface CockpitClient {
  */
 export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitClient {
   const connection = createConnection(baseUrl, takeTokenFromLink());
+  const errorHandlers = new Set<(error: CockpitError) => void>();
+  const report = (error: CockpitError): void => {
+    for (const handler of errorHandlers) handler(error);
+  };
   return {
     run: async (jobId, args) => {
       const body: RunRequest = { jobId, args };
       return (await connection.request(RUN_PATH, { method: 'POST', body })) as RunResult;
     },
     sessions: {
-      follow: (handler, options = {}) => followSessions(connection, handler, options),
+      follow: (handler) => followSessions(connection, handler, report),
+    },
+    on: (_event, handler) => {
+      // A handler given twice is two subscriptions, each removed by its own function.
+      const subscription = (error: CockpitError): void => handler(error);
+      errorHandlers.add(subscription);
+      return () => {
+        errorHandlers.delete(subscription);
+      };
     },
   };
 }
