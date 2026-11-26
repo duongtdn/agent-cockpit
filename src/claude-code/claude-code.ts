@@ -134,7 +134,7 @@ function namedHostsReason(mode: PermissionMode): string {
 export const claudeCode: {
   (options?: ClaudeCodeOptions): Driver;
   /**
-   * Builds a job's driver part (ADR-0051), which the job carries as
+   * Builds a job's driver part, which the job carries as
    * `driver`: its permission mode replaces the app's, its rules are added
    * to the app's, its model is the sessions' own.
    *

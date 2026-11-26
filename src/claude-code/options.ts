@@ -56,7 +56,7 @@ export interface ClaudeCodeSandbox {
 }
 
 /**
- * A job's driver part for Claude Code (ADR-0051), as `claudeCode.job(…)`
+ * A job's driver part for Claude Code, as `claudeCode.job(…)`
  * builds it: laid over the app's options for the job's sessions. The
  * plugin, the environment and the acceptance of an open network stay the
  * app's.
@@ -251,7 +251,7 @@ function optionIssues(options: Record<string, unknown>): Issue[] {
 }
 
 /**
- * Lays a job's driver part over the app's options (ADR-0051): the part's
+ * Lays a job's driver part over the app's options: the part's
  * mode and model replace the app's, its rules are added after the app's,
  * list by list, so that the app's deny and ask rules always hold.
  *
