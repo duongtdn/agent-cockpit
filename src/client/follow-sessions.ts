@@ -2,14 +2,7 @@ import type { CockpitError } from '../shared/cockpit-error.js';
 import type { Session } from '../shared/session.js';
 import { FOLLOW_SESSIONS_PATH } from '../shared/wire.js';
 import type { Connection } from './connection.js';
-
-/** The first wait before a reconnection; it doubles after each failure. */
-const FIRST_DELAY_MS = 500;
-/**
- * The longest wait: a cockpit back from a restart is followed again within
- * seconds, and one attempt every few seconds costs a loopback server nothing.
- */
-const LONGEST_DELAY_MS = 10_000;
+import { reconnectDelay } from './reconnect-delay.js';
 
 /**
  * Follows the sessions over the wire's WebSocket: delivers the list the
@@ -31,7 +24,7 @@ export function followSessions(
   let retry: ReturnType<typeof setTimeout> | undefined;
 
   const reconnectLater = (): void => {
-    retry = setTimeout(connect, Math.min(FIRST_DELAY_MS * 2 ** failures, LONGEST_DELAY_MS));
+    retry = setTimeout(connect, reconnectDelay(failures));
     failures += 1;
   };
 
