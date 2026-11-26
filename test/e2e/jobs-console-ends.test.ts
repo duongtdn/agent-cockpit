@@ -2,7 +2,12 @@ import { existsSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { createServer, type Server } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { type ExampleApp, runExampleToItsEnd, startExampleApp } from '../support/example-app.ts';
+import {
+  type ExampleApp,
+  interruptExampleWhileStarting,
+  runExampleToItsEnd,
+  startExampleApp,
+} from '../support/example-app.ts';
 
 /**
  * However the jobs console ends, its scripted agent leaves nothing behind:
@@ -54,4 +59,18 @@ describe('the jobs console, as it ends', () => {
     expect(app.printed()).toContain('Stopped.');
     expect(existsSync(root), 'its temporary folder is removed').toBe(false);
   });
+
+  it.each(['SIGINT', 'SIGHUP'] as const)(
+    'removes what it started when stopped while it starts (%s)',
+    async (signal) => {
+      const ended = await interruptExampleWhileStarting('jobs-console', ['--port', '0'], signal);
+
+      expect(ended.code, ended.printed).toBe(0);
+      expect(ended.printed).toContain('Stopped.');
+      expect(
+        existsSync(named(ended.temporaryRoot, ended.printed)),
+        'its temporary folder is removed',
+      ).toBe(false);
+    },
+  );
 });

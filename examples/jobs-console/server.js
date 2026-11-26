@@ -48,14 +48,51 @@ const { values: options } = parseArgs({
   },
 });
 
-// The default is a stand-in for the agent's model, so that the example runs
-// with no login and costs nothing. It is the example's, not the package's.
-const agent = options.real ? yourOwnAgent() : await scriptedAgent();
-console.log(agent.description);
+// Ctrl+C, a `kill`, or the terminal closing — at any time, while it starts
+// too: the stop waits for what is starting, then stops all that started. A
+// second signal while stopping changes nothing: the first one's stop goes on.
+let stopping;
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    stopping ??= starting
+      .catch(() => {})
+      .then(stop)
+      .then(
+        () => console.log('Stopped.'),
+        (error) => {
+          console.error(error);
+          // What failed to stop may hold the process open.
+          process.exit(1);
+        },
+      );
+  });
+}
 
+let agent;
 let cockpit;
 let app;
+const starting = start();
 try {
+  await starting;
+} catch (error) {
+  if (stopping === undefined) {
+    // What started before the failure is stopped; the failure is what is told.
+    await stop().catch(() => {});
+    throw error;
+  }
+  // Stopped while it started: the stop under way removes what started.
+  console.error(error);
+  process.exitCode = 1;
+}
+if (stopping === undefined) {
+  console.log(`Open ${cockpit.link(`http://127.0.0.1:${app.server.address().port}/`)}`);
+}
+
+async function start() {
+  // The default is a stand-in for the agent's model, so that the example runs
+  // with no login and costs nothing. It is the example's, not the package's.
+  agent = options.real ? yourOwnAgent() : await scriptedAgent();
+  console.log(agent.description);
   cockpit = await createCockpit({
     name: APP_NAME,
     directory: agent.directory,
@@ -71,30 +108,6 @@ try {
     );
   }
   await app.listen({ host: '127.0.0.1', port: Number(options.port) });
-} catch (error) {
-  // What started before the failure is stopped; the failure is what is told.
-  await stop().catch(() => {});
-  throw error;
-}
-
-console.log(`Open ${cockpit.link(`http://127.0.0.1:${app.server.address().port}/`)}`);
-
-// Ctrl+C, a `kill`, or the terminal closing. A second signal while stopping
-// changes nothing: the first one's stop goes on.
-let stopRequested = false;
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(signal, () => {
-    if (stopRequested) return;
-    stopRequested = true;
-    stop().then(
-      () => console.log('Stopped.'),
-      (error) => {
-        console.error(error);
-        // What failed to stop may hold the process open.
-        process.exit(1);
-      },
-    );
-  });
 }
 
 /**
@@ -110,7 +123,7 @@ async function stop() {
     try {
       await app?.close();
     } finally {
-      await agent.close();
+      await agent?.close();
     }
   }
 }

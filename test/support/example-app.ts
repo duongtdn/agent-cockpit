@@ -102,18 +102,48 @@ export async function startExampleApp(name: string, args: readonly string[]): Pr
  * @throws Error when it has not exited in time; it is then killed, and what
  * its scripted agent left removed.
  */
-export async function runExampleToItsEnd(
+export function runExampleToItsEnd(name: string, args: readonly string[]): Promise<ExampleExit> {
+  return runToItsEnd(name, args, () => {});
+}
+
+/**
+ * Runs an example of `examples/` and sends it a signal while it starts: as
+ * soon as it names its scripted agent's temporary folder, before it prints
+ * its link — while it opens the cockpit and its server. Waits for it to exit.
+ *
+ * @param name - The example's folder in `examples/`.
+ * @param args - Its command-line arguments.
+ * @param signal - The signal it is sent, as a person's Ctrl+C (`SIGINT`) or a closed terminal (`SIGHUP`).
+ * @returns How it ended.
+ * @throws Error when it has not exited in time; it is then killed, and what
+ * its scripted agent left removed.
+ */
+export function interruptExampleWhileStarting(
   name: string,
   args: readonly string[],
+  signal: NodeJS.Signals,
+): Promise<ExampleExit> {
+  let sent = false;
+  return runToItsEnd(name, args, (output, child) => {
+    if (sent || temporaryRootIn(output) === undefined) return;
+    sent = true;
+    child.kill(signal);
+  });
+}
+
+async function runToItsEnd(
+  name: string,
+  args: readonly string[],
+  onOutput: (output: string, child: ChildProcess) => void,
 ): Promise<ExampleExit> {
   const child = startChild(name, args);
   let output = '';
-  child.stdout?.on('data', (chunk) => {
+  const take = (chunk: Buffer) => {
     output += chunk;
-  });
-  child.stderr?.on('data', (chunk) => {
-    output += chunk;
-  });
+    onOutput(output, child);
+  };
+  child.stdout?.on('data', take);
+  child.stderr?.on('data', take);
   const exited = once(child, 'exit').then(([code]) => code as number | null);
   const code = await withinPatience(child, exited, () => output, 'did not end');
   return { code, printed: output, temporaryRoot: temporaryRootIn(output) };
