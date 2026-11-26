@@ -345,6 +345,17 @@ export interface Driver {
    */
   checkPart(part: unknown): readonly Issue[];
   /**
+   * Checks the environment launches start from for what would keep the
+   * driver from confining its agent (for Claude Code, a configuration
+   * folder its deny rules could miss). `createCockpit` refuses such an
+   * environment; the driver's `launch` refuses it again, read anew.
+   *
+   * @param environment - The environment a launch would start from.
+   * @returns Every issue found, each with an empty path: the environment is
+   * no option; none when it fits.
+   */
+  environmentIssues(environment: Readonly<Record<string, string>>): Promise<readonly Issue[]>;
+  /**
    * Tells how far the commands of a session reach the network without
    * asking: the app's options, with a job's part laid over them.
    *

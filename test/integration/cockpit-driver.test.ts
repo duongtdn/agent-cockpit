@@ -478,6 +478,32 @@ describe("the server's environment", () => {
   });
 });
 
+describe("the agent's configuration folder", () => {
+  it('is refused at createCockpit when the denies that keep the agent from its files could miss it: invalid-options, no state folder made', async () => {
+    vi.stubEnv('CLAUDE_CONFIG_DIR', 'relative/config');
+    const stateDirectory = join(root, 'state-of-a-refused-cockpit');
+
+    const refusal = await refusalOf(newCockpit({ stateDirectory }));
+
+    expect(refusal).toMatchObject({
+      code: 'invalid-options',
+      issues: [{ path: [], message: expect.stringContaining('CLAUDE_CONFIG_DIR') }],
+    });
+    expect(existsSync(stateDirectory)).toBe(false);
+  });
+
+  it('is refused again at a launch, read from the environment as it is then', async () => {
+    const { cockpit } = await newCockpit();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, 'config*'));
+
+    expect(await refusalOf(cockpit.run('explain', { file: 'a' }))).toMatchObject({
+      code: 'invalid-options',
+      issues: [{ path: [], message: expect.stringContaining('CLAUDE_CONFIG_DIR') }],
+    });
+    expect(cockpit.sessions.list()).toEqual([]);
+  });
+});
+
 describe("the agent's sandbox the app asked for", () => {
   it('refuses a run where it cannot run, with its cause: 503 on the wire, nothing launched', async () => {
     vi.stubEnv('PATH', `${shims}${delimiter}${tmuxOnly}`);

@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -17,12 +18,27 @@ import type { Confinement, Launch } from '../../src/server/driver.ts';
 const DEFAULT_ROOT = '/home/someone/.local/state/agent-cockpit';
 const APP_ROOT = '/srv/app/cockpit-state';
 const CONFIG = '/home/someone/.config/claude';
+const HOME = '/home/someone';
 
-/** The denies that keep the agent's tools from every settings file a project or a folder holds. */
-const SETTINGS_FILE_DENIES = [
+/**
+ * The denies that keep the agent's tools from every file a project or a
+ * folder holds that starts code at the next launch: its settings, its MCP servers.
+ */
+const START_UP_FILE_DENIES = [
   'Edit(//**/.claude/settings.json)',
   'Edit(//**/.claude/settings.local.json)',
+  'Edit(//**/.mcp.json)',
 ];
+
+/** The person's own files that start code at the next launch, in the configuration folder and the home. */
+function personsDenies(config = CONFIG, home = HOME): string[] {
+  return [
+    `Edit(/${config}/settings.json)`,
+    `Edit(/${config}/.claude.json)`,
+    `Edit(/${home}/.claude.json)`,
+    `Edit(/${config}/plugins/**)`,
+  ];
+}
 
 let files: string;
 
@@ -54,7 +70,7 @@ function launchOf(confinement: Confinement, configFolder = CONFIG): Launch {
     directory: '/work/app',
     files,
     hooks: { url: 'http://127.0.0.1:4100', token: 'token-of-the-launch' },
-    environment: { PATH: '/usr/bin:/bin', CLAUDE_CONFIG_DIR: configFolder },
+    environment: { PATH: '/usr/bin:/bin', HOME, CLAUDE_CONFIG_DIR: configFolder },
     confinement,
   };
 }
@@ -122,22 +138,22 @@ describe('the state roots in the settings of a launch', () => {
         'WebFetch',
         `Read(/${DEFAULT_ROOT}/**)`,
         `Edit(/${DEFAULT_ROOT}/**)`,
-        ...SETTINGS_FILE_DENIES,
-        `Edit(/${CONFIG}/settings.json)`,
+        ...START_UP_FILE_DENIES,
+        ...personsDenies(),
       ],
     });
   });
 });
 
-describe("Claude Code's settings files in the settings of a launch", () => {
-  it("are denied to Edit wherever a project or a folder holds them, and the person's own, after the state roots", async () => {
+describe("Claude Code's files that start code at the next launch, in the settings of a launch", () => {
+  it("are denied to Edit wherever a project or a folder holds them (settings, MCP servers), and the person's own (settings, the configuration file of each folder, plugins), after the state roots", async () => {
     const { permissions } = await settingsOf(confinementOf());
 
     expect(permissions.deny).toEqual([
       `Read(/${DEFAULT_ROOT}/**)`,
       `Edit(/${DEFAULT_ROOT}/**)`,
-      ...SETTINGS_FILE_DENIES,
-      `Edit(/${CONFIG}/settings.json)`,
+      ...START_UP_FILE_DENIES,
+      ...personsDenies(),
     ]);
   });
 
@@ -165,8 +181,35 @@ describe("Claude Code's settings files in the settings of a launch", () => {
 
     const { permissions } = await settingsOf(confinementOf(), claudeCode(), linked);
 
-    expect(permissions.deny).toContain(`Edit(/${linked}/settings.json)`);
-    expect(permissions.deny).toContain(`Edit(/${real}/settings.json)`);
+    for (const config of [linked, real]) {
+      expect(permissions.deny).toEqual(
+        expect.arrayContaining([
+          `Edit(/${config}/settings.json)`,
+          `Edit(/${config}/.claude.json)`,
+          `Edit(/${config}/plugins/**)`,
+        ]),
+      );
+    }
+  });
+
+  it("deny the person's configuration file in the home by the path given and the real one", async () => {
+    const folder = realpathSync(files);
+    const real = join(folder, 'real-home');
+    mkdirSync(real);
+    const linked = join(folder, 'linked-home');
+    symlinkSync(real, linked);
+    const launch = launchOf(confinementOf());
+
+    const { args } = await claudeCode().launch({
+      ...launch,
+      environment: { ...launch.environment, HOME: linked },
+    });
+    const { permissions }: Settings = JSON.parse(
+      readFileSync(args[args.indexOf('--settings') + 1] as string, 'utf8'),
+    );
+
+    expect(permissions.deny).toContain(`Edit(/${linked}/.claude.json)`);
+    expect(permissions.deny).toContain(`Edit(/${real}/.claude.json)`);
   });
 
   it("deny the file a linked settings file leads to, as the person's dotfiles do", async () => {
@@ -195,8 +238,9 @@ describe("Claude Code's settings files in the settings of a launch", () => {
         }),
       );
 
-      expect(permissions.deny).toEqual(expect.arrayContaining(SETTINGS_FILE_DENIES));
-      expect(permissions.deny).toContain(`Edit(/${CONFIG}/settings.json)`);
+      expect(permissions.deny).toEqual(
+        expect.arrayContaining([...START_UP_FILE_DENIES, ...personsDenies()]),
+      );
     },
   );
 });
@@ -293,4 +337,68 @@ describe('the sandbox lines in the settings of a launch', () => {
       expect(settings.permissions.deny).toContain(`Edit(/${DEFAULT_ROOT}/**)`);
     },
   );
+});
+
+describe('a configuration folder its denies could miss', () => {
+  async function refusalWith(configFolder: string): Promise<unknown> {
+    return claudeCode()
+      .launch(launchOf(confinementOf(), configFolder))
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+  }
+
+  it.each([
+    ['relative', 'config/claude'],
+    ['holding a pattern', '/home/someone/.config/claude*'],
+    ["holding a rule's bracket", '/home/someone/(claude)'],
+    ['holding a control character', '/home/someone/claude\tconfig'],
+  ])(
+    'is refused at a launch when %s: invalid-options, nothing written',
+    async (_, configFolder) => {
+      const refusal = await refusalWith(configFolder);
+
+      expect(refusal).toMatchObject({
+        code: 'invalid-options',
+        issues: [{ path: [], message: expect.stringContaining('CLAUDE_CONFIG_DIR') }],
+      });
+      expect(readdirSync(files)).toEqual([]);
+    },
+  );
+
+  it('is refused when its real path holds rule syntax, a link to it named plainly', async () => {
+    const folder = realpathSync(files);
+    const real = join(folder, 'config[1]');
+    mkdirSync(real);
+    const linked = join(folder, 'config');
+    symlinkSync(real, linked);
+
+    expect(await refusalWith(linked)).toMatchObject({ code: 'invalid-options' });
+  });
+
+  it('is refused for a home that holds rule syntax when no configuration folder is named: the default one is under it', async () => {
+    const launch = launchOf(confinementOf());
+
+    const refusal = await claudeCode()
+      .launch({ ...launch, environment: { PATH: '/usr/bin:/bin', HOME: '/home/some*one' } })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    expect(refusal).toMatchObject({
+      code: 'invalid-options',
+      issues: [{ path: [], message: expect.stringContaining('HOME') }],
+    });
+  });
+
+  it('lets a plain absolute folder pass, and tells createCockpit the same issues', async () => {
+    const driver = claudeCode();
+
+    expect(await driver.environmentIssues({ CLAUDE_CONFIG_DIR: CONFIG, HOME })).toEqual([]);
+    expect(await driver.environmentIssues({ CLAUDE_CONFIG_DIR: 'config', HOME })).toEqual([
+      { path: [], message: expect.stringContaining('CLAUDE_CONFIG_DIR') },
+    ]);
+  });
 });

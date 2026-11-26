@@ -11,7 +11,8 @@ const PARTS: SettingsParts = {
     appAddresses: [{ host: '127.0.0.1', port: 8765 }],
     listener: { host: '127.0.0.1', port: 4100 },
   },
-  personsSettingsFiles: ['/config/settings.json'],
+  personsFiles: ['/config/settings.json', '/config/.claude.json', '/home/a/.claude.json'],
+  personsFolders: ['/config/plugins'],
 };
 
 interface Document {
@@ -87,23 +88,34 @@ describe('the sandbox section', () => {
 });
 
 describe('the deny rules', () => {
-  it("are the app's, the state roots', the settings files' and the person's settings', in that order", () => {
+  it("are the app's, the state roots', every project's start-up files', and the person's files' and folders', in that order", () => {
     expect(documentOf().permissions.deny).toEqual([
       'WebFetch',
       'Read(//state/**)',
       'Edit(//state/**)',
       'Edit(//**/.claude/settings.json)',
       'Edit(//**/.claude/settings.local.json)',
+      'Edit(//**/.mcp.json)',
       'Edit(//config/settings.json)',
+      'Edit(//config/.claude.json)',
+      'Edit(//home/a/.claude.json)',
+      'Edit(//config/plugins/**)',
     ]);
   });
 
-  it("deny the person's settings by every path given", () => {
+  it("deny the person's files and folders by every path given", () => {
     expect(
-      documentOf({ personsSettingsFiles: ['/home/a/.claude/settings.json', '/dotfiles/c.json'] })
-        .permissions.deny,
+      documentOf({
+        personsFiles: ['/home/a/.claude/settings.json', '/dotfiles/c.json'],
+        personsFolders: ['/home/a/.claude/plugins/', '/dotfiles/plugins'],
+      }).permissions.deny,
     ).toEqual(
-      expect.arrayContaining(['Edit(//home/a/.claude/settings.json)', 'Edit(//dotfiles/c.json)']),
+      expect.arrayContaining([
+        'Edit(//home/a/.claude/settings.json)',
+        'Edit(//dotfiles/c.json)',
+        'Edit(//home/a/.claude/plugins/**)',
+        'Edit(//dotfiles/plugins/**)',
+      ]),
     );
   });
 });

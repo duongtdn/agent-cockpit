@@ -54,11 +54,14 @@ export interface Cockpit {
    * @throws `CockpitError` `unknown-job`, `invalid-arguments`;
    * `invalid-options` when the job's driver part does not fit, or opens the
    * network of a cockpit opened beyond loopback that the app did not
-   * accept; `wrong-state` when the key has a session, whatever its state,
-   * in this version; `agent-not-found` when no agent is found on the
-   * launch's `PATH`; `agent-too-old` when it is older than the driver's
-   * tested range (a newer one runs, and `untested-version` tells it once);
-   * `sandbox-unavailable` when the app asked for the agent's sandbox and
+   * accept, or when the environment the launch starts from keeps the
+   * driver from confining its agent (500 on the wire); `wrong-state` when
+   * the key has a session, whatever its state, in this version;
+   * `agent-not-found` when no agent is found on the launch's `PATH`, or
+   * the one found cannot be run (it fails, hangs or prints no version to
+   * `--version`); `agent-too-old` when it is older than the driver's
+   * tested range (a newer one, or a suffixed build, runs, and
+   * `untested-version` tells it once); `sandbox-unavailable` when the app asked for the agent's sandbox and
    * it cannot run; `unobservable` when the agent reported nothing and its
    * session was ended; `no-app-port` when no port of the app's
    * browser-facing server is known, so the session's sandbox could not be
@@ -190,7 +193,10 @@ export interface Cockpit {
  * folder; with an issue for each state root whose path, as given or as
  * the system resolves it, holds a character a permission rule reads as
  * its own (`*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `\`, a control
- * character), whose deny rules could miss it;
+ * character), whose deny rules could miss it; with the driver's issues
+ * (an empty path) when the server's environment keeps it from confining
+ * its agent (for Claude Code, a configuration folder, `CLAUDE_CONFIG_DIR`
+ * or the home's `.claude`, that is relative or holds such a character);
  * `unsupported-machine` when the machine is not Linux, or its tmux is
  * missing or too old; `cockpit-locked` when another process of the app runs
  * a cockpit.
@@ -205,6 +211,7 @@ export async function createCockpit(options: CockpitOptions): Promise<Cockpit> {
   await host.checkMachine();
   const statePath = stateFolderPath(checked.name, checked.stateDirectory);
   await refuseStateRootsRulesMisread(checked, statePath);
+  await refuseUnconfinableEnvironment(checked);
   try {
     return await openCockpit(checked, host, statePath);
   } catch (error) {
@@ -393,6 +400,21 @@ async function refuseStateRootsRulesMisread(
   if (issues.length === 0) return;
   const message = "The cockpit's state folder cannot be kept from the agent.";
   throw new CockpitError('invalid-options', message, { issues });
+}
+
+/**
+ * Refuses an environment in which the driver could not confine its agent
+ * (for Claude Code, a configuration folder its deny rules could miss).
+ * Checked before anything is written; each launch checks it again.
+ */
+async function refuseUnconfinableEnvironment(checked: CheckedCockpitOptions): Promise<void> {
+  const issues = await checked.driver.environmentIssues(serverEnvironment(checked.hiddenEnv));
+  if (issues.length === 0) return;
+  throw new CockpitError(
+    'invalid-options',
+    "The agent's files cannot be kept from it in the environment it is launched with.",
+    { issues },
+  );
 }
 
 /**

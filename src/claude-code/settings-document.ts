@@ -1,5 +1,5 @@
 import type { Confinement } from '../server/driver.js';
-import { sandboxLines, settingsFileDenies, stateRootDenies } from './confinement-lines.js';
+import { sandboxLines, startUpFileDenies, stateRootDenies } from './confinement-lines.js';
 import { HTTP_HOOK_EVENTS } from './hook-payloads.js';
 import type { ClaudeCodeSandbox, PermissionRules } from './options.js';
 
@@ -19,8 +19,14 @@ export interface SettingsParts {
   readonly permissions: PermissionRules;
   /** What the agent must not reach, written whatever the app's rules say. */
   readonly confinement: Confinement;
-  /** The person's own settings file, by every path that names it: the agent may not edit it. */
-  readonly personsSettingsFiles: readonly string[];
+  /**
+   * The person's own files that start code at the agent's next launch, by
+   * every path that names each: their settings and configuration files.
+   * The agent may not edit them.
+   */
+  readonly personsFiles: readonly string[];
+  /** The person's own folders of such files, by every path that names each: their plugins. */
+  readonly personsFolders: readonly string[];
   /**
    * The sandbox the app asks for, with its exceptions; left out, the
    * person's own settings decide whether it runs.
@@ -80,7 +86,7 @@ function permissionsOf(parts: SettingsParts): PermissionRules {
     deny: [
       ...(deny ?? []),
       ...stateRootDenies(parts.confinement.stateRoots),
-      ...settingsFileDenies(parts.personsSettingsFiles),
+      ...startUpFileDenies(parts.personsFiles, parts.personsFolders),
     ],
   };
 }

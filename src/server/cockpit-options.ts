@@ -141,6 +141,7 @@ const DRIVER_FUNCTIONS: readonly string[] = [
   'canResume',
   'agentVersion',
   'checkPart',
+  'environmentIssues',
   'networkOf',
   'readScreen',
 ];

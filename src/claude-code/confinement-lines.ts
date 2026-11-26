@@ -30,31 +30,44 @@ export function stateRootDenies(stateRoots: readonly string[]): string[] {
 }
 
 /**
- * Claude Code's settings files wherever a project or a folder holds them:
- * the project's and its local ones, a parent repository's, the session's
- * `~/.claude`.
+ * Claude Code's files that start code at its next launch wherever a
+ * project or a folder holds them: the project's settings and its local
+ * ones, a parent repository's, the session's `~/.claude` (their hooks),
+ * and a project's MCP servers (`.mcp.json`).
  */
-const SETTINGS_FILES_ANYWHERE: readonly string[] = [
+const START_UP_FILES_ANYWHERE: readonly string[] = [
   '//**/.claude/settings.json',
   '//**/.claude/settings.local.json',
+  '//**/.mcp.json',
 ];
 
 /**
  * Gives the permission rules that keep the agent's own tools from every
- * settings file it reads. Its `Write` and `Edit` tools run outside the
- * sandbox, and a command hook planted in such a file runs, unsandboxed, at
- * the next start; in `bypassPermissions` nothing asks first. The rules
- * stop the tools and the shell commands Claude Code recognizes; code the
- * agent runs outside the sandbox still writes (as for the state roots).
+ * file that starts code at its next launch: settings (their hooks), the
+ * configuration files and a project's `.mcp.json` (their MCP servers), the
+ * person's plugins. Its `Write` and `Edit` tools run outside the sandbox,
+ * and what such a file starts runs, unsandboxed, at the next start; in
+ * `bypassPermissions` nothing asks first. The rules stop the tools and the
+ * shell commands Claude Code recognizes; code the agent runs outside the
+ * sandbox still writes (as for the state roots).
  *
- * @param personsSettingsFiles - The person's own settings file
- * (`<config>/settings.json`), absolute, by every path that names it.
+ * @param personsFiles - The person's own such files, absolute, each by
+ * every path that names it: their settings (`<config>/settings.json`) and
+ * configuration files (`<config>/.claude.json`, `~/.claude.json`).
+ * @param personsFolders - The person's own folders every file of which
+ * is denied, absolute, each by every path that names it: their plugins
+ * (`<config>/plugins`).
  * @returns The `Edit` deny rules.
  */
-export function settingsFileDenies(personsSettingsFiles: readonly string[]): string[] {
-  return [...SETTINGS_FILES_ANYWHERE, ...personsSettingsFiles.map((file) => `/${file}`)].map(
-    (pattern) => `Edit(${pattern})`,
-  );
+export function startUpFileDenies(
+  personsFiles: readonly string[],
+  personsFolders: readonly string[],
+): string[] {
+  return [
+    ...START_UP_FILES_ANYWHERE,
+    ...personsFiles.map((file) => `/${file}`),
+    ...personsFolders.map((folder) => `/${folder.replace(/\/+$/, '')}/**`),
+  ].map((pattern) => `Edit(${pattern})`);
 }
 
 /**

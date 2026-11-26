@@ -1,5 +1,4 @@
 import { join } from 'node:path';
-import { givenAndRealPaths } from '../server/confinement.js';
 import {
   type Conversation,
   type Driver,
@@ -31,6 +30,7 @@ import {
   laidOver,
   type PermissionMode,
 } from './options.js';
+import { personsFolderIssues, personsStartUpFiles } from './persons-files.js';
 import { sandboxChecker } from './sandbox-check.js';
 import { readScreen } from './screen-reading.js';
 import { settingsDocument } from './settings-document.js';
@@ -42,9 +42,6 @@ const SETTINGS_FILE = 'settings.json';
 
 /** Where the `SessionStart` hook reports, with the token: its command line names only this file. */
 const ADDRESS_FILE = 'hook-address.json';
-
-/** The person's own settings, in the agent's configuration folder. */
-const PERSONS_SETTINGS_FILE = 'settings.json';
 
 /**
  * Claude Code's one terminal key: Shift+Enter sends ESC CR, a line break in
@@ -103,7 +100,8 @@ function namedHostsReason(mode: PermissionMode): string {
  * the cockpit's state folder: the hooks that report to the cockpit, the
  * app's permission rules (and a job's), the sandbox when the app asks for
  * it, and the lines that keep the agent from the cockpit's state, the
- * app's ports and every Claude Code settings file.
+ * app's ports and every file that starts code at the agent's next launch
+ * (settings, configuration files and `.mcp.json`, plugins).
  *
  * A session in `default`, `acceptEdits` or `dontAsk` counts as keeping
  * its network to the cockpit's allow-list (its sandboxed commands were
@@ -116,7 +114,10 @@ function namedHostsReason(mode: PermissionMode): string {
  * needs (on Linux, `bwrap` and `socat` on its `PATH`), or `bwrap` cannot
  * make what it must (probed once per driver, nested as the agent's sandbox
  * does: an AppArmor-confined `bwrap` is caught here, not seen as a session
- * that ends at once): it never runs unsandboxed instead.
+ * that ends at once): it never runs unsandboxed instead. A launch rejects
+ * with `invalid-options` when its environment names a configuration folder
+ * or a home its deny rules could miss (relative, or holding a character a
+ * rule reads as its own), as `createCockpit` does.
  *
  * `claudeCode.job(…)` builds a job's driver part.
  *
@@ -152,9 +153,11 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
     testedRange: TESTED_RANGE,
     agentVersion: agentVersionReader(TESTED_RANGE),
     checkPart: checkJobPart,
+    environmentIssues: personsFolderIssues,
     networkOf: (part) => networkOf(checked, part),
     readScreen,
     launch: async (launch) => {
+      await refuseUnconfinableEnvironment(launch.environment);
       if (checked.sandbox !== undefined) await checkSandbox(launch.environment);
       return launchSession(launch, checked);
     },
@@ -206,7 +209,7 @@ async function launchSession(launch: Launch, options: CheckedOptions): Promise<L
         sessionStartCommand: sessionStartCommand(addressFile),
         permissions: session.permissions,
         confinement: launch.confinement,
-        personsSettingsFiles: await personsSettingsFiles(launch.environment),
+        ...(await personsStartUpFiles(launch.environment)),
         sandbox: options.sandbox,
       }),
     ),
@@ -228,9 +231,21 @@ async function launchSession(launch: Launch, options: CheckedOptions): Promise<L
   };
 }
 
-/** The person's own settings file, by the path the agent would read it at and by its real path. */
-function personsSettingsFiles(environment: Readonly<Record<string, string>>): Promise<string[]> {
-  return givenAndRealPaths([join(agentConfigFolder(environment), PERSONS_SETTINGS_FILE)]);
+/**
+ * Refuses a launch whose environment names a configuration folder or a
+ * home the denies of the person's files could miss: `createCockpit`
+ * checked the server's environment, but a launch reads it anew.
+ */
+async function refuseUnconfinableEnvironment(
+  environment: Readonly<Record<string, string>>,
+): Promise<void> {
+  const issues = await personsFolderIssues(environment);
+  if (issues.length === 0) return;
+  throw new CockpitError(
+    'invalid-options',
+    "The agent's files cannot be kept from it in the environment it is launched with.",
+    { issues },
+  );
 }
 
 function hookUrl(base: string): string {

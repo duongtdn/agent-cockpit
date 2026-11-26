@@ -299,7 +299,11 @@ describe('the settings of a launch', () => {
         'Edit(//home/someone/.local/state/agent-cockpit/**)',
         'Edit(//**/.claude/settings.json)',
         'Edit(//**/.claude/settings.local.json)',
+        'Edit(//**/.mcp.json)',
         'Edit(//home/someone/.config/claude/settings.json)',
+        'Edit(//home/someone/.config/claude/.claude.json)',
+        'Edit(//home/someone/.claude.json)',
+        'Edit(//home/someone/.config/claude/plugins/**)',
       ],
     });
   });
