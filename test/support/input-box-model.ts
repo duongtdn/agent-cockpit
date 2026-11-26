@@ -1,4 +1,8 @@
-import type { TerminalScreen, TypingTerminal } from '../../src/server/driver.ts';
+import {
+  type TerminalScreen,
+  TypingStoppedError,
+  type TypingTerminal,
+} from '../../src/server/driver.ts';
 
 /**
  * A model of Claude Code's input box (2.1.332), as the units-of-work spike
@@ -11,7 +15,10 @@ import type { TerminalScreen, TypingTerminal } from '../../src/server/driver.ts'
  * scrolled with its rules saying so, an entry recalled from the history,
  * and Enter. It draws the screen as the agent does and places the cursor.
  * A Down on the last row is recorded: with a background task running, it
- * opens the task panel.
+ * opens the task panel. Its terminal refuses writes as the core does: once
+ * a dialog shows, or once the hooks told of something else (a turn the
+ * agent began by itself), every later one; its `restoring` writes, only
+ * while a dialog shows.
  */
 export interface InputBoxModel {
   /** The terminal the driver types into, which checks every write as the core does. */
@@ -30,8 +37,12 @@ export interface InputBoxModel {
   inShellMode(): boolean;
   /** Where the cursor is in the text. */
   cursor(): number;
+  /** The kill ring's entries, the last killed last, the sentinel left in. */
+  killRing(): readonly string[];
   /** Shows a dialog in place of the box from now on: every later write is refused. */
   showDialog(): void;
+  /** Takes the dialog off the screen: the box shows again. */
+  closeDialog(): void;
 }
 
 /** What the model starts with. */
@@ -48,6 +59,11 @@ export interface InputBoxSetup {
   readonly lostEnters?: number;
   /** Shows a dialog in place of the box after so many writes. */
   readonly dialogAfterWrites?: number;
+  /**
+   * Refuses every write of the typing after so many, the box still shown:
+   * the hooks told of a turn the agent began by itself.
+   */
+  readonly stopAfterWrites?: number;
   /** The width of the box's text, in columns. */
   readonly width?: number;
   /** The most rows the box shows. */
@@ -80,6 +96,10 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
   const recalled = setup.recalled ?? false;
   let lostEnters = setup.lostEnters ?? 0;
   let dialog = false;
+  /** Whether the core refused a write of the typing: every later one is. */
+  let stopped = false;
+  /** Whether the core refused a write that puts the draft back: every later one is. */
+  let restoreStopped = false;
   let top = 0;
   let killRing: string[] = [];
   let yanked: { start: number; index: number } | undefined;
@@ -269,19 +289,31 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
   }
 
   function written(what: string): void {
-    if (dialog) throw new Error('The session shows no input box: the core refuses the write.');
     writes.push(what);
-    if (setup.dialogAfterWrites !== undefined && writes.length >= setup.dialogAfterWrites)
-      dialog = true;
+    const count = writes.length;
+    if (setup.dialogAfterWrites !== undefined && count >= setup.dialogAfterWrites) dialog = true;
+    if (setup.stopAfterWrites !== undefined && count >= setup.stopAfterWrites) stopped = true;
+  }
+
+  function writeOfTyping(what: string): void {
+    stopped ||= dialog;
+    if (stopped) throw new TypingStoppedError('The core refuses the write.');
+    written(what);
+  }
+
+  function writeOfRestore(what: string): void {
+    restoreStopped ||= dialog;
+    if (restoreStopped) throw new TypingStoppedError('The core refuses to put the draft back.');
+    written(what);
   }
 
   const terminal: TypingTerminal = {
-    async typeText(typed) {
-      written(`text:${typed}`);
-      type(typed);
+    async typeText(text) {
+      writeOfTyping(`text:${text}`);
+      type(text);
     },
     async pressKeys(keys) {
-      written(keys.join(' '));
+      writeOfTyping(keys.join(' '));
       for (const key of keys) press(key);
     },
     async readScreen() {
@@ -289,6 +321,19 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
     },
     async promptTaken(prompt) {
       return taken.includes(prompt);
+    },
+    restoring: {
+      async typeText(text) {
+        writeOfRestore(`text:${text}`);
+        type(text);
+      },
+      async pressKeys(keys) {
+        writeOfRestore(keys.join(' '));
+        for (const key of keys) press(key);
+      },
+      async readScreen() {
+        return screen();
+      },
     },
   };
 
@@ -303,8 +348,12 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
     text: () => text,
     inShellMode: () => shell,
     cursor: () => cursor,
+    killRing: () => [...killRing],
     showDialog: () => {
       dialog = true;
+    },
+    closeDialog: () => {
+      dialog = false;
     },
   };
 }

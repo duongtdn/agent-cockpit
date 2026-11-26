@@ -201,12 +201,80 @@ describe('typing a prompt into the input box', () => {
     expect(box.writes).toEqual([]);
   });
 
-  it('stops where the core refuses a write, a dialog drawn meanwhile', async () => {
+  it('stops where the core refuses a write, a dialog drawn meanwhile: nothing of the person’s lost on an empty box', async () => {
     const box = inputBoxModel({ dialogAfterWrites: 4 });
 
-    await expect(typePromptAt(testClock(), 'a long prompt', box.terminal)).rejects.toThrow(
-      /no input box/,
-    );
+    expect(await typePromptAt(testClock(), 'a long prompt', box.terminal)).toBe('no-input-box');
     expect(box.taken).toEqual([]);
+  });
+});
+
+describe('a typing the core stopped', () => {
+  const SENTINEL = '⁣';
+
+  it('puts the draft back while the box still shows, the prompt typed so far cleared', async () => {
+    // C-e, the sentinel, C-u, the prompt: then a turn the agent began stops the typing.
+    const { box, outcome } = await typeInto({ draft: 'my draft', stopAfterWrites: 4 }, 'p');
+
+    expect(outcome).toBe('no-input-box');
+    expect(box.taken).toEqual([]);
+    expect(box.writes.slice(4)).toEqual(['C-u', 'C-y M-y', 'BSpace']);
+    expect(box.text()).toBe('my draft');
+  });
+
+  it('takes the sentinel off a draft it had not killed yet', async () => {
+    const { box, outcome } = await typeInto({ draft: 'my draft', stopAfterWrites: 2 }, 'p');
+
+    expect(outcome).toBe('no-input-box');
+    expect(box.text()).toBe('my draft');
+  });
+
+  it('puts the shell mode it left back with the draft', async () => {
+    // C-e, the sentinel, C-u, the C-u that leaves shell mode, the prompt.
+    const { box } = await typeInto(
+      { draft: 'echo draft', shellMode: true, stopAfterWrites: 5 },
+      'p',
+    );
+
+    expect(box.inShellMode()).toBe(true);
+    expect(box.text()).toBe('echo draft');
+  });
+
+  it('types nothing more once a dialog replaced the box, and says the draft is the kill ring’s last entry', async () => {
+    const { box, outcome } = await typeInto({ draft: 'my draft', dialogAfterWrites: 4 }, 'p');
+
+    expect(outcome).toEqual({ draftLeft: expect.stringMatching(/kill ring.*Ctrl\+Y/) });
+    expect(outcome).not.toEqual({ draftLeft: expect.stringContaining('Alt+Y') });
+    expect(outcome).toEqual({ draftLeft: expect.stringContaining('typed of the prompt') });
+    expect(box.writes).toHaveLength(4);
+    expect(box.killRing().at(-1)).toBe(`my draft${SENTINEL}`);
+  });
+
+  it('says the draft is the entry before the last once the prompt was killed after it', async () => {
+    const { box, outcome } = await typeInto(
+      { draft: 'my draft', stopAfterWrites: 4, dialogAfterWrites: 5 },
+      'p',
+    );
+
+    expect(outcome).toEqual({ draftLeft: expect.stringContaining('Ctrl+Y, then Alt+Y') });
+    expect(box.killRing().slice(-2)).toEqual([`my draft${SENTINEL}`, 'p']);
+  });
+
+  it('counts the prompt taken when the draft could not be put back after it', async () => {
+    // C-e, the sentinel, C-u, the prompt, Enter: the prompt's turn draws a dialog at once.
+    const { box, outcome } = await typeInto({ draft: 'my draft', dialogAfterWrites: 5 }, 'p');
+
+    expect(outcome).toBe('taken');
+    expect(box.taken).toEqual(['p']);
+  });
+
+  it('lets through what the core refuses with nothing but a stop', async () => {
+    const box = inputBoxModel({ draft: 'my draft' });
+    const failing = {
+      ...box.terminal,
+      typeText: () => Promise.reject(new Error('The host failed.')),
+    };
+
+    await expect(typePromptAt(testClock(), 'p', failing)).rejects.toThrow('The host failed.');
   });
 });

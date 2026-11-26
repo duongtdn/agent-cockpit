@@ -365,23 +365,52 @@ export type TypingOutcome =
   /**
    * The driver found no input box it could type into: a dialog, a panel,
    * an entry the person recalled from the history, or a box that did not
-   * act as one. It typed nothing more, the person's draft put back where
-   * the box still took it; the send fails `wrong-state` with the state the
-   * session is in.
+   * act as one. It typed nothing more but to put the person's draft back,
+   * which is back, or was never taken out of the box; the send fails
+   * `wrong-state` with the state the session is in.
    */
-  | 'no-input-box';
+  | 'no-input-box'
+  | DraftLeft;
+
+/**
+ * What became of a prompt whose typing stopped with the person's draft out
+ * of the input box, and no box shown to put it back into: the driver typed
+ * nothing more, since a key could answer what is drawn over the box. The
+ * send fails `wrong-state` with the state the session is in, its message
+ * saying where the draft is.
+ */
+export interface DraftLeft {
+  /** Where the person's draft is, and how the person brings it back: a sentence. */
+  readonly draftLeft: string;
+}
 
 /** What a terminal shows at one moment: its rows as text, and where its cursor is. */
 export type TerminalScreen = Pick<Screen, 'text' | 'cursor'>;
+
+/**
+ * Why a write of a prompt being typed was refused: the session no longer
+ * showed its input box, or its hooks told of something else than the
+ * prompt's own turn. Nothing of the write was written.
+ */
+export class TypingStoppedError extends Error {
+  override readonly name = 'TypingStoppedError';
+}
+
+/**
+ * The writes through which a driver puts the person's draft back once the
+ * typing stopped, and the screen it reads meanwhile.
+ */
+export type DraftTerminal = Pick<TypingTerminal, 'typeText' | 'pressKeys' | 'readScreen'>;
 
 /**
  * A live session's terminal, as a driver types a prompt into it through the
  * core. The core holds the keys of the page's terminals for that session
  * while the driver types, and checks before every write that the session
  * still shows its input box and nothing waits for a person (no ask, no
- * dialog): once a check fails, the write and every later one reject and
- * write nothing, and the core fails the send with the state the session
- * is in.
+ * dialog): once a check fails, the write and every later one reject with
+ * {@link TypingStoppedError} and write nothing, and the core fails the send
+ * with the state the session is in. The driver may then put the person's
+ * draft back through {@link restoring}.
  */
 export interface TypingTerminal {
   /**
@@ -414,6 +443,15 @@ export interface TypingTerminal {
    * none within the time.
    */
   promptTaken(prompt: string, withinMs: number): Promise<boolean>;
+  /**
+   * The terminal through which the driver puts the person's draft back
+   * once the typing stopped: whatever the hooks told of a turn, a write is
+   * taken while the session is heard and the screen shows the input box.
+   * Once one is refused with
+   * {@link TypingStoppedError}, every later one is, and the typing's end
+   * refuses them all.
+   */
+  readonly restoring: DraftTerminal;
 }
 
 /**
@@ -495,12 +533,14 @@ export interface Driver {
    * Types a prompt into the input box of a live session, keeping the
    * person's draft: stashed before, put back after. Each write goes through
    * the terminal, which the core checks; the driver awaits the agent's
-   * confirmation, pressing Enter again as its agent needs.
+   * confirmation, pressing Enter again as its agent needs. A write the
+   * terminal refuses stops the typing: the driver puts the draft back
+   * through the terminal's `restoring` writes, or says where it is.
    *
    * @param prompt - The prompt, at most the cockpit's limit.
    * @param terminal - The session's terminal, through the core.
-   * @returns Whether the agent took it.
-   * @throws What the terminal rejects with: the typing stops there.
+   * @returns Whether the agent took it, and where the draft is when it could not be put back.
+   * @throws What the terminal rejects with, but {@link TypingStoppedError}.
    */
   typePrompt(prompt: string, terminal: TypingTerminal): Promise<TypingOutcome>;
   /**

@@ -17,18 +17,19 @@ import {
   isSessionKey,
   type Session,
 } from '../../shared/session.js';
-import type {
-  AgentEndReason,
-  Confinement,
-  Conversation,
-  Driver,
-  DriverEvent,
-  DriverPart,
-  HookAddress,
-  HookRequest,
-  LaunchCommand,
-  ScreenReading,
-  TypingOutcome,
+import {
+  type AgentEndReason,
+  type Confinement,
+  type Conversation,
+  type Driver,
+  type DriverEvent,
+  type DriverPart,
+  type HookAddress,
+  type HookRequest,
+  type LaunchCommand,
+  type ScreenReading,
+  type TypingOutcome,
+  TypingStoppedError,
 } from '../driver.js';
 import type {
   Attachment,
@@ -42,7 +43,7 @@ import { LivenessWatch } from './liveness-watch.js';
 import { ScreenWatch } from './screen-watch.js';
 import { courseAfter, type SessionCourse } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
-import { SessionTypingTerminal, TypingStoppedError } from './typing-terminal.js';
+import { SessionTypingTerminal } from './typing-terminal.js';
 
 export { SCREEN_INTERVAL_MS } from './screen-watch.js';
 export { READY_BOUND_MS, START_DEADLINE_MS } from './start-up-watch.js';
@@ -538,8 +539,9 @@ class SessionRegistry implements Sessions {
    * Types a prompt into a live session through its checked terminal, the
    * page's terminals' keys held meanwhile.
    *
-   * @returns What became of it; a write the terminal refused is
-   * `no-input-box`: the session showed or told something else.
+   * @returns What became of it; a write the terminal refused, which the
+   * driver let through, is `no-input-box`: the session showed or told
+   * something else.
    */
   async #type(entry: Entry, prompt: string): Promise<TypingOutcome> {
     const terminal = new SessionTypingTerminal({
@@ -569,20 +571,20 @@ class SessionRegistry implements Sessions {
    * launch fails as a send does.
    */
   async #typeFirstPrompt(entry: Entry, prompt: string): Promise<void> {
-    let failure: unknown;
+    let failure: (session: Session) => unknown;
     try {
       const outcome = await this.#type(entry, prompt);
       if (outcome === 'taken') return;
-      failure = outcome;
+      failure = (session) => typingFailure(outcome, session);
     } catch (error) {
-      failure = error;
+      failure = () => error;
     }
     if (!isListened(entry) || entry.session.state !== 'starting') {
-      entry.departure.reject(asError(failure, entry.session));
+      entry.departure.reject(failure(entry.session));
       return;
     }
     const idle: Session = { key: entry.key, state: 'idle', since: now() };
-    entry.departure.reject(asError(failure, idle));
+    entry.departure.reject(failure(idle));
     this.#update(entry, idle);
   }
 
@@ -1077,22 +1079,29 @@ function courseOf(entry: Entry): SessionCourse {
  * `waiting` session, with everything it waits for.
  *
  * @param session - The session as it is.
+ * @param detail - A sentence the message ends with: what the refused operation left.
  * @returns The error.
  */
-export function wrongState(session: Session): CockpitError<'wrong-state'> {
-  return new CockpitError('wrong-state', `The session ${session.key} is ${session.state}.`, {
+export function wrongState(session: Session, detail?: string): CockpitError<'wrong-state'> {
+  const message = `The session ${session.key} is ${session.state}.`;
+  return new CockpitError('wrong-state', detail === undefined ? message : `${message} ${detail}`, {
     key: session.key,
     state: session.state,
     ...(session.state === 'waiting' ? { pending: session.pending } : {}),
   });
 }
 
-/** Why a prompt typed was not taken: the agent did not take it, or no input box took it. */
+/**
+ * Why a prompt typed was not taken: the agent did not take it, or no input
+ * box took it, the message saying where the person's draft is when the
+ * driver could not put it back.
+ */
 function typingFailure(
   outcome: Exclude<TypingOutcome, 'taken'>,
   session: Session,
 ): CockpitError<'wrong-state' | 'prompt-not-taken'> {
   if (outcome === 'no-input-box') return wrongState(session);
+  if (outcome !== 'not-taken') return wrongState(session, outcome.draftLeft);
   return new CockpitError(
     'prompt-not-taken',
     `The session ${session.key} did not take the prompt.`,
@@ -1101,13 +1110,6 @@ function typingFailure(
       state: session.state,
     },
   );
-}
-
-/** A first prompt's typing that failed, as the launch fails: what a send fails with, or what was thrown. */
-function asError(failure: unknown, session: Session): unknown {
-  return failure === 'not-taken' || failure === 'no-input-box'
-    ? typingFailure(failure, session)
-    : failure;
 }
 
 /** Whether the promise settles within the time, in milliseconds. */

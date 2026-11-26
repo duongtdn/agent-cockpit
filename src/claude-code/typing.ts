@@ -1,4 +1,10 @@
-import type { TerminalScreen, TypingOutcome, TypingTerminal } from '../server/driver.js';
+import {
+  type DraftTerminal,
+  type TerminalScreen,
+  type TypingOutcome,
+  TypingStoppedError,
+  type TypingTerminal,
+} from '../server/driver.js';
 import { type InputBoxView, isEmptyBox, readInputBoxView } from './screen-reading.js';
 
 /**
@@ -125,12 +131,17 @@ export function promptWrites(typed: string): PromptWrite[] {
  *
  * An entry the person recalled from the history is not typed over, nor is
  * anything but the box: nothing is typed then. The core checks the screen
- * before every write too.
+ * before every write too. A write it refuses, or a box gone, stops the
+ * typing: what was typed of the prompt is cleared and the draft put back
+ * through the terminal's `restoring` writes while the box shows; else
+ * nothing more is typed, and the outcome says where the draft is.
  *
  * @param prompt - The prompt.
  * @param terminal - The session's terminal, through the core.
- * @returns Whether the agent took it, or that no input box took it.
- * @throws What the terminal rejects with: the typing stops there.
+ * @returns Whether the agent took it, or that no input box took it, and
+ * where the draft is when it could not be put back. A prompt taken stays
+ * `taken` even then: the draft is the kill ring's last entry.
+ * @throws What the terminal rejects with, but a stop.
  */
 export function typePrompt(prompt: string, terminal: TypingTerminal): Promise<TypingOutcome> {
   return typePromptAt(REAL_TIME, prompt, terminal);
@@ -151,10 +162,22 @@ export function typePromptAt(
   return new PromptTyping(clock, terminal).type(prompt);
 }
 
-/** A stashed draft: what puts it back. */
-interface Stash {
+/**
+ * Where the person's draft is while a prompt is typed, and what else the
+ * box holds: what putting it back takes.
+ */
+interface DraftPlace {
+  /**
+   * How deep in the kill ring the draft is: 0 the last entry, 1 the one
+   * before (a prompt was killed after it); `undefined` while it is in the box.
+   */
+  depth: 0 | 1 | undefined;
   /** Whether the stash left shell mode, which the restore turns on again. */
-  readonly leftShellMode: boolean;
+  leftShellMode: boolean;
+  /** Whether the sentinel is in the box, at the cursor. */
+  sentinel: boolean;
+  /** Whether the box holds what was typed of the prompt. */
+  promptInBox: boolean;
 }
 
 /** A box read with the screen it was read from. */
@@ -166,56 +189,83 @@ interface Seen {
 class PromptTyping {
   readonly #clock: TypingClock;
   readonly #terminal: TypingTerminal;
+  /** Where the keys go: the terminal, then its `restoring` writes once it stopped the typing. */
+  #writer: DraftTerminal;
+  readonly #draft: DraftPlace = {
+    depth: undefined,
+    leftShellMode: false,
+    sentinel: false,
+    promptInBox: false,
+  };
+  /** Whether the box held a draft of the person's. */
+  #hadDraft = false;
+  #taken = false;
 
   constructor(clock: TypingClock, terminal: TypingTerminal) {
     this.#clock = clock;
     this.#terminal = terminal;
+    this.#writer = terminal;
   }
 
   async type(prompt: string): Promise<TypingOutcome> {
+    try {
+      return await this.#typed(prompt);
+    } catch (error) {
+      if (!(error instanceof TypingStoppedError)) throw error;
+      return this.#putBackAfterStop();
+    }
+  }
+
+  async #typed(prompt: string): Promise<TypingOutcome> {
     const start = await this.#read();
     if (start.box === undefined || start.box.recalled) return 'no-input-box';
-    const stash = await this.#stash(start);
-    if (stash === undefined) return 'no-input-box';
+    this.#hadDraft = !isEmptyBox(start.box);
+    const stashed = await this.#stash(start);
+    if (stashed === 'gone') return this.#putBackAfterStop();
+    if (stashed === 'kept') return 'no-input-box';
     await this.#write(promptWrites(typedForm(prompt)));
     const submitted = await this.#submit(promptAsTaken(prompt));
-    if (submitted === 'gone') return 'no-input-box';
-    if (submitted === 'taken') {
-      await this.#restore(stash, []);
-      return 'taken';
+    if (submitted === 'gone') return this.#putBackAfterStop();
+    if (submitted === 'in-the-box' && (await this.#clearPrompt()) !== 'empty') {
+      return this.#putBackAfterStop();
     }
-    // A prompt cleared from the box is the kill ring's last entry: Alt+Y reaches the draft before it.
-    const cleared = submitted === 'in-the-box' ? await this.#killUntilEmpty() : 'empty';
-    if (cleared === 'gone') return 'no-input-box';
-    await this.#restore(stash, submitted === 'in-the-box' ? ['M-y'] : []);
-    return cleared === 'empty' ? 'not-taken' : 'no-input-box';
+    await this.#restore();
+    return this.#taken ? 'taken' : 'not-taken';
   }
 
   /**
    * Stashes the draft: the cursor to the draft's last row, then the
    * sentinel, then kills until the box is empty.
    *
-   * @returns What puts the draft back; `undefined` when the box was gone
-   * or did not empty, the draft put back where it could be.
+   * @returns `stashed`; `kept` when the draft stays in the box, or is back
+   * there (the Downs did not move the cursor, the kills changed nothing,
+   * shell mode did not leave); `gone` when the box is.
    */
-  async #stash(start: Seen): Promise<Stash | undefined> {
+  async #stash(start: Seen): Promise<'stashed' | 'kept' | 'gone'> {
     const atEnd = await this.#toLastRow(start);
-    if (atEnd === undefined) return undefined;
-    await this.#terminal.pressKeys(['C-e']);
-    await this.#terminal.typeText(SENTINEL);
-    const emptied = await this.#killUntilEmpty();
-    if (emptied === 'gone') return undefined;
+    if (atEnd === undefined) return 'kept';
+    await this.#writer.pressKeys(['C-e']);
+    await this.#writer.typeText(SENTINEL);
+    this.#draft.sentinel = true;
+    const emptied = await this.#killUntilEmpty(() => {
+      this.#draft.depth ??= 0;
+    });
+    if (emptied === 'gone') return 'gone';
     if (emptied === 'stuck') {
-      await this.#restore({ leftShellMode: false }, []);
-      return undefined;
+      await this.#restore();
+      return 'kept';
     }
     const empty = await this.#read();
-    if (empty.box?.sign !== '!') return { leftShellMode: false };
-    await this.#terminal.pressKeys(['C-u']);
+    if (empty.box?.sign !== '!') return 'stashed';
+    await this.#writer.pressKeys(['C-u']);
     const left = await this.#readUntil((seen) => seen.box?.sign !== '!');
-    if (left.box?.sign === '❯') return { leftShellMode: true };
-    if (left.box !== undefined) await this.#restore({ leftShellMode: false }, []);
-    return undefined;
+    if (left.box === undefined) return 'gone';
+    if (left.box.sign === '❯') {
+      this.#draft.leftShellMode = true;
+      return 'stashed';
+    }
+    await this.#restore();
+    return 'kept';
   }
 
   /**
@@ -237,7 +287,7 @@ class PromptTyping {
       const from = rowInDraft(box, seen.screen);
       for (let pressed = 0; pressed < below; pressed += DOWNS_PER_WRITE) {
         if (pressed > 0) await this.#clock.pause(WRITE_GAP_MS);
-        await this.#terminal.pressKeys(downs(Math.min(DOWNS_PER_WRITE, below - pressed)));
+        await this.#writer.pressKeys(downs(Math.min(DOWNS_PER_WRITE, below - pressed)));
       }
       seen = await this.#readUntil((now) => movedBy(now, from) === below);
       if ((movedBy(seen, from) ?? 0) <= 0) return undefined;
@@ -246,19 +296,33 @@ class PromptTyping {
   }
 
   /**
+   * Clears what was typed of the prompt: killed after the draft, it makes
+   * the draft the kill ring's entry before the last.
+   */
+  async #clearPrompt(): Promise<'empty' | 'gone' | 'stuck'> {
+    const cleared = await this.#killUntilEmpty(() => {
+      this.#draft.depth = 1;
+    });
+    if (cleared === 'empty') this.#draft.promptInBox = false;
+    return cleared;
+  }
+
+  /**
    * Presses Ctrl+U at least once, then until the box is empty: each kills
    * one row, then its line break, and successive kills are one entry of
    * the kill ring.
    *
+   * @param killed - Told after each kill.
    * @returns `empty`; `gone` when the box is; `stuck` when two kills in a
    * row changed nothing on the screen (the first may kill only the sentinel).
    */
-  async #killUntilEmpty(): Promise<'empty' | 'gone' | 'stuck'> {
+  async #killUntilEmpty(killed: () => void): Promise<'empty' | 'gone' | 'stuck'> {
     let unchanged = 0;
     let seen = await this.#read();
     do {
       const before = drawn(seen.box);
-      await this.#terminal.pressKeys(['C-u']);
+      await this.#writer.pressKeys(['C-u']);
+      killed();
       seen = await this.#readUntil((now) => drawn(now.box) !== before);
       if (seen.box === undefined) return 'gone';
       unchanged = drawn(seen.box) === before ? unchanged + 1 : 0;
@@ -271,8 +335,9 @@ class PromptTyping {
   async #write(writes: readonly PromptWrite[]): Promise<void> {
     for (const [index, write] of writes.entries()) {
       if (index > 0) await this.#clock.pause(WRITE_GAP_MS);
-      if ('text' in write) await this.#terminal.typeText(write.text);
-      else await this.#terminal.pressKeys(write.keys);
+      if ('text' in write) await this.#writer.typeText(write.text);
+      else await this.#writer.pressKeys(write.keys);
+      this.#draft.promptInBox = true;
     }
   }
 
@@ -286,27 +351,74 @@ class PromptTyping {
    */
   async #submit(prompt: string): Promise<'taken' | 'in-the-box' | 'left' | 'gone'> {
     for (let enters = 1; enters <= ENTER_PRESSES; enters++) {
-      await this.#terminal.pressKeys(['Enter']);
-      if (await this.#terminal.promptTaken(prompt, SUBMIT_PATIENCE_MS)) return 'taken';
+      await this.#writer.pressKeys(['Enter']);
+      if (await this.#terminal.promptTaken(prompt, SUBMIT_PATIENCE_MS)) return this.#tookIt();
       const { box } = await this.#read();
       if (box === undefined) return 'gone';
       if (isEmptyBox(box)) {
+        this.#draft.promptInBox = false;
         // Out of the box, the prompt was taken and its hook is late: another Enter would be the agent's next key.
-        return (await this.#terminal.promptTaken(prompt, LATE_SUBMIT_MS)) ? 'taken' : 'left';
+        return (await this.#terminal.promptTaken(prompt, LATE_SUBMIT_MS)) ? this.#tookIt() : 'left';
       }
     }
     return 'in-the-box';
   }
 
-  /** Puts the draft back: shell mode, the kill ring's entry, the sentinel off its end. */
-  async #restore(stash: Stash, afterYank: readonly string[]): Promise<void> {
-    if (stash.leftShellMode) await this.#terminal.typeText('!');
-    await this.#terminal.pressKeys(['C-y', ...afterYank]);
-    await this.#terminal.pressKeys(['BSpace']);
+  #tookIt(): 'taken' {
+    this.#taken = true;
+    this.#draft.promptInBox = false;
+    return 'taken';
+  }
+
+  /**
+   * Puts the draft back as far as it is out of the box: shell mode, the
+   * kill ring's entry (past a prompt killed after it), the sentinel off its end.
+   */
+  async #restore(): Promise<void> {
+    const draft = this.#draft;
+    if (draft.leftShellMode) {
+      await this.#writer.typeText('!');
+      draft.leftShellMode = false;
+    }
+    if (draft.depth !== undefined) {
+      await this.#writer.pressKeys(draft.depth === 1 ? ['C-y', 'M-y'] : ['C-y']);
+      draft.depth = undefined;
+    }
+    if (draft.sentinel) {
+      await this.#writer.pressKeys(['BSpace']);
+      draft.sentinel = false;
+    }
+  }
+
+  /**
+   * Puts the draft back once the typing stopped, through the terminal's
+   * `restoring` writes: what was typed of the prompt cleared, then the
+   * draft. Where the core refuses, nothing more is typed.
+   *
+   * @returns The outcome: the draft's place told when it is still out of the box.
+   */
+  async #putBackAfterStop(): Promise<TypingOutcome> {
+    this.#writer = this.#terminal.restoring;
+    try {
+      const cleared =
+        this.#draft.promptInBox && this.#draft.depth !== undefined
+          ? await this.#clearPrompt()
+          : 'empty';
+      if (cleared === 'empty') await this.#restore();
+    } catch (error) {
+      if (!(error instanceof TypingStoppedError)) throw error;
+    }
+    return this.#stoppedOutcome();
+  }
+
+  #stoppedOutcome(): TypingOutcome {
+    if (this.#taken) return 'taken';
+    if (this.#draft.depth === undefined || !this.#hadDraft) return 'no-input-box';
+    return { draftLeft: whereTheDraftIs(this.#draft) };
   }
 
   async #read(): Promise<Seen> {
-    const screen = await this.#terminal.readScreen();
+    const screen = await this.#writer.readScreen();
     return { screen, box: readInputBoxView(screen.text) };
   }
 
@@ -320,6 +432,13 @@ class PromptTyping {
     }
     return seen;
   }
+}
+
+/** Where a draft left out of the box is, in the person's keys. */
+function whereTheDraftIs({ depth, promptInBox }: DraftPlace): string {
+  const keys = depth === 1 ? 'Ctrl+Y, then Alt+Y,' : 'Ctrl+Y';
+  const prompt = promptInBox ? ' What was typed of the prompt may stay in the box.' : '';
+  return `The person's draft is in the input box's kill ring: ${keys} brings it back.${prompt}`;
 }
 
 function downs(count: number): string[] {

@@ -1,17 +1,14 @@
 import type { Session, SessionState } from '../../shared/session.js';
-import type { DriverEvent, InputBox, TerminalScreen, TypingTerminal } from '../driver.js';
+import {
+  type DraftTerminal,
+  type DriverEvent,
+  type InputBox,
+  type TerminalScreen,
+  TypingStoppedError,
+  type TypingTerminal,
+} from '../driver.js';
 import type { SessionHost } from '../session-host/session-host.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
-
-/**
- * Why a write of a prompt being typed was refused: the session no longer
- * showed its input box, or its hooks told of something else than the
- * prompt's own turn. Every later write is refused too; the caller fails the
- * typing with the state the session is in.
- */
-export class TypingStoppedError extends Error {
-  override readonly name = 'TypingStoppedError';
-}
 
 /** What a session's typing terminal works with. */
 export interface TypingTerminalOptions {
@@ -38,7 +35,10 @@ export interface TypingTerminalOptions {
  * typing. Once one is taken, only its own turn may show (`busy`, or
  * `idle` again once it ended): a prompt taken that is not the one typed,
  * or anything waiting for a person, stops it. Before every write the
- * screen must show the input box, as the driver reads it.
+ * screen must show the input box, as the driver reads it. Once stopped,
+ * the driver may still put the person's draft back through
+ * {@link restoring}, whose writes need only the session heard and its box
+ * shown.
  */
 export class SessionTypingTerminal implements TypingTerminal {
   readonly #options: TypingTerminalOptions;
@@ -49,6 +49,15 @@ export class SessionTypingTerminal implements TypingTerminal {
   /** The prompt the driver waits for, as the agent carries it, once it says. */
   #expected: string | undefined;
   #stopped = false;
+  /** Whether a write to put the draft back was refused: every later one is. */
+  #restoreStopped = false;
+  #closed = false;
+
+  readonly restoring: DraftTerminal = {
+    typeText: (text) => this.#restoreChecked(() => this.#typeText(text)),
+    pressKeys: (keys) => this.#restoreChecked(() => this.#pressKeys(keys)),
+    readScreen: () => this.readScreen(),
+  };
 
   constructor(options: TypingTerminalOptions) {
     this.#options = options;
@@ -67,21 +76,16 @@ export class SessionTypingTerminal implements TypingTerminal {
   /** Ends the terminal: every later write is refused, and no wait goes on. */
   close(): void {
     this.#stopped = true;
+    this.#closed = true;
     for (const waiter of this.#waiters) waiter();
   }
 
   async typeText(text: string): Promise<void> {
-    await this.#checked(() =>
-      this.#options.host.sendText(this.#options.key, text, {
-        // One write: the driver sizes it, small enough to read as typing.
-        chunkLength: Math.max(1, Array.from(text).length),
-        pauseMs: 0,
-      }),
-    );
+    await this.#checked(() => this.#typeText(text));
   }
 
   async pressKeys(keys: readonly string[]): Promise<void> {
-    await this.#checked(() => this.#options.host.sendKeys(this.#options.key, keys));
+    await this.#checked(() => this.#pressKeys(keys));
   }
 
   async readScreen(): Promise<TerminalScreen> {
@@ -109,23 +113,57 @@ export class SessionTypingTerminal implements TypingTerminal {
 
   /** Runs a write once the session is checked; a refused check refuses every later write. */
   async #checked(write: () => Promise<void>): Promise<void> {
-    await this.#check();
+    const why = this.#refusalByHooks() ?? (await this.#refusalByScreen());
+    if (why !== undefined) {
+      this.#stopped = true;
+      throw new TypingStoppedError(why);
+    }
+    await this.#written(write, () => {
+      this.#stopped = true;
+    });
+  }
+
+  /** Runs a write that puts the draft back once the session is heard and its box shown. */
+  async #restoreChecked(write: () => Promise<void>): Promise<void> {
+    const why = this.#refusalToRestore() ?? (await this.#refusalByScreen());
+    if (why !== undefined) {
+      this.#restoreStopped = true;
+      throw new TypingStoppedError(why);
+    }
+    await this.#written(write, () => {
+      this.#restoreStopped = true;
+    });
+  }
+
+  /** Runs a write; a session gone meanwhile stops the writes. */
+  async #written(write: () => Promise<void>, stop: () => void): Promise<void> {
     try {
       await write();
     } catch (error) {
       if (error instanceof SessionHostError && error.reason === 'no-session') {
-        this.#stopped = true;
+        stop();
         throw new TypingStoppedError('The session is gone.');
       }
       throw error;
     }
   }
 
-  async #check(): Promise<void> {
-    const why = this.#refusalByHooks() ?? (await this.#refusalByScreen());
-    if (why === undefined) return;
-    this.#stopped = true;
-    throw new TypingStoppedError(why);
+  #typeText(text: string): Promise<void> {
+    return this.#options.host.sendText(this.#options.key, text, {
+      // One write: the driver sizes it, small enough to read as typing.
+      chunkLength: Math.max(1, Array.from(text).length),
+      pauseMs: 0,
+    });
+  }
+
+  #pressKeys(keys: readonly string[]): Promise<void> {
+    return this.#options.host.sendKeys(this.#options.key, keys);
+  }
+
+  #refusalToRestore(): string | undefined {
+    if (this.#closed) return 'The typing is over.';
+    if (this.#restoreStopped) return 'Putting the draft back was stopped.';
+    return this.#options.session() === undefined ? 'The session is no longer heard.' : undefined;
   }
 
   #refusalByHooks(): string | undefined {

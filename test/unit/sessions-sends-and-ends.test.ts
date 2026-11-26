@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TypingTerminal } from '../../src/server/driver.ts';
+import { TypingStoppedError, type TypingTerminal } from '../../src/server/driver.ts';
 import {
   createSessions,
   LIVENESS_INTERVAL_MS,
@@ -195,6 +195,46 @@ describe('a prompt sent to an `idle` session', () => {
 
     await expect(sending()).rejects.toMatchObject({ code: 'wrong-state', state: 'busy' });
     expect(writes()).toEqual(['Enter', 'C-y']);
+  });
+
+  it("lets the driver put the person's draft back once the typing stopped, while the screen shows the input box", async () => {
+    await idleSession();
+    driver.typePrompt = async (prompt, terminal) => {
+      await terminal.pressKeys(['C-u']);
+      hook(`${PROMPT_PATH}<task-notification>`);
+      await expect(terminal.typeText(prompt)).rejects.toThrow(TypingStoppedError);
+      await terminal.restoring.pressKeys(['C-y']);
+      return 'no-input-box';
+    };
+
+    await expect(sending()).rejects.toMatchObject({ code: 'wrong-state', state: 'busy' });
+    expect(writes()).toEqual(['C-u', 'C-y']);
+  });
+
+  it('refuses to put the draft back while the screen shows no input box, and every write after', async () => {
+    await idleSession();
+    let terminalOf: TypingTerminal | undefined;
+    driver.typePrompt = async (prompt, terminal) => {
+      terminalOf = terminal;
+      await terminal.pressKeys(['C-u']);
+      host.show(KEY, stubScreen('dialog'));
+      await expect(terminal.typeText(prompt)).rejects.toThrow(TypingStoppedError);
+      await expect(terminal.restoring.pressKeys(['C-y'])).rejects.toThrow(TypingStoppedError);
+      host.show(KEY, stubScreen('ready'));
+      await expect(terminal.restoring.pressKeys(['C-y'])).rejects.toThrow(TypingStoppedError);
+      return { draftLeft: 'The draft is in the kill ring: Ctrl+Y brings it back.' };
+    };
+
+    const refused = await sending().catch((error: unknown) => error);
+
+    expect(refused).toMatchObject({
+      code: 'wrong-state',
+      state: 'idle',
+      message: expect.stringContaining('The draft is in the kill ring: Ctrl+Y brings it back.'),
+    });
+    expect(writes()).toEqual(['C-u']);
+    // The typing over, nothing more is written.
+    await expect(terminalOf?.restoring.pressKeys(['C-y'])).rejects.toThrow(TypingStoppedError);
   });
 
   it('stops when the session ends while it is typed', async () => {
