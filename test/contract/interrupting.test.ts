@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import type { DriverEvent } from '../../src/server/driver.ts';
 import { eventually } from '../support/eventually.ts';
 // The markers the fake agent plays are the ones the real agent is held to here.
 import { INTERRUPTED, INTERRUPTED_FOR_TOOL_USE } from '../support/fake-agent/transcript.ts';
@@ -121,4 +122,47 @@ it('22 — Esc while the agent writes: the transcript records [Request interrupt
   expect(idle).toMatchObject({ state: 'idle' });
   expect(answered).toMatchObject({ state: 'idle', lastMessage: 'Going on.' });
   expect(userTexts(session)).toEqual(['think', INTERRUPTED, NEXT_PROMPT]);
+});
+
+it('95 — the interruption marker carries the time the agent recorded it, earlier than the next prompt is taken: an Esc, then a prompt at once, leave the new turn busy, whenever the driver reads the marker', async () => {
+  const cockpit = await startContractCockpit();
+  cockpit.api.script(
+    heldTurn(turn('Thinking it over'), { afterEvents: TEXT_WRITTEN }),
+    heldTurn(NEXT_ANSWER),
+  );
+
+  await cockpit.say('think');
+  const first = await cockpit.api.heldRequest();
+  const session = cockpit.terminal(SAID_KEY);
+  await eventually(async () => expect(await session.screen()).toMatch(/↓ \d+ tokens|^●/mu));
+  // Typed while the turn runs, submitted as soon as the Esc is recorded: often within one read
+  // of the transcript. An Enter pressed with the Esc would be read with it as one key.
+  await session.type(NEXT_PROMPT);
+  await session.press('Escape');
+  await eventually(() => expect(userTexts(session)).toContain(INTERRUPTED));
+  await cockpit.submitInputBoxInTerminal(SAID_KEY, NEXT_PROMPT);
+  const second = await cockpit.api.heldRequest(2);
+  const taken = cockpit.timeline.findIndex(
+    (moment: Moment) => 'hook' in moment && moment.hook.prompt === NEXT_PROMPT,
+  );
+  const told = await eventually(() => {
+    const moment = cockpit.timeline.find(
+      (each: Moment) => 'told' in each && each.told.some((event) => event.type === 'interrupted'),
+    );
+    expect(moment).toBeDefined();
+    return moment as { readonly told: readonly DriverEvent[] };
+  });
+  const statesOfTheNewTurn = cockpit.timeline
+    .slice(taken)
+    .flatMap((moment) => ('session' in moment ? [moment.session.state] : []));
+  const busyNow = cockpit.cockpit.sessions.list().find((listed) => listed.key === SAID_KEY);
+  second.release();
+  const answered = await sessionAfter(cockpit, 'idle', taken);
+
+  expect(await first.ended).toBe('client-gone');
+  expect(userTexts(session)).toEqual(['think', INTERRUPTED, NEXT_PROMPT]);
+  expect(told.told).toEqual([{ type: 'interrupted', at: expect.any(String) }]);
+  expect(statesOfTheNewTurn).not.toContain('idle');
+  expect(busyNow?.state).toBe('busy');
+  expect(answered).toMatchObject({ state: 'idle', lastMessage: 'Going on.' });
 });

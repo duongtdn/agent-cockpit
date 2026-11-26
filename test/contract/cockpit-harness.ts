@@ -5,7 +5,13 @@ import { setTimeout as pause } from 'node:timers/promises';
 import { onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { type ClaudeCodeOptions, claudeCode } from '../../src/claude-code/index.ts';
-import type { Driver, HookRequest, LaunchCommand } from '../../src/server/driver.ts';
+import type {
+  Conversation,
+  Driver,
+  DriverEvent,
+  HookRequest,
+  LaunchCommand,
+} from '../../src/server/driver.ts';
 import { type Cockpit, createCockpit, type Job } from '../../src/server/index.ts';
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
 import type { Session, SessionState } from '../../src/shared/session.ts';
@@ -56,6 +62,10 @@ export interface ContractCockpit {
   readonly hooksRead: readonly HookRequest[];
   /** Every command the driver gave the cockpit to launch. */
   readonly launches: readonly LaunchCommand[];
+  /** Every conversation the cockpit had the driver follow, in order. */
+  readonly conversationsFollowed: readonly Conversation[];
+  /** Every conversation the cockpit asked the driver whether it can resume, in order. */
+  readonly askedToResume: readonly Conversation[];
   /**
    * What the cockpit saw of its sessions, in order: each hook the driver
    * was given to read, and each session as it changed state.
@@ -102,6 +112,13 @@ export interface ContractCockpit {
    */
   submitInTerminal(key: string, text: string, confirmation?: string): Promise<HookPayload>;
   /**
+   * Submits the text a session's input box holds already, as
+   * {@link submitInTerminal} does once it typed it.
+   *
+   * @param text - What the box holds.
+   */
+  submitInputBoxInTerminal(key: string, text: string, confirmation?: string): Promise<HookPayload>;
+  /**
    * Ends a session as a person does in its terminal: `/exit`, submitted as
    * the driver submits, Enter again while it stays in the input box.
    *
@@ -113,8 +130,15 @@ export interface ContractCockpit {
 /** A hook's payload, as the driver read it. */
 export type HookPayload = Record<string, unknown>;
 
-/** One thing the cockpit saw of its sessions: a hook read, or a session's new state. */
-export type Moment = { readonly hook: HookPayload } | { readonly session: Session };
+/**
+ * One thing the cockpit saw of its sessions: a hook read, what the driver
+ * told outside the hooks of a conversation it follows, or a session's new
+ * state.
+ */
+export type Moment =
+  | { readonly hook: HookPayload }
+  | { readonly told: readonly DriverEvent[] }
+  | { readonly session: Session };
 
 /** The key of a session the job {@link SAY} runs when the test names none. */
 export const SAID_KEY = 'say';
@@ -223,6 +247,8 @@ export async function startContractCockpit(
 
   const hooksRead: HookRequest[] = [];
   const launches: LaunchCommand[] = [];
+  const conversationsFollowed: Conversation[] = [];
+  const askedToResume: Conversation[] = [];
   const conversations = new Map<string, string>();
   const timeline: Moment[] = [];
   const name = `contract-cockpit-${randomUUID()}`;
@@ -241,6 +267,8 @@ export async function startContractCockpit(
     driver: recorded(shim.guarded(claudeCode(driverOptions)), {
       hooksRead,
       launches,
+      conversationsFollowed,
+      askedToResume,
       conversations,
       timeline,
     }),
@@ -285,6 +313,8 @@ export async function startContractCockpit(
     appPort: app.port,
     hooksRead,
     launches,
+    conversationsFollowed,
+    askedToResume,
     timeline,
     async say(prompt, key = SAID_KEY) {
       try {
@@ -299,7 +329,12 @@ export async function startContractCockpit(
     states: following.states,
     sessionIn: following.sessionIn,
     terminal,
-    submitInTerminal: (key, text, confirmation = 'UserPromptSubmit') =>
+    async submitInTerminal(key, text, confirmation = 'UserPromptSubmit') {
+      const session = terminal(key);
+      await session.type(text);
+      return submittedInTerminal({ session, hooksRead, text, confirmation, api });
+    },
+    submitInputBoxInTerminal: (key, text, confirmation = 'UserPromptSubmit') =>
       submittedInTerminal({ session: terminal(key), hooksRead, text, confirmation, api }),
     async exitByItself(key, conversationId) {
       const session = terminal(key, conversationId);
@@ -358,12 +393,18 @@ function serveFrom(shim: RealAgentShim): void {
 interface DriverRecord {
   readonly hooksRead: HookRequest[];
   readonly launches: LaunchCommand[];
+  readonly conversationsFollowed: Conversation[];
+  readonly askedToResume: Conversation[];
   /** The conversation each key was last launched with. */
   readonly conversations: Map<string, string>;
   readonly timeline: Moment[];
 }
 
-/** Gives a driver that keeps what it launched and every hook it read; nothing of it changes. */
+/**
+ * Gives a driver that keeps what it launched, every hook it read, every
+ * conversation it followed and what it told of them, and every conversation
+ * it was asked about; nothing of it changes.
+ */
 function recorded(driver: Driver, record: DriverRecord): Driver {
   return {
     ...driver,
@@ -377,6 +418,17 @@ function recorded(driver: Driver, record: DriverRecord): Driver {
       record.hooksRead.push(request);
       record.timeline.push({ hook: request.body as HookPayload });
       return driver.readHook(request);
+    },
+    follow(conversation, report) {
+      record.conversationsFollowed.push(conversation);
+      return driver.follow(conversation, (events) => {
+        record.timeline.push({ told: events });
+        report(events);
+      });
+    },
+    canResume(conversation) {
+      record.askedToResume.push(conversation);
+      return driver.canResume(conversation);
     },
   };
 }
@@ -393,7 +445,7 @@ interface TerminalSubmit {
   readonly api: FakeApi;
 }
 
-/** Submits what was typed into a session's terminal, as {@link ContractCockpit.submitInTerminal} says. */
+/** Submits what a session's input box holds, as {@link ContractCockpit.submitInTerminal} says. */
 async function submittedInTerminal(submit: TerminalSubmit): Promise<HookPayload> {
   const { session, hooksRead, text, confirmation, api } = submit;
   const before = hooksRead.length;
@@ -402,7 +454,6 @@ async function submittedInTerminal(submit: TerminalSubmit): Promise<HookPayload>
       .slice(before)
       .map((request) => request.body as HookPayload)
       .find((payload) => payload.hook_event_name === confirmation);
-  await session.type(text);
   for (let enters = 1; ; enters++) {
     await session.press('Enter');
     const deadline = Date.now() + SUBMIT_PATIENCE_MS;
