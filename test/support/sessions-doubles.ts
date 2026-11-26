@@ -88,6 +88,8 @@ export interface FakeHost extends SessionHost {
   failLists(failing: boolean): void;
   /** Makes the next kill fail with the error. */
   failNextKill(error: unknown): void;
+  /** Makes the next kill wait until the test opens the gate it returns. */
+  holdNextKill(): Gate;
   /** Makes every question whether a session lives fail, or work again. */
   failIsLive(failing: boolean): void;
   /** Makes the next attach fail with the error. */
@@ -104,6 +106,7 @@ export function createFakeHost(): FakeHost {
   let nextList: Gate | undefined;
   let listsFail = false;
   let nextKillError: unknown;
+  let nextKill: Gate | undefined;
   let isLiveFails = false;
   let nextAttachError: unknown;
   const unused = () => Promise.reject(new Error('The sessions core does not use this.'));
@@ -134,6 +137,10 @@ export function createFakeHost(): FakeHost {
     },
     failNextKill(error) {
       nextKillError = error;
+    },
+    holdNextKill() {
+      nextKill = gate();
+      return nextKill;
     },
     failIsLive(failing) {
       isLiveFails = failing;
@@ -184,6 +191,9 @@ export function createFakeHost(): FakeHost {
     async kill(name) {
       const error = nextKillError;
       nextKillError = undefined;
+      const held = nextKill;
+      nextKill = undefined;
+      if (held) await held.promise;
       if (error !== undefined) throw error;
       kills.push(name);
       return live.delete(name) ? 'killed' : 'gone';

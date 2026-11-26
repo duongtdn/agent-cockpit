@@ -4,6 +4,7 @@ import {
   createSessions,
   LIVENESS_INTERVAL_MS,
   type Sessions,
+  SessionsClosedError,
   SILENT_START_MS,
 } from '../../src/server/sessions/sessions.ts';
 import { CockpitError, isCockpitError } from '../../src/shared/cockpit-error.ts';
@@ -334,6 +335,131 @@ describe('a launch whose agent never reports', () => {
     host.exit(KEY);
     await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
     expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'unobservable' });
+  });
+});
+
+describe('a hook that arrives while the agent is being started on the host', () => {
+  it('is heard: the run resolves once the start is done, and the session is never ended silent', async () => {
+    const held = host.holdNextStart();
+    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    let settled: RunResult | undefined;
+    void result.then((value) => {
+      settled = value;
+    });
+    await settle();
+
+    hook('/start-and-take');
+    await settle();
+    expect(sessionOf()?.state).toBe('busy');
+    expect(settled).toBeUndefined();
+
+    held.open();
+    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+    await vi.advanceTimersByTimeAsync(SILENT_START_MS * 2);
+    expect(host.kills).toEqual([]);
+  });
+
+  it('leaves the launch’s failure to the run when the start then fails', async () => {
+    const failure = new SessionHostError('host-failed', 'tmux failed.');
+    const held = host.holdNextStart();
+    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    result.catch(() => {});
+    await settle();
+
+    hook('/ready');
+    held.fail(failure);
+
+    await expect(result).rejects.toBe(failure);
+    expect(sessionOf()).toBeUndefined();
+  });
+});
+
+describe('a hook that arrives while the cockpit ends a silent session', () => {
+  it('changes nothing: the run is refused `unobservable` and the session ends so', async () => {
+    const { result } = await launched();
+    const kill = host.holdNextKill();
+    await vi.advanceTimersByTimeAsync(SILENT_START_MS);
+
+    hook('/start-and-take');
+    await settle();
+    expect(sessionOf()?.state).toBe('starting');
+    kill.open();
+
+    await expect(result).rejects.toSatisfy((error) => isCockpitError(error, 'unobservable'));
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'unobservable' });
+  });
+
+  it('is heard again once the kill failed: the session still lives', async () => {
+    const { result } = await launched();
+    host.failNextKill(new SessionHostError('host-failed', 'tmux failed.'));
+    await vi.advanceTimersByTimeAsync(SILENT_START_MS);
+    await expect(result).rejects.toThrow(SessionHostError);
+
+    hook('/start-and-take');
+
+    expect(sessionOf()?.state).toBe('busy');
+  });
+});
+
+describe('closing the sessions core', () => {
+  async function closedRun(result: Promise<RunResult>): Promise<void> {
+    await expect(result).rejects.toThrow(SessionsClosedError);
+    await expect(result).rejects.toSatisfy((error) => !isCockpitError(error));
+  }
+
+  it('settles a run that waits for its agent’s first hook; the session is left on the host', async () => {
+    const { result } = await launched();
+
+    sessions.close();
+
+    await closedRun(result);
+    await vi.advanceTimersByTimeAsync(SILENT_START_MS * 2);
+    expect(host.kills).toEqual([]);
+    expect(host.listings).toBe(0);
+  });
+
+  it('settles a run still being started on the host, and then starts no timer and no watch', async () => {
+    const held = host.holdNextStart();
+    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    result.catch(() => {});
+    await settle();
+
+    sessions.close();
+    held.open();
+
+    await closedRun(result);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(SILENT_START_MS * 2);
+    expect(host.kills).toEqual([]);
+    expect(host.listings).toBe(0);
+  });
+
+  it('stops a run that has not reached the host: nothing is launched, its token revoked', async () => {
+    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    result.catch(() => {});
+    sessions.close();
+
+    await closedRun(result);
+    expect(host.starts).toEqual([]);
+    expect(access.revoked).toEqual(access.granted);
+    expect(sessionOf()).toBeUndefined();
+  });
+
+  it('refuses a run asked afterwards, launching nothing', async () => {
+    sessions.close();
+
+    await closedRun(sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' }));
+    expect(driver.launches).toEqual([]);
+  });
+
+  it('leaves a run that already resolved as it was', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+
+    sessions.close();
+
+    expect(sessionOf()?.state).toBe('busy');
   });
 });
 

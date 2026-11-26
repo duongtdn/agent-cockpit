@@ -10,6 +10,7 @@ import { claudeCode } from '../../src/claude-code/index.ts';
 import { cockpitFastify } from '../../src/fastify/index.ts';
 import { type Cockpit, createCockpit, type Job } from '../../src/server/index.ts';
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
+import { SessionsClosedError } from '../../src/server/sessions/sessions.ts';
 import type { Session } from '../../src/shared/session.ts';
 import { SESSION_ENDED_CLOSE_CODE } from '../../src/shared/wire.ts';
 import { writeAgentShim } from '../support/agent-shim.ts';
@@ -407,6 +408,17 @@ describe('creating and closing the cockpit', () => {
 
     expect(second.link('http://127.0.0.1:8765/')).toBe(link);
     expect(link).toMatch(/^http:\/\/127\.0\.0\.1:8765\/#cockpit=[A-Za-z0-9_-]{43}$/);
+  });
+
+  it('settles a run still pending when it is closed, and launches nothing more', async () => {
+    const { cockpit, directory } = await newCockpit();
+    writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
+
+    const pending = cockpit.run('explain', { file: 'a.txt' });
+    await cockpit.close();
+
+    await expect(pending).rejects.toThrow(SessionsClosedError);
+    await expect(cockpit.run('explain', { file: 'b.txt' })).rejects.toThrow(SessionsClosedError);
   });
 
   it('runs a job in-process, as the browser does', async () => {

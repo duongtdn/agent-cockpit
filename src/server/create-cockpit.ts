@@ -28,11 +28,14 @@ export interface Cockpit {
    * @param jobId - The job's id.
    * @param args - The job's arguments.
    * @returns `{ action: 'started', state }`: `busy` once the agent took the
-   * prompt, `idle` for a job without one.
+   * prompt, `idle` for a job without one, `ended` when the agent exited
+   * before it reported anything.
    * @throws `CockpitError` `unknown-job`, `invalid-arguments`;
    * `wrong-state` when the key has a session, whatever its state, in this
    * version; `unobservable` when the agent reported nothing and its session
-   * was ended.
+   * was ended. An `Error` with no code when the cockpit is closed before the
+   * run settles, or was closed before it (500 on the wire): an agent
+   * already started goes on in tmux.
    */
   run(jobId: string, args: unknown): Promise<RunResult>;
   /** The sessions the cockpit launched. */
@@ -67,9 +70,11 @@ export interface Cockpit {
   /** Serves a WebSocket upgrade of the browser's, mounted as `handle` is. */
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
-   * Closes the cockpit: refuses every later request, closes every WebSocket
-   * and detaches every terminal, stops the agent-facing listener and
-   * releases the app's lock. The sessions go on in tmux.
+   * Closes the cockpit: refuses every later request and run, settles every
+   * run still pending (it rejects), closes every WebSocket and detaches
+   * every terminal, stops the agent-facing listener and releases the app's
+   * lock. The sessions go on in tmux: nothing is killed, and no timer of the
+   * cockpit's is left.
    */
   close(): Promise<void>;
 }

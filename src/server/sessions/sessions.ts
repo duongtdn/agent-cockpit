@@ -51,6 +51,24 @@ export const LIVENESS_INTERVAL_MS = 1000;
 const DETACHED_SIZE: TerminalSize = { columns: 120, rows: 40 };
 
 /**
+ * Why a run did not settle as a launch does: the cockpit was closed first.
+ * It carries no code, since no request of an app's can mend it — on the
+ * wire it is a 500 with no body — and the session, if its agent was
+ * started, goes on in tmux, as every session does when the app's server
+ * stops.
+ */
+export class SessionsClosedError extends Error {
+  override readonly name = 'SessionsClosedError';
+
+  /** @param key - The key of the run that was pending. */
+  constructor(key: string) {
+    super(
+      `The cockpit was closed before the session ${key} left \`starting\`; an agent already started goes on in tmux.`,
+    );
+  }
+}
+
+/**
  * Hands out the address and token a session's hooks report with, and takes
  * the token back: the agent-facing listener's side of a session.
  */
@@ -128,6 +146,9 @@ export interface Sessions {
    * its state, for now; `unobservable` when the agent reported nothing within
    * {@link SILENT_START_MS}: the session was ended. What the driver's launch
    * rejects with, such as `agent-not-found`.
+   * @throws `SessionsClosedError` when the core is closed before the run
+   * settles, or was closed before it: a launch not yet on the host stops,
+   * one already there goes on, unwatched.
    * @throws `SessionHostError` `session-exists` when a session of the key
    * that the cockpit did not launch lives on the host, left by an earlier
    * process of the app: nothing is written for it, and it is not listed.
@@ -168,8 +189,10 @@ export interface Sessions {
    */
   follow(listener: (sessions: readonly Session[]) => void): () => void;
   /**
-   * Stops watching: no timer of the core runs any more. The sessions
-   * themselves go on, on the host.
+   * Stops watching: no timer of the core runs any more, and none starts.
+   * Every run still pending settles with `SessionsClosedError`; a launch
+   * not yet on the host goes no further. The sessions themselves go on, on
+   * the host: nothing is killed.
    */
   close(): void;
 }
@@ -188,10 +211,15 @@ export function createSessions(options: SessionsOptions): Sessions {
 type Phase =
   /** Its key is taken; the host is asked whether an earlier session holds it. */
   | 'reserved'
-  /** It is listed `starting`; the agent is not on the host yet. */
+  /**
+   * It is listed `starting`; the agent is not on the host yet. Its hooks
+   * are heard from the moment its token is granted.
+   */
   | 'launching'
   /** It lives on the host. */
   | 'live'
+  /** It lives on the host, and the cockpit is killing it: its hooks are not heard. */
+  | 'killing'
   /** It is gone from the host; its end is being written. */
   | 'going'
   /** It ended. */
@@ -211,6 +239,8 @@ function departure(): Departure {
     resolve = resolved;
     reject = rejected;
   });
+  // A close may settle it before the run awaits it.
+  promise.catch(() => {});
   return { promise, resolve, reject };
 }
 
@@ -227,6 +257,8 @@ interface Entry {
   endedBecause?: EndReason;
   /** Why the agent said it was ending. */
   agentSaid?: AgentEndReason;
+  /** Whether any hook of the agent's was heard: it can be observed. */
+  heard: boolean;
   silentStart?: NodeJS.Timeout;
 }
 
@@ -235,6 +267,7 @@ class SessionRegistry implements Sessions {
   readonly #entries = new Map<string, Entry>();
   readonly #followers = new Set<(sessions: readonly Session[]) => void>();
   readonly #watch: LivenessWatch;
+  #closed = false;
 
   constructor(options: SessionsOptions) {
     this.#options = options;
@@ -247,22 +280,23 @@ class SessionRegistry implements Sessions {
 
   async run({ key, directory, prompt }: SessionRun): Promise<RunResult> {
     if (!isSessionKey(key)) throw new TypeError(`${JSON.stringify(key)} is no session key.`);
+    if (this.#closed) throw new SessionsClosedError(key);
     const existing = this.#entries.get(key);
     if (existing) throw wrongState(existing.session);
 
     const entry = this.#reserve(key, directory, prompt !== undefined);
     await this.#refuseLeftOver(entry);
-    this.#setPhase(entry, 'launching');
     await this.#launch(entry, prompt);
     return this.#outcome(entry);
   }
 
   receive({ key, path, body }: HookRequest): void {
     const entry = this.#entries.get(key);
-    if (entry?.phase !== 'live') return;
+    if (entry?.phase !== 'launching' && entry?.phase !== 'live') return;
     const { events } = this.#options.driver.readHook({ key, path, body });
     for (const event of events) {
       // Any hook at all proves the session can be observed.
+      entry.heard = true;
       clearTimeout(entry.silentStart);
       if (event.type === 'ending') entry.agentSaid = event.reason;
       this.#update(entry, sessionAfter(entry.session, event, entry.launchedWithPrompt, now()));
@@ -298,8 +332,12 @@ class SessionRegistry implements Sessions {
   }
 
   close(): void {
+    this.#closed = true;
     this.#watch.close();
-    for (const entry of this.#entries.values()) clearTimeout(entry.silentStart);
+    for (const entry of this.#entries.values()) {
+      clearTimeout(entry.silentStart);
+      entry.departure.reject(new SessionsClosedError(entry.key));
+    }
   }
 
   /** Takes the key at once, so that a second run of it is refused before any wait. */
@@ -312,6 +350,7 @@ class SessionRegistry implements Sessions {
       departure: departure(),
       session: { key, state: 'starting', since: now() },
       phase: 'reserved',
+      heard: false,
     };
     this.#entries.set(key, entry);
     return entry;
@@ -340,7 +379,10 @@ class SessionRegistry implements Sessions {
     const { host, driver, hooks, folders } = this.#options;
     let granted = false;
     try {
+      this.#refuseIfClosed(entry);
+      this.#setPhase(entry, 'launching');
       const files = await folders.prepare(entry.key);
+      this.#refuseIfClosed(entry);
       const address = hooks.grant(entry.key);
       granted = true;
       const command = await driver.launch({
@@ -352,6 +394,7 @@ class SessionRegistry implements Sessions {
         ...(prompt === undefined ? {} : { prompt }),
         environment: this.#options.environment(),
       });
+      this.#refuseIfClosed(entry);
       await host.start({
         name: entry.key,
         folder: entry.directory,
@@ -362,13 +405,23 @@ class SessionRegistry implements Sessions {
       });
     } catch (error) {
       if (granted) hooks.revoke(entry.key);
+      const listed = entry.phase !== 'reserved';
       this.#entries.delete(entry.key);
-      this.#notify();
+      if (listed) this.#notify();
       throw error;
     }
     entry.phase = 'live';
+    // Closed while the host started it: the session goes on, unwatched.
+    if (this.#closed) return;
     this.#watch.watch(entry.key);
-    entry.silentStart = setTimeout(() => void this.#endSilent(entry), SILENT_START_MS);
+    if (!entry.heard) {
+      entry.silentStart = setTimeout(() => void this.#endSilent(entry), SILENT_START_MS);
+    }
+  }
+
+  /** Stops a launch once the core is closed: nothing more is put on the host. */
+  #refuseIfClosed(entry: Entry): void {
+    if (this.#closed) throw new SessionsClosedError(entry.key);
   }
 
   async #outcome(entry: Entry): Promise<RunResult> {
@@ -385,10 +438,13 @@ class SessionRegistry implements Sessions {
   /** Ends a session whose agent never reported: the cockpit keeps none it cannot observe. */
   async #endSilent(entry: Entry): Promise<void> {
     entry.endedBecause = 'unobservable';
+    // From here the run's outcome is `unobservable`: a late hook changes nothing.
+    entry.phase = 'killing';
     try {
       await this.#options.host.kill(entry.key);
     } catch (error) {
       // Still on the host, perhaps: the watch ends it when it goes.
+      if (entry.phase === 'killing') entry.phase = 'live';
       entry.departure.reject(error);
       return;
     }
@@ -407,7 +463,7 @@ class SessionRegistry implements Sessions {
   /** Ends a session whose process is gone from the host. */
   async #gone(key: string): Promise<void> {
     const entry = this.#entries.get(key);
-    if (entry?.phase !== 'live') return;
+    if (entry?.phase !== 'live' && entry?.phase !== 'killing') return;
     entry.phase = 'going';
     clearTimeout(entry.silentStart);
     this.#watch.unwatch(key);
