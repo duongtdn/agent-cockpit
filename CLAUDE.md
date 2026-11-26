@@ -91,6 +91,14 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   and a runner, and ends them with the test. Its title is the behavior's
   number, a dash between two spaces (`1 — …`), then the behavior: the results
   are read from the titles, and a test titled otherwise is left out of them.
+- **A prompt typed into a session is submitted with `submitPrompt()`** (in
+  the harness, for the contract and the parity tests alike), never with a
+  bare Enter: it submits as the driver does, Enter, then a few seconds for
+  the `UserPromptSubmit` that carries the prompt, Enter again while the
+  prompt stays in the input box, up to three times. The agent has been seen
+  to miss an Enter, more so under load; a submit is confirmed, never
+  assumed. Only a test of what an Enter does (behavior 4: keys typed before
+  `SessionStart` keep their text, not surely their Enter) presses it bare.
 - Each run writes `test-results/contract.json` (git-ignored; CI keeps it as
   an artifact): the agent's version, the date, each behavior's number, title
   and outcome.
