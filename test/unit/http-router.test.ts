@@ -16,9 +16,24 @@ describe('the routes of HTTP requests, under the mount', () => {
     expect(requestRouteOf('DELETE', '/sessions')).toEqual({ route: 'wrong-method', allow: 'GET' });
   });
 
-  it('tells a plain request to a WebSocket path that it needs an upgrade', () => {
+  it('tells a plain request to the sessions’ WebSocket path that it needs an upgrade', () => {
     expect(requestRouteOf('GET', '/follow/sessions')).toEqual({ route: 'upgrade-required' });
-    expect(requestRouteOf('GET', '/terminal/explain-a')).toEqual({ route: 'upgrade-required' });
+    expect(requestRouteOf('POST', '/follow/sessions')).toEqual({ route: 'upgrade-required' });
+  });
+
+  it('takes a GET on a terminal’s path as its probe, which explains a refused handshake', () => {
+    expect(requestRouteOf('GET', '/terminal/explain-a')).toEqual({
+      route: 'terminal-probe',
+      key: 'explain-a',
+    });
+    expect(requestRouteOf('GET', '/terminal/explain-a?x=1')).toEqual({
+      route: 'terminal-probe',
+      key: 'explain-a',
+    });
+    expect(requestRouteOf('POST', '/terminal/explain-a')).toEqual({
+      route: 'wrong-method',
+      allow: 'GET',
+    });
   });
 
   it.each([

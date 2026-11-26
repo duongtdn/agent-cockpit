@@ -126,6 +126,13 @@ export interface CockpitErrorFields {
     /** The keys of the live sessions. */
     live: readonly string[];
   };
+  /**
+   * A launch was refused: no port of the app's browser-facing server is
+   * known, so the agent's sandbox could not be kept from it. The app gives
+   * `port` with the neutral handler; the Fastify adapter reads it once the
+   * server listens.
+   */
+  'no-app-port': Record<never, never>;
   /** No ask or channel request has that id. */
   'unknown-id': {
     /** The id asked for. */
@@ -180,6 +187,18 @@ export interface CockpitErrorFields {
   'no-token': Record<never, never>;
   /** The server cannot be reached. */
   unreachable: Record<never, never>;
+  /**
+   * A failure inside the cockpit, or in a function of the app's it calls,
+   * while it served a request: never sent on the wire, given to the app's
+   * `error` handlers. `cause` is what was thrown.
+   */
+  'internal-failure': {
+    /**
+     * Where: the browser-facing handler, the app's `authorize`, or the
+     * agent-facing listener.
+     */
+    where: 'handler' | 'authorize' | 'agent-listener';
+  };
 }
 
 /** A code of a {@link CockpitError}: kebab-case, one per kind of failure. */

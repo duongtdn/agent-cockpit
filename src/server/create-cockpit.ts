@@ -3,8 +3,15 @@ import type { Duplex } from 'node:stream';
 import { CockpitError } from '../shared/cockpit-error.js';
 import type { RunResult, Session } from '../shared/session.js';
 import { openAgentListener } from './agent-listener/agent-listener.js';
-import { type CockpitOptions, checkCockpitOptions } from './cockpit-options.js';
+import {
+  type CheckedCockpitOptions,
+  type CockpitOptions,
+  checkCockpitOptions,
+} from './cockpit-options.js';
+import { confinementReader } from './confinement.js';
+import { createFailureReport, type InternalFailure } from './failures.js';
 import { createHandler } from './http/handler.js';
+import { carriesAppToken, type RequestHeaders } from './http/request-token.js';
 import { type Job, launchOfJob } from './jobs.js';
 import type { SessionHost } from './session-host/session-host.js';
 import { createTmuxSessionHost } from './session-host/tmux-session-host.js';
@@ -12,7 +19,7 @@ import { createSessions, type Sessions } from './sessions/sessions.js';
 import { openAppToken } from './state/app-token.js';
 import { takeAppLock } from './state/lock.js';
 import { UntrustedStateError } from './state/own-files.js';
-import { openStateFolder, stateFolderPath } from './state/state-folder.js';
+import { cockpitStateRoot, openStateFolder, stateFolderPath } from './state/state-folder.js';
 
 /** The fragment's key that carries the app's token in the page's link. */
 const LINK_KEY = 'cockpit';
@@ -65,6 +72,31 @@ export interface Cockpit {
    */
   link(pageUrl: string): string;
   /**
+   * Tells whether a request carries the app's token, compared in constant
+   * time: an HTTP request in its `cockpit-token` header (the client's
+   * `cockpitHeaders()` gives it), a WebSocket handshake in its subprotocol.
+   * It checks no address, so the app may guard its own routes with it, and
+   * `authorize: (req) => cockpit.verify(req)` opens remote access by the
+   * link.
+   *
+   * @param request - The request: Node's, or a framework's that keeps
+   * Node's headers (Fastify's).
+   * @returns `true` when it carries the app's token.
+   */
+  verify(request: RequestHeaders): boolean;
+  /**
+   * Tells the app of a failure the browser or the agent is not told of: the
+   * handler's own (it answered 500), an `authorize` that threw or rejected
+   * (the request was refused), the agent-facing listener's (it answered
+   * 500). Each is an `internal-failure` whose `cause` is what was thrown.
+   * While the app has no handler, they go to `console.error`.
+   *
+   * @param event - `'error'`.
+   * @param handler - Receives each failure.
+   * @returns A function that removes the handler.
+   */
+  on(event: 'error', handler: (error: InternalFailure) => void): () => void;
+  /**
    * Serves an HTTP request of the browser's, mounted: the app gives it the
    * requests under its prefix, the prefix removed from `req.url`.
    */
@@ -112,7 +144,7 @@ export async function createCockpit(options: CockpitOptions): Promise<Cockpit> {
 
 /** Opens the state folder, takes the lock, and assembles the cockpit around them. */
 async function openCockpit(
-  checked: CockpitOptions,
+  checked: CheckedCockpitOptions,
   host: SessionHost,
   statePath: string,
 ): Promise<Cockpit> {
@@ -120,6 +152,7 @@ async function openCockpit(
   const lock = await takeAppLock(folder.path);
   try {
     const appToken = await openAppToken(folder.path);
+    const failures = createFailureReport();
     // The listener takes hooks only with a session's token, and none is
     // granted before the sessions exist: nothing reaches `receive` early.
     const receiver: { sessions?: Sessions } = {};
@@ -127,6 +160,7 @@ async function openCockpit(
       folder: folder.path,
       ...(checked.agentPort === undefined ? {} : { agentPort: checked.agentPort }),
       receive: (request) => receiver.sessions?.receive(request),
+      reportFailure: (cause) => failures.report('agent-listener', cause),
     });
     const sessions = createSessions({
       host,
@@ -134,6 +168,11 @@ async function openCockpit(
       hooks: listener.hooks,
       folders: folder.sessions,
       environment: serverEnvironment,
+      confinement: confinementReader({
+        stateRoots: stateRootsOf(checked, folder.path),
+        appPorts: () => checked.ports,
+        listener: { host: '127.0.0.1', port: listener.port },
+      }),
     });
     receiver.sessions = sessions;
     const jobs = new Map<string, Job>(checked.jobs.map((job) => [job.id, job]));
@@ -150,12 +189,18 @@ async function openCockpit(
         isLive: (key) => host.isLive(key),
       },
       keyRules: checked.driver.terminalKeys,
+      ...(checked.authorize === undefined ? {} : { authorize: checked.authorize }),
+      origins: checked.origins,
+      terminal: checked.terminal,
+      reportFailure: failures.report,
     });
     let closing: Promise<void> | undefined;
     return {
       run,
       sessions: { list: () => sessions.list(), follow: (handler) => sessions.follow(handler) },
       link: (pageUrl) => linkTo(pageUrl, appToken.value),
+      verify: (request) => carriesAppToken(request, appToken.matches),
+      on: (_event, handler) => failures.on(handler),
       handle: handler.handle,
       upgrade: handler.upgrade,
       close() {
@@ -172,6 +217,14 @@ async function openCockpit(
     await lock.release();
     throw error;
   }
+}
+
+/**
+ * The state roots no session may reach: the default one, which holds every
+ * app's state folder, and the folder the app names, wherever it lies.
+ */
+function stateRootsOf({ stateDirectory }: CockpitOptions, statePath: string): string[] {
+  return stateDirectory === undefined ? [cockpitStateRoot()] : [cockpitStateRoot(), statePath];
 }
 
 /**

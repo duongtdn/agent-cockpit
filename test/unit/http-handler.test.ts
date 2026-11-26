@@ -61,6 +61,7 @@ let followers: Set<(sessions: readonly Session[]) => void>;
 let attachOutcome: () => Promise<Attachment | undefined>;
 let attachedSizes: TerminalSize[];
 let live: boolean;
+let failures: { where: string; cause: unknown }[];
 
 beforeEach(async () => {
   runs = [];
@@ -68,6 +69,7 @@ beforeEach(async () => {
   followers = new Set();
   attachedSizes = [];
   live = true;
+  failures = [];
   attachOutcome = async () => new FakeAttachment();
   handler = createHandler({
     tokenMatches: (candidate) => candidate === TOKEN,
@@ -91,6 +93,9 @@ beforeEach(async () => {
       isLive: async () => live,
     },
     keyRules,
+    origins: [],
+    terminal: 'on',
+    reportFailure: (where, cause) => failures.push({ where, cause }),
   });
   server = createServer((request, response) => handler.handle(request, response));
   server.on('upgrade', (request, socket, head) => handler.upgrade(request, socket, head));
@@ -192,14 +197,27 @@ describe('the handler’s routes', () => {
     });
   });
 
-  it('answers a failure no code names 500, with nothing of it', async () => {
+  it('answers a failure no code names 500, with nothing of it, and reports it to the app', async () => {
+    const secret = new Error('secret detail');
     runOutcome = async () => {
-      throw new Error('secret detail');
+      throw secret;
     };
 
     const reply = await post(`${base}/run`, { jobId: 'explain', args: {} }, { token: TOKEN });
 
     expect(reply).toMatchObject({ status: 500, body: '' });
+    expect(failures).toEqual([{ where: 'handler', cause: secret }]);
+  });
+
+  it('reports no failure a code names: the browser is told', async () => {
+    runOutcome = async () => {
+      throw new CockpitError('unknown-job', 'No such job.', { jobId: 'explain' });
+    };
+
+    expect(
+      (await post(`${base}/run`, { jobId: 'explain', args: {} }, { token: TOKEN })).status,
+    ).toBe(404);
+    expect(failures).toEqual([]);
   });
 
   it.each([
@@ -234,6 +252,20 @@ describe('the handler’s routes', () => {
     expect(wrong.headers.allow).toBe('POST');
     const plain = await call(`${base}/follow/sessions`, { token: TOKEN });
     expect(plain.status).toBe(426);
+  });
+
+  it('answers a GET on a terminal’s path, its probe, 426 once the checks pass; another method 405', async () => {
+    const probe = await call(`${base}/terminal/explain-a`, { token: TOKEN });
+    expect(probe.status).toBe(426);
+    expect(probe.headers.upgrade).toBe('websocket');
+    expect((await call(`${base}/terminal/explain-a`)).status).toBe(401);
+    const posted = await call(`${base}/terminal/explain-a`, {
+      method: 'POST',
+      body: '',
+      token: TOKEN,
+    });
+    expect(posted.status).toBe(405);
+    expect(posted.headers.allow).toBe('GET');
   });
 
   it('refuses an upgrade to a path it does not know, 404, and ends the socket', async () => {

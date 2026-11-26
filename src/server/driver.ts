@@ -38,6 +38,56 @@ export interface HookAddress {
   readonly token: string;
 }
 
+/** An address on the machine: a host, by name or by IP address, and a port. */
+export interface NetworkAddress {
+  /** A name (`localhost`) or an IP address (`127.0.0.1`, `::1`), IPv6 without brackets. */
+  readonly host: string;
+  /** The port. */
+  readonly port: number;
+}
+
+/**
+ * What the cockpit keeps out of the agent's reach, for one launch: the
+ * driver writes the lines its agent needs for it into the session's
+ * settings, whatever the app sets.
+ */
+export interface Confinement {
+  /**
+   * The cockpit's state roots — the default one and the folder the app gives,
+   * each by the path given and, when it differs, its real path — which the
+   * agent may neither read nor write.
+   */
+  readonly stateRoots: readonly string[];
+  /**
+   * Every address the app's browser-facing surfaces may be reached at: each
+   * of the app's ports on every local address, read at this launch, and on
+   * the loopback names. A sandboxed agent's network may reach none of them.
+   */
+  readonly appAddresses: readonly NetworkAddress[];
+  /** The agent-facing listener, which the session's hooks must reach. */
+  readonly listener: NetworkAddress;
+}
+
+/**
+ * How far the commands of a driver's sessions reach the network without
+ * asking the person, as the app set the driver.
+ */
+export type SessionNetwork =
+  /** No further than the confinement's lines allow; beyond them, the agent asks. */
+  | { readonly reach: 'confined' }
+  /**
+   * Beyond the allow-list, without asking: other local ports, the internet,
+   * the person's files. The cockpit then refuses to be opened beyond
+   * loopback unless the app accepted it in the driver's options.
+   */
+  | {
+      readonly reach: 'open';
+      /** Whether the app accepted it, in the driver's options. */
+      readonly accepted: boolean;
+      /** Why, and how the app accepts it, in the driver's terms: the refusal's message. */
+      readonly reason: string;
+    };
+
 /** What the core asks a driver to launch: one start of the agent for one session. */
 export interface Launch {
   /** The session's key, which names it on the host and in the state folder. */
@@ -66,6 +116,8 @@ export interface Launch {
    * inherit, and adds its own.
    */
   readonly environment: Readonly<Record<string, string>>;
+  /** What the agent must not reach, which the driver writes into the session's settings. */
+  readonly confinement: Confinement;
 }
 
 /** How to run the agent for a launch; the core gives it to the session host as it is. */
@@ -167,6 +219,8 @@ export interface Driver {
    * fails with.
    */
   readonly silentStartCause: string;
+  /** How far its sessions' commands reach the network without asking. */
+  readonly network: SessionNetwork;
   /**
    * Prepares a launch: writes the files it needs in the session's folder and
    * says how to run the agent.

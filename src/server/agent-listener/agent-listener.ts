@@ -28,6 +28,8 @@ export interface AgentListenerOptions {
   readonly agentPort?: number;
   /** Takes a hook whose token was checked: the sessions' `receive`. */
   readonly receive: (request: HookRequest) => void;
+  /** Gives the app what failed while a hook was served: the agent is answered 500, and no more. */
+  readonly reportFailure: (cause: unknown) => void;
 }
 
 /** The agent-facing listener, listening. */
@@ -76,7 +78,7 @@ export async function openAgentListener(options: AgentListenerOptions): Promise<
   const tokens = createHookTokens(url);
   // Requests arrive on later turns of the event loop: none is missed.
   server.on('request', (request, response) => {
-    void serve(request, response, tokens, options.receive);
+    void serve(request, response, tokens, options);
   });
   if (port !== remembered) {
     await writePrivateFile(portFile, String(port)).catch(async (error: unknown) => {
@@ -140,7 +142,7 @@ async function serve(
   request: IncomingMessage,
   response: ServerResponse,
   tokens: HookTokens,
-  receive: (request: HookRequest) => void,
+  { receive, reportFailure }: Pick<AgentListenerOptions, 'receive' | 'reportFailure'>,
 ): Promise<void> {
   const key = tokens.keyOf(bearerToken(request.headers.authorization));
   if (key === undefined) return answer(response, 401);
@@ -157,7 +159,8 @@ async function serve(
   }
   try {
     receive({ key, path, body });
-  } catch {
+  } catch (error) {
+    reportFailure(error);
     return answer(response, 500);
   }
   // A hook's answer of nothing: no decision of the cockpit's.

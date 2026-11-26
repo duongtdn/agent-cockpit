@@ -23,12 +23,14 @@ import { UntrustedStateError } from '../../src/server/state/own-files.ts';
 
 let folder: string;
 let received: HookRequest[];
+let failures: unknown[];
 const opened: AgentListener[] = [];
 const servers: Server[] = [];
 
 beforeEach(() => {
   folder = mkdtempSync(join(tmpdir(), 'cockpit-agent-listener-'));
   received = [];
+  failures = [];
 });
 
 afterEach(async () => {
@@ -45,6 +47,7 @@ async function open(
   const listener = await openAgentListener({
     folder,
     receive: (request) => received.push(request),
+    reportFailure: (cause) => failures.push(cause),
     ...options,
   });
   opened.push(listener);
@@ -296,16 +299,18 @@ describe('the agent-facing listener', () => {
       expect((await post(listener, { token })).status).toBe(200);
     });
 
-    it('answers 500 when the sessions fail on a hook, and goes on serving', async () => {
+    it('answers 500 when the sessions fail on a hook, reports the failure, and goes on serving', async () => {
       let fail = true;
+      const broken = new Error('broken');
       const listener = await open({
         receive: (request) => {
-          if (fail) throw new Error('broken');
+          if (fail) throw broken;
           received.push(request);
         },
       });
       const { token } = listener.hooks.grant('a');
       expect((await post(listener, { token })).status).toBe(500);
+      expect(failures).toEqual([broken]);
       fail = false;
       expect((await post(listener, { token })).status).toBe(200);
       expect(received).toHaveLength(1);

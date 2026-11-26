@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Confinement } from '../../src/server/driver.ts';
 import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import {
   createSessions,
@@ -21,6 +22,11 @@ import {
 } from '../support/sessions-doubles.ts';
 
 const T0 = new Date('2026-11-26T10:00:00.000Z');
+const CONFINEMENT: Confinement = {
+  stateRoots: ['/state'],
+  appAddresses: [{ host: '127.0.0.1', port: 8765 }],
+  listener: { host: '127.0.0.1', port: 4000 },
+};
 const KEY = 'explain-readme';
 const DIRECTORY = '/apps/demo';
 
@@ -28,8 +34,10 @@ let host: FakeHost;
 let driver: StubDriver;
 let access: RecordingHookAccess;
 let sessions: Sessions;
+let confinement: () => Promise<Confinement>;
 
 beforeEach(() => {
+  confinement = async () => CONFINEMENT;
   vi.useFakeTimers({ now: T0 });
   host = createFakeHost();
   driver = createStubDriver();
@@ -40,6 +48,7 @@ beforeEach(() => {
     hooks: access,
     folders: stubFolders(),
     environment: () => ({ PATH: '/usr/bin', HOME: '/home/someone' }),
+    confinement: () => confinement(),
   });
 });
 
@@ -83,6 +92,7 @@ describe('a run on a key with no session', () => {
         hooks: { url: 'http://127.0.0.1:4000', token: `token-of-${KEY}` },
         prompt: 'Explain README.md',
         environment: { PATH: '/usr/bin', HOME: '/home/someone' },
+        confinement: CONFINEMENT,
       },
     ]);
     expect(host.starts).toEqual([
@@ -255,6 +265,21 @@ describe('a launch that fails', () => {
       ['starting'],
       [],
     ]);
+  });
+
+  it('rejects with what the confinement could not be read for, before anything is written or granted', async () => {
+    const failure = new CockpitError('no-app-port', 'No port of the app is known.');
+    confinement = async () => {
+      throw failure;
+    };
+
+    await expect(sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(
+      failure,
+    );
+    expect(access.granted).toEqual([]);
+    expect(driver.launches).toEqual([]);
+    expect(host.starts).toEqual([]);
+    expect(sessions.list()).toEqual([]);
   });
 
   it("rejects with the driver's error, the host never asked", async () => {

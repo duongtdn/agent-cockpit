@@ -120,6 +120,11 @@ async function launchThroughDriver(driver: Driver, script: readonly Turn[], prom
       PATH: `${shimFolder}:${process.env.PATH}`,
       CLAUDE_CONFIG_DIR: configFolder,
     },
+    confinement: {
+      stateRoots: [files],
+      appAddresses: [],
+      listener: { host: '127.0.0.1', port: Number(new URL(listener.base).port) },
+    },
   };
   const command = await driver.launch(launch);
   await host.start({

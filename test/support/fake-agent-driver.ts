@@ -26,6 +26,7 @@ export function fakeAgentDriver(configFolder: string): Driver {
   return {
     terminalKeys: [],
     silentStartCause: 'The fake agent sent no SessionStart.',
+    network: { reach: 'confined' },
     async launch(launch) {
       const settingsFile = join(launch.files, 'settings.json');
       writeFileSync(settingsFile, JSON.stringify(settingsFor(launch.hooks)), { mode: 0o600 });

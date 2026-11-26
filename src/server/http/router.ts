@@ -13,6 +13,12 @@ export type RequestRoute =
   | { readonly route: 'wrong-method'; readonly allow: string }
   /** A WebSocket's path asked as a plain request. */
   | { readonly route: 'upgrade-required' }
+  /**
+   * A GET on a terminal's path: its probe. A browser cannot read why a
+   * handshake was refused, so the terminal asks the same path over HTTP,
+   * which the same checks and the terminal's switch refuse the same way.
+   */
+  | { readonly route: 'terminal-probe'; readonly key: string }
   | { readonly route: 'unknown' };
 
 /** Where a WebSocket upgrade under the mount goes. */
@@ -43,7 +49,12 @@ export function requestRouteOf(method: string, url: string): RequestRoute {
       ? { route: known.route }
       : { route: 'wrong-method', allow: known.method };
   }
-  return socketRouteOf(path) === undefined ? { route: 'unknown' } : { route: 'upgrade-required' };
+  const socket = socketRouteOf(path);
+  if (socket === undefined) return { route: 'unknown' };
+  if (socket.route === 'follow-sessions') return { route: 'upgrade-required' };
+  return method === 'GET'
+    ? { route: 'terminal-probe', key: socket.key }
+    : { route: 'wrong-method', allow: 'GET' };
 }
 
 /**

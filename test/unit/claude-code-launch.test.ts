@@ -40,6 +40,11 @@ function launchOf(overrides: Partial<Launch> = {}): Launch {
     hooks: { url: 'http://127.0.0.1:4100', token: TOKEN },
     prompt: 'Explain a.ts',
     environment: { PATH: '/usr/bin:/bin', HOME: '/home/someone', LANG: 'C.UTF-8' },
+    confinement: {
+      stateRoots: ['/home/someone/.local/state/agent-cockpit'],
+      appAddresses: [{ host: '127.0.0.1', port: 8765 }],
+      listener: { host: '127.0.0.1', port: 4100 },
+    },
     ...overrides,
   };
 }
@@ -246,6 +251,28 @@ describe("the driver's other parts", () => {
 
   it('says why a silent start cannot be observed in terms of its hooks', () => {
     expect(claudeCode().silentStartCause).toMatch(/SessionStart hook/);
+  });
+
+  it.each(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk'] as const)(
+    'keeps the network of a session in %s to the allow-list: it asks beyond it',
+    (permissionMode) => {
+      expect(claudeCode({ permissionMode }).network).toEqual({ reach: 'confined' });
+    },
+  );
+
+  it('opens the network of a session in bypassPermissions, accepted only when the app says so', () => {
+    const refused = claudeCode({ permissionMode: 'bypassPermissions' }).network;
+    const accepted = claudeCode({
+      permissionMode: 'bypassPermissions',
+      acceptOpenNetwork: true,
+    }).network;
+
+    expect(refused).toEqual({
+      reach: 'open',
+      accepted: false,
+      reason: expect.stringContaining('acceptOpenNetwork'),
+    });
+    expect(accepted).toMatchObject({ reach: 'open', accepted: true });
   });
 });
 

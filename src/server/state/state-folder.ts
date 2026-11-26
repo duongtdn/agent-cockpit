@@ -40,7 +40,21 @@ export function stateFolderPath(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
   if (stateDirectory !== undefined) return resolve(stateDirectory);
-  return join(stateRoot(environment), COCKPIT_FOLDER, appFileName(name));
+  return join(cockpitStateRoot(environment), appFileName(name));
+}
+
+/**
+ * Gives the cockpit's default state root, which holds every app's state
+ * folder: `agent-cockpit` under `$XDG_STATE_HOME`, by default and when it is
+ * not an absolute path `~/.local/state`.
+ *
+ * @param environment - The server's environment.
+ * @returns Its absolute path.
+ */
+export function cockpitStateRoot(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  return join(stateRoot(environment), COCKPIT_FOLDER);
 }
 
 function stateRoot(environment: Readonly<Record<string, string | undefined>>): string {

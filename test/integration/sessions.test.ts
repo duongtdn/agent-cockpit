@@ -46,6 +46,11 @@ beforeEach(async () => {
       },
     },
     environment: () => ({ PATH: process.env.PATH ?? '' }),
+    confinement: async () => ({
+      stateRoots: [join(root, 'state')],
+      appAddresses: [],
+      listener: { host: '127.0.0.1', port: 0 },
+    }),
   });
 });
 

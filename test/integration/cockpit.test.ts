@@ -120,7 +120,9 @@ afterAll(() => {
 });
 
 /** A cockpit of an app of its own, in folders of its own; ended, with its tmux server, after the test. */
-async function newCockpit(): Promise<{ cockpit: Cockpit; token: string; directory: string }> {
+async function newCockpit(
+  jobs: readonly Job[] = [explain as unknown as Job],
+): Promise<{ cockpit: Cockpit; token: string; directory: string }> {
   made += 1;
   const name = `assembly-${process.pid}-${made}`;
   const directory = join(root, `work-${made}`);
@@ -129,7 +131,7 @@ async function newCockpit(): Promise<{ cockpit: Cockpit; token: string; director
     name,
     directory,
     driver: claudeCode(),
-    jobs: [explain],
+    jobs,
     stateDirectory: join(root, `state-${made}`),
   });
   cleanups.push(async () => {
@@ -390,6 +392,50 @@ describe('the Fastify adapter', () => {
   });
 });
 
+describe("the app's token on the app's own routes", () => {
+  it('is verified from the header the client sends, and from nothing else', async () => {
+    const { cockpit, token } = await newCockpit();
+    const requests: boolean[] = [];
+    const server = createServer((request, response) => {
+      requests.push(cockpit.verify(request));
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => new Promise((resolve) => server.close(() => resolve())));
+    const base = baseUrlOf(server.address() as AddressInfo);
+
+    await call(`${base}/api/whoami`, { token });
+    await call(`${base}/api/whoami`, { token: 'not-it' });
+    await call(`${base}/api/whoami`);
+
+    expect(requests).toEqual([true, false, false]);
+  });
+});
+
+describe('a failure the browser is not told of', () => {
+  it("reaches the app's error handlers, the browser answered 500 with nothing of it", async () => {
+    const broken = new Error('a bug in the job');
+    const failing = {
+      ...explain,
+      id: 'failing',
+      key: () => {
+        throw broken;
+      },
+    };
+    const { cockpit, token } = await newCockpit([failing as unknown as Job]);
+    const failures: unknown[] = [];
+    cockpit.on('error', (error) => failures.push(error));
+    const { base } = await mount(onNodeHttp, cockpit);
+
+    const reply = await post(`${base}/run`, { jobId: 'failing', args: { file: 'a' } }, { token });
+
+    expect(reply).toMatchObject({ status: 500, body: '' });
+    expect(failures).toEqual([
+      expect.objectContaining({ code: 'internal-failure', where: 'handler', cause: broken }),
+    ]);
+  });
+});
+
 describe('creating and closing the cockpit', () => {
   it('refuses options that do not fit before it writes anything', async () => {
     const stateDirectory = join(root, 'never');
@@ -401,8 +447,8 @@ describe('creating and closing the cockpit', () => {
         driver: claudeCode(),
         jobs: [],
         stateDirectory,
-        port: 8765,
-      } as never),
+        port: 0,
+      }),
     ).rejects.toMatchObject({ code: 'invalid-options', issues: [{ path: ['port'] }] });
     expect(existsSync(stateDirectory)).toBe(false);
   });

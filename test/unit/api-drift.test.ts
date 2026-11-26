@@ -51,6 +51,7 @@ const fieldsByCode: {
   'agent-too-old': { found: 'required', oldestTested: 'required' },
   unobservable: { key: 'required', cause: 'required' },
   'session-cap-reached': { cap: 'required', live: 'required' },
+  'no-app-port': {},
   'unknown-id': { id: 'required' },
   'already-settled': { id: 'required', by: 'required' },
   'terminal-only': { id: 'required' },
@@ -62,6 +63,7 @@ const fieldsByCode: {
   refused: { cause: 'required' },
   'no-token': {},
   unreachable: {},
+  'internal-failure': { where: 'required' },
 };
 
 describe('docs/api.md and the entries', () => {

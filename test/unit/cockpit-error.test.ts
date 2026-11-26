@@ -28,6 +28,7 @@ const everyField: { [C in CockpitErrorCode]: Required<CockpitErrorFields[C]> } =
   'agent-too-old': { found: '1.0.0', oldestTested: '2.0.0' },
   unobservable: { key: 'chapter-1', cause: 'The hooks did not fire.' },
   'session-cap-reached': { cap: 2, live: ['chapter-1', 'chapter-2'] },
+  'no-app-port': {},
   'unknown-id': { id: 'a9' },
   'already-settled': { id: 'a1', by: 'terminal' },
   'terminal-only': { id: 'a1' },
@@ -39,6 +40,7 @@ const everyField: { [C in CockpitErrorCode]: Required<CockpitErrorFields[C]> } =
   refused: { cause: 'origin' },
   'no-token': {},
   unreachable: {},
+  'internal-failure': { where: 'authorize' },
 };
 
 /** The fields, of any code, named like a property that makes the error's identity. */

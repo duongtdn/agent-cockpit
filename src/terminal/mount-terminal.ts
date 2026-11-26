@@ -39,6 +39,19 @@ export interface MountedTerminal {
    * @returns A function that removes the handler.
    */
   on(event: 'status', handler: (status: TerminalStatus) => void): () => void;
+  /**
+   * Tells why the terminal could not connect, once per failed attempt,
+   * after the client's `on('error')`: the server's refusal, explained by an
+   * HTTP request to the terminal's path that the same checks and the
+   * terminal's switch refuse the same way — `refused` with its `cause`
+   * (`terminal-off` among them), or `no-token` — or `unreachable`. A
+   * connection that drops and reconnects is not reported.
+   *
+   * @param event - `'error'`.
+   * @param handler - Receives each error.
+   * @returns A function that removes the handler.
+   */
+  on(event: 'error', handler: (error: CockpitError) => void): () => void;
   /** Gives the terminal the keyboard. */
   focus(): void;
   /**
@@ -89,6 +102,7 @@ export function mountTerminal(
   fit.fit();
 
   const statuses = statusEmitter();
+  const errors = new Set<(error: CockpitError) => void>();
   const link = linkTerminal(connection, key, {
     size: () => ({ columns: terminal.cols, rows: terminal.rows }),
     write: (output) => terminal.write(output),
@@ -108,14 +122,24 @@ export function mountTerminal(
   const observer = new ResizeObserver(() => fit.fit());
   observer.observe(element);
 
+  function on(event: 'status', handler: (status: TerminalStatus) => void): () => void;
+  function on(event: 'error', handler: (error: CockpitError) => void): () => void;
+  function on(event: 'status' | 'error', handler: Handler): () => void {
+    // The overloads tie each event to its handler: the event tells which this is.
+    return event === 'status'
+      ? statuses.subscribe(handler as (status: TerminalStatus) => void)
+      : subscribe(errors, handler as (error: CockpitError) => void);
+  }
+
   let disposed = false;
   return {
-    on: (_event, handler) => statuses.subscribe(handler),
+    on,
     focus: () => terminal.focus(),
     dispose: () => {
       if (disposed) return;
       disposed = true;
       statuses.clear();
+      errors.clear();
       observer.disconnect();
       link.close();
       for (const subscription of subscriptions) subscription.dispose();
@@ -176,6 +200,21 @@ function isCopyKey(event: KeyboardEvent): boolean {
   );
 }
 
+/** A handler of either event of the mounted terminal. */
+type Handler = ((status: TerminalStatus) => void) | ((error: CockpitError) => void);
+
+/**
+ * Adds a handler to a set; a handler given twice is two subscriptions, each
+ * removed by its own function.
+ */
+function subscribe<T>(handlers: Set<(value: T) => void>, handler: (value: T) => void): () => void {
+  const subscription = (value: T): void => handler(value);
+  handlers.add(subscription);
+  return () => {
+    handlers.delete(subscription);
+  };
+}
+
 /** The status handlers and the status they last heard. */
 function statusEmitter(): {
   emit(status: TerminalStatus): void;
@@ -190,13 +229,9 @@ function statusEmitter(): {
       for (const handler of handlers) handler(status);
     },
     subscribe: (handler) => {
-      // A handler given twice is two subscriptions, each removed by its own function.
-      const subscription = (status: TerminalStatus): void => handler(status);
-      handlers.add(subscription);
-      subscription(current);
-      return () => {
-        handlers.delete(subscription);
-      };
+      const stop = subscribe(handlers, handler);
+      handler(current);
+      return stop;
     },
     clear: () => handlers.clear(),
   };

@@ -57,28 +57,125 @@ describe("createCockpit's options", () => {
       jobs: 'none',
       stateDirectory: '',
       agentPort: 70000,
+      terminal: 'no',
+      origins: 'https://app.example',
+      authorize: 'yes',
+      port: -1,
     });
 
     expect(issues.map(({ path }) => path).sort()).toEqual(
-      [['agentPort'], ['directory'], ['driver'], ['jobs'], ['name'], ['stateDirectory']].sort(),
+      [
+        ['agentPort'],
+        ['authorize'],
+        ['directory'],
+        ['driver'],
+        ['jobs'],
+        ['name'],
+        ['origins'],
+        ['port'],
+        ['stateDirectory'],
+        ['terminal'],
+      ].sort(),
     );
   });
 
+  it.each(['channel', 'hiddenEnv', 'idleTimeout', 'maxSessions', 'elicitations', 'typo'])(
+    'refuse %s, an option this version does not take, rather than ignore it',
+    async (name) => {
+      expect(await optionIssues({ ...valid(), [name]: undefined })).toEqual([
+        { path: [name], message: 'Not an option of this version of the cockpit.' },
+      ]);
+    },
+  );
+
+  it('keep the terminal on and the cockpit on loopback when the access options are left out', async () => {
+    const checked = await checkCockpitOptions(valid());
+
+    expect(checked).toMatchObject({ terminal: 'on', origins: [], ports: [] });
+    expect(checked.authorize).toBeUndefined();
+  });
+
+  it('take the access options: authorize, sync or async, origins, the terminal switch', async () => {
+    const authorize = async () => true;
+    const checked = await checkCockpitOptions({
+      ...valid(),
+      authorize,
+      origins: ['https://app.example', 'http://10.0.0.5:8765'],
+      terminal: 'loopback',
+    });
+
+    expect(checked).toMatchObject({
+      authorize,
+      origins: ['https://app.example', 'http://10.0.0.5:8765'],
+      terminal: 'loopback',
+    });
+  });
+
   it.each([
-    'channel',
-    'port',
-    'hiddenEnv',
-    'idleTimeout',
-    'maxSessions',
-    'elicitations',
-    'authorize',
-    'origins',
-    'terminal',
-    'typo',
-  ])('refuse %s, an option this version does not take, rather than ignore it', async (name) => {
-    expect(await optionIssues({ ...valid(), [name]: undefined })).toEqual([
-      { path: [name], message: 'Not an option of this version of the cockpit.' },
+    [8765, [8765]],
+    [
+      [8765, 8443],
+      [8765, 8443],
+    ],
+  ])('take the app’s port %j, as the list of its ports', async (port, ports) => {
+    expect((await checkCockpitOptions({ ...valid(), port })).ports).toEqual(ports);
+  });
+
+  it.each([0, 65536, 1.5, '8765', [], [8765, 0]])('refuse the port %j', async (port) => {
+    const issues = await optionIssues({ ...valid(), port });
+
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues.every(({ path }) => path[0] === 'port')).toBe(true);
+  });
+
+  it.each(['always', true, 'loopback-only'])('refuse the terminal switch %j', async (terminal) => {
+    expect((await optionIssues({ ...valid(), terminal })).map(({ path }) => path)).toEqual([
+      ['terminal'],
     ]);
+  });
+
+  it('refuse an authorize that is no function', async () => {
+    expect((await optionIssues({ ...valid(), authorize: true })).map(({ path }) => path)).toEqual([
+      ['authorize'],
+    ]);
+  });
+
+  it.each([
+    'https://app.example/',
+    'https://app.example/page',
+    'https://App.example',
+    'app.example',
+    'ftp://app.example',
+    'https://app.example?x=1',
+    'https://user@app.example',
+  ])('refuse the origin %j: an origin as a browser sends it, nothing else', async (origin) => {
+    expect(
+      (await optionIssues({ ...valid(), origins: ['https://ok.example', origin] })).map(
+        ({ path }) => path,
+      ),
+    ).toEqual([['origins', 1]]);
+  });
+
+  it('refuse a driver whose sessions reach an open network, with authorize, unless the app accepted it', async () => {
+    const open = claudeCode({ permissionMode: 'bypassPermissions' });
+    const accepted = claudeCode({ permissionMode: 'bypassPermissions', acceptOpenNetwork: true });
+    const authorize = () => true;
+
+    expect(await optionIssues({ ...valid(), driver: open, authorize })).toEqual([
+      { path: ['driver'], message: expect.stringContaining('acceptOpenNetwork') },
+    ]);
+    await expect(
+      checkCockpitOptions({ ...valid(), driver: accepted, authorize }),
+    ).resolves.toBeDefined();
+    await expect(checkCockpitOptions({ ...valid(), driver: open })).resolves.toBeDefined();
+  });
+
+  it('refuse a driver that does not say how far its sessions reach the network', async () => {
+    const { network: _left, ...withoutNetwork } = claudeCode();
+
+    expect(
+      (await optionIssues({ ...valid(), driver: withoutNetwork })).map(({ path }) => path),
+    ).toEqual([['driver']]);
   });
 
   it('refuse a job that does not fit, each issue with its path', async () => {

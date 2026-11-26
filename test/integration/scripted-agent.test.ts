@@ -17,6 +17,7 @@ afterEach(async () => {
 const plainDriver: Driver = {
   terminalKeys: [],
   silentStartCause: '',
+  network: { reach: 'confined' },
   launch: async () => ({
     command: 'claude',
     args: [],
@@ -34,6 +35,7 @@ function launchIn(scripted: ScriptedAgent, driver: Driver = plainDriver) {
     files: scripted.stateFolder,
     hooks: { url: 'http://127.0.0.1:9', token: 't' },
     environment: {},
+    confinement: { stateRoots: [], appAddresses: [], listener: { host: '127.0.0.1', port: 9 } },
   });
 }
 

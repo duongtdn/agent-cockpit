@@ -327,6 +327,18 @@ describe('the status', () => {
     expect(later).toEqual(['open']);
   });
 
+  it('never reaches an error handler: errors are an event of their own', () => {
+    const mounted = mount();
+    const errors: unknown[] = [];
+
+    const stop = mounted.on('error', (error) => errors.push(error));
+    FakeWebSocket.last().accept();
+    stop();
+
+    expect(statuses).toEqual(['connecting', 'open']);
+    expect(errors).toEqual([]);
+  });
+
   it('is ended when the server closes with 4000, and never reconnects', async () => {
     const { socket } = mountAttached();
 

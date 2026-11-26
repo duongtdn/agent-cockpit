@@ -1,20 +1,21 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { type WebSocket, WebSocketServer } from 'ws';
-import { CockpitError } from '../../shared/cockpit-error.js';
+import { CockpitError, isCockpitError } from '../../shared/cockpit-error.js';
 import type { RunResult, Session } from '../../shared/session.js';
 import {
   type KeyRule,
   type RunRequest,
   type SessionsMessage,
   type SessionsResponse,
-  TOKEN_HEADER,
-  tokenOfSubprotocols,
   WIRE_SUBPROTOCOL,
 } from '../../shared/wire.js';
+import type { CockpitOptions } from '../cockpit-options.js';
+import type { FailureSite } from '../failures.js';
 import { readBodyWithin } from './body.js';
 import { type BridgedSessions, bridgeTerminal } from './pty-bridge.js';
 import { refusalOf, tokenRefusalOf } from './request-checks.js';
+import { headerToken, subprotocolToken } from './request-token.js';
 import { requestRouteOf, socketRouteOf } from './router.js';
 import {
   answerOfFailure,
@@ -51,6 +52,20 @@ export interface HandlerOptions {
   readonly terminals: BridgedSessions;
   /** The driver's terminal keys. */
   readonly keyRules: readonly KeyRule[];
+  /** The app's `authorize`, which alone lets a remote request in; none keeps the cockpit on loopback. */
+  readonly authorize?: CockpitOptions['authorize'];
+  /** The origins allowed beyond `127.0.0.1` and `localhost`. */
+  readonly origins: readonly string[];
+  /** The terminal's switch. */
+  readonly terminal: 'on' | 'loopback' | 'off';
+  /**
+   * Gives the app a failure the browser is not told of: a 500 of the
+   * handler's, an `authorize` that throws.
+   */
+  readonly reportFailure: (
+    where: Extract<FailureSite, 'handler' | 'authorize'>,
+    cause: unknown,
+  ) => void;
 }
 
 /** The cockpit's handler of the browser's requests, as the app mounts it. */
@@ -92,14 +107,17 @@ export function createHandler(options: HandlerOptions): Handler {
     if (refusal) return writeAnswer(response, errorAnswer(refusal));
     serve(request, options).then(
       (answer) => writeAnswer(response, answer),
-      (error: unknown) => writeAnswer(response, answerOfFailure(error)),
+      (error: unknown) => {
+        if (!isCockpitError(error)) options.reportFailure('handler', error);
+        writeAnswer(response, answerOfFailure(error));
+      },
     );
   };
 
   const upgrade: Handler['upgrade'] = (request, socket, head) => {
     if (closed) return refuseUpgrade(socket, { status: 503 });
-    const token = tokenOfSubprotocols(request.headers['sec-websocket-protocol']);
-    const refusal = refusalOf(request) ?? tokenRefusalOf(token, options.tokenMatches);
+    const refusal =
+      refusalOf(request) ?? tokenRefusalOf(subprotocolToken(request), options.tokenMatches);
     if (refusal) return refuseUpgrade(socket, errorAnswer(refusal));
     const route = socketRouteOf(request.url ?? '');
     if (route === undefined) return refuseUpgrade(socket, { status: 404 });
@@ -138,6 +156,7 @@ async function serve(request: IncomingMessage, options: HandlerOptions): Promise
     case 'wrong-method':
       return { status: 405, headers: { allow: route.allow } };
     case 'upgrade-required':
+    case 'terminal-probe':
       return { status: 426, headers: { upgrade: 'websocket' } };
     case 'unknown':
       return { status: 404 };
@@ -169,11 +188,6 @@ function runRequestOf(text: string): RunRequest {
 
 function json(value: unknown): WireAnswer {
   return { status: 200, body: JSON.stringify(value) };
-}
-
-function headerToken(request: IncomingMessage): string | undefined {
-  const value = request.headers[TOKEN_HEADER];
-  return typeof value === 'string' ? value : undefined;
 }
 
 /** Sends the sessions at once, then at every change, until the socket closes. */

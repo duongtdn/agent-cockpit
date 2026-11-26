@@ -15,7 +15,14 @@ import {
   type RunResult,
   type Session,
 } from '../../shared/session.js';
-import type { AgentEndReason, Driver, HookAddress, HookRequest, LaunchCommand } from '../driver.js';
+import type {
+  AgentEndReason,
+  Confinement,
+  Driver,
+  HookAddress,
+  HookRequest,
+  LaunchCommand,
+} from '../driver.js';
 import type {
   Attachment,
   SessionEnvironment,
@@ -116,6 +123,12 @@ export interface SessionsOptions {
    * changes: the server's, without what the app hides from its sessions.
    */
   readonly environment: () => Readonly<Record<string, string>>;
+  /**
+   * Reads what a launch's agent must not reach, at each launch, before
+   * anything of it is written: a launch whose confinement cannot be read
+   * fails with that error.
+   */
+  readonly confinement: () => Promise<Confinement>;
 }
 
 /** What a run asks of the sessions core, the job already read. */
@@ -383,6 +396,8 @@ class SessionRegistry implements Sessions {
     try {
       this.#refuseIfClosed(entry);
       this.#setPhase(entry, 'launching');
+      const confinement = await this.#options.confinement();
+      this.#refuseIfClosed(entry);
       const files = await folders.prepare(entry.key);
       this.#refuseIfClosed(entry);
       const address = hooks.grant(entry.key);
@@ -395,6 +410,7 @@ class SessionRegistry implements Sessions {
         hooks: address,
         ...(prompt === undefined ? {} : { prompt }),
         environment: this.#options.environment(),
+        confinement,
       });
       this.#refuseIfClosed(entry);
       await host.start({

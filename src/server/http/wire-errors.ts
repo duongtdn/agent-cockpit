@@ -21,7 +21,8 @@ import type { ErrorResponse } from '../../shared/wire.js';
  * - 409: the state of the unit of work refuses it;
  * - 502: the agent, or the model's API, failed to do it (the one-shot
  *   call's failures included);
- * - 503: the machine cannot run it now (no agent, the cap reached);
+ * - 503: the machine cannot run it now (no agent, the cap reached, no
+ *   port of the app's known);
  * - 504: the agent did not confirm it in time;
  * - 500: a code no request can raise (creating the cockpit, the
  *   client's own), should one ever reach the wire.
@@ -46,6 +47,7 @@ export const STATUS_OF_CODE: Readonly<Record<CockpitErrorCode, number>> = {
   'agent-too-old': 503,
   unobservable: 502,
   'session-cap-reached': 503,
+  'no-app-port': 503,
   'unknown-id': 404,
   'already-settled': 409,
   'terminal-only': 409,
@@ -57,6 +59,7 @@ export const STATUS_OF_CODE: Readonly<Record<CockpitErrorCode, number>> = {
   refused: 403,
   'no-token': 401,
   unreachable: 500,
+  'internal-failure': 500,
 };
 
 /** An answer of the handler's, before it is written: a status and a body. */

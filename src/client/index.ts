@@ -15,5 +15,6 @@ export type {
   SessionState,
   StartupDialog,
 } from '../shared/session.js';
+export { cockpitHeaders } from './cockpit-headers.js';
 export type { CockpitClient, CockpitClientOptions } from './create-cockpit-client.js';
 export { createCockpitClient } from './create-cockpit-client.js';

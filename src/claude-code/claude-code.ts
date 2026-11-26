@@ -5,6 +5,7 @@ import {
   type HookAddress,
   type Launch,
   type LaunchCommand,
+  type SessionNetwork,
 } from '../server/driver.js';
 import { writePrivateFile } from '../server/state/private-files.js';
 import type { KeyRule } from '../shared/wire.js';
@@ -37,6 +38,17 @@ const SILENT_START_CAUSE =
   'stopped before it took input.';
 
 /**
+ * Why a session in `bypassPermissions` reaches the network beyond the
+ * allow-list: its sandbox's proxies let a command through without asking,
+ * where another mode asks.
+ */
+const OPEN_NETWORK_REASON =
+  'In bypassPermissions, a sandboxed command of Claude Code reaches the network beyond the ' +
+  "cockpit's allow-list without asking: the app's other addresses, other local ports, the " +
+  "internet, and the person's files, a browser's stored token among them. With authorize, " +
+  'that token works from afar: claudeCode({ acceptOpenNetwork: true }) accepts it.';
+
+/**
  * Creates the Claude Code driver, which `createCockpit` takes as its
  * `driver`. It launches `claude` from the `PATH` of the server's
  * environment, in the session's folder, with settings of its own written in
@@ -44,21 +56,28 @@ const SILENT_START_CAUSE =
  * app's permission rules.
  *
  * @param options - The permission mode every session is launched in
- * (`default` when left out) and the permission rules its settings carry.
+ * (`default` when left out), the permission rules its settings carry, and
+ * whether the app accepts the open network of `bypassPermissions`.
  * @returns The driver.
  * @throws `CockpitError` `invalid-options` when the options do not fit,
- * any option other than these two among them.
+ * any option other than these three among them.
  */
 export function claudeCode(options?: ClaudeCodeOptions): Driver {
   const checked = checkOptions(options);
   return {
     terminalKeys: TERMINAL_KEYS,
     silentStartCause: SILENT_START_CAUSE,
+    network: networkOf(checked),
     launch: (launch) => launchSession(launch, checked),
     readHook,
     canResume: ({ conversationId }) =>
       keepsConversation(agentConfigFolder(process.env), conversationId),
   };
+}
+
+function networkOf({ permissionMode, acceptOpenNetwork }: CheckedOptions): SessionNetwork {
+  if (permissionMode !== 'bypassPermissions') return { reach: 'confined' };
+  return { reach: 'open', accepted: acceptOpenNetwork, reason: OPEN_NETWORK_REASON };
 }
 
 async function launchSession(launch: Launch, options: CheckedOptions): Promise<LaunchCommand> {

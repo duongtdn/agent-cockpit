@@ -149,3 +149,34 @@ describe('the token from the link', () => {
     expect(await tokenSent(createCockpitClient({ baseUrl: server.baseUrl }))).toBeUndefined();
   });
 });
+
+describe("the token on the app's own routes", () => {
+  /** The headers function, loaded afresh for each test's page as the client is. */
+  async function loadHeaders() {
+    return (await loadAfresh(() => import('../../src/client/index.ts'))).cockpitHeaders;
+  }
+
+  it('is the header the app sends with its own requests, taken from the link', async () => {
+    const page = openPage(`http://127.0.0.1:8765/#cockpit=${token}`);
+    const cockpitHeaders = await loadHeaders();
+
+    expect(cockpitHeaders()).toEqual({ 'cockpit-token': token });
+    expect(page.address()).toBe('http://127.0.0.1:8765/');
+  });
+
+  it('is the one the storage keeps, read at each call', async () => {
+    const page = openPage(`http://127.0.0.1:8765/#cockpit=${token}`);
+    const cockpitHeaders = await loadHeaders();
+    cockpitHeaders();
+    page.storage.setItem(STORED_TOKEN_KEY, otherToken);
+
+    expect(cockpitHeaders()).toEqual({ 'cockpit-token': otherToken });
+  });
+
+  it('is no header at all when the page has no token', async () => {
+    openPage('http://127.0.0.1:8765/');
+    const cockpitHeaders = await loadHeaders();
+
+    expect(cockpitHeaders()).toEqual({});
+  });
+});

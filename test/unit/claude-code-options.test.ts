@@ -15,8 +15,10 @@ function issuesOf(options: unknown): unknown[] {
 
 describe("the Claude Code driver's options", () => {
   it('launch in the default mode with no rules of their own when none are given', () => {
-    expect(checkOptions(undefined)).toEqual({ permissionMode: 'default', permissions: {} });
-    expect(checkOptions({})).toEqual({ permissionMode: 'default', permissions: {} });
+    const none = { permissionMode: 'default', permissions: {}, acceptOpenNetwork: false };
+
+    expect(checkOptions(undefined)).toEqual(none);
+    expect(checkOptions({})).toEqual(none);
   });
 
   it.each(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])(
@@ -30,6 +32,20 @@ describe("the Claude Code driver's options", () => {
     const permissions = { allow: ['Read'], ask: ['Bash(git push:*)'], deny: ['WebFetch'] };
 
     expect(checkOptions({ permissions }).permissions).toEqual(permissions);
+  });
+
+  it('take the acceptance of an open network, whatever the mode', () => {
+    expect(checkOptions({ acceptOpenNetwork: true }).acceptOpenNetwork).toBe(true);
+    expect(
+      checkOptions({ permissionMode: 'bypassPermissions', acceptOpenNetwork: false })
+        .acceptOpenNetwork,
+    ).toBe(false);
+  });
+
+  it('refuse an acceptance of an open network that is no boolean', () => {
+    expect(issuesOf({ acceptOpenNetwork: 'yes' })).toEqual([
+      { path: ['acceptOpenNetwork'], message: expect.any(String) },
+    ]);
   });
 
   it('are refused as invalid-options when they are no object', () => {

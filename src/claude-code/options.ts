@@ -37,12 +37,22 @@ export interface ClaudeCodeOptions {
   readonly permissionMode?: PermissionMode;
   /** Rules every session's settings carry, above the person's and the project's. */
   readonly permissions?: PermissionRules;
+  /**
+   * Accepts that a session in `bypassPermissions` reaches the network beyond
+   * the cockpit's allow-list without asking — other local ports, the
+   * internet, the person's files — even when the app opens the cockpit
+   * beyond loopback (it gives `authorize`), where such a session could read
+   * a token that works from afar. `false` when left out: `createCockpit`
+   * then refuses that pair.
+   */
+  readonly acceptOpenNetwork?: boolean;
 }
 
 /** The options once checked, each with its value. */
 export interface CheckedOptions {
   readonly permissionMode: PermissionMode;
   readonly permissions: PermissionRules;
+  readonly acceptOpenNetwork: boolean;
 }
 
 const PERMISSION_MODES: readonly PermissionMode[] = [
@@ -56,16 +66,17 @@ const PERMISSION_MODES: readonly PermissionMode[] = [
 
 const RULE_LISTS: readonly (keyof PermissionRules)[] = ['allow', 'ask', 'deny'];
 
-const OPTION_NAMES: readonly string[] = ['permissionMode', 'permissions'];
+const OPTION_NAMES: readonly string[] = ['permissionMode', 'permissions', 'acceptOpenNetwork'];
 
 /**
  * Checks the app's options for the driver.
  *
  * @param options - What the app gave, unchecked: an app in JavaScript gives anything.
- * @returns The options, with the default mode when none is given.
+ * @returns The options, with the default mode when none is given, and an
+ * open network not accepted.
  * @throws `CockpitError` `invalid-options`, with every issue found, for
  * options that are no object, a mode Claude Code does not have, rules that
- * are no lists of rules, and any other option: one that a later version
+ * are no lists of rules, an acceptance that is no boolean, and any other option: one that a later version
  * takes (a model, a plugin) is refused rather than silently ignored.
  */
 export function checkOptions(options: unknown): CheckedOptions {
@@ -76,19 +87,29 @@ export function checkOptions(options: unknown): CheckedOptions {
       issues,
     });
   }
-  const { permissionMode = 'default', permissions = {} } = given as ClaudeCodeOptions;
-  return { permissionMode, permissions };
+  const {
+    permissionMode = 'default',
+    permissions = {},
+    acceptOpenNetwork = false,
+  } = given as ClaudeCodeOptions;
+  return { permissionMode, permissions, acceptOpenNetwork };
 }
 
 function optionIssues(options: Record<string, unknown>): Issue[] {
-  const { permissionMode, permissions, ...others } = options;
+  const { permissionMode, permissions, acceptOpenNetwork, ...others } = options;
   return [
     ...Object.keys(others).map((name) =>
-      issue([name], `Not an option of the driver: it takes ${OPTION_NAMES.join(' and ')}.`),
+      issue([name], `Not an option of the driver: it takes ${OPTION_NAMES.join(', ')}.`),
     ),
     ...modeIssues(permissionMode),
     ...permissionsIssues(permissions),
+    ...acceptanceIssues(acceptOpenNetwork),
   ];
+}
+
+function acceptanceIssues(accept: unknown): Issue[] {
+  if (accept === undefined || typeof accept === 'boolean') return [];
+  return [issue(['acceptOpenNetwork'], 'Expected true or false.')];
 }
 
 function modeIssues(mode: unknown): Issue[] {

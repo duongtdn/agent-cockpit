@@ -242,6 +242,7 @@ export function createStubDriver(): StubDriver {
     resumable: true,
     terminalKeys: [],
     silentStartCause: 'The stub agent sent no hook.',
+    network: { reach: 'confined' },
     failNextLaunch(error) {
       nextLaunchError = error;
     },

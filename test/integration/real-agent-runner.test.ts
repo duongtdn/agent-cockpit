@@ -250,6 +250,7 @@ describe('the shim that runs the real agent in place of the driver’s claude', 
         .guarded({
           terminalKeys: [],
           silentStartCause: '',
+          network: { reach: 'confined' },
           launch: async () => ({ command: 'claude', args, environment }),
           readHook: () => ({ events: [] }),
           canResume: async () => false,
@@ -261,6 +262,11 @@ describe('the shim that runs the real agent in place of the driver’s claude', 
           files: shim.root,
           hooks: { url: 'http://127.0.0.1:9', token: 't' },
           environment: {},
+          confinement: {
+            stateRoots: [],
+            appAddresses: [],
+            listener: { host: '127.0.0.1', port: 9 },
+          },
         });
 
     await expect(launching({ PATH: '/usr/bin:/bin' })).rejects.toThrow(/not the shim/);
