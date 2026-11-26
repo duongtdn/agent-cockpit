@@ -1,0 +1,10 @@
+▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-DRbpfW/work
+❯ hello
+● answer from the first fake API
+✻ Baked for 0s · done 11:11 PM
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents                                                 ◐ medium · /effort

@@ -1,0 +1,16 @@
+▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-Y1wIyu/work
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+  Help  General   Commands   Custom commands
+  Claude understands your codebase, makes edits with your permission, and runs commands — right from your terminal.
+  Shortcuts
+  ! for shell mode        esc esc to clear input             ctrl+shift+_ to undo
+  / for commands          shift+tab to cycle modes           ctrl+z to suspend
+  @ for file paths        ctrl+o to see full transcript      ctrl+v to paste images
+  /btw for side question  ctrl+t to toggle tasks             alt+p to switch model
+                          backslash (\) then enter for       ctrl+s to stash prompt
+                          newline                            ctrl+g to edit in $EDITOR
+                                                             /keybindings to customize
+  For more help: https://code.claude.com/docs/en/overview
+  ←/→ to switch · Esc to close
