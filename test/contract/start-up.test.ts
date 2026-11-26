@@ -13,16 +13,28 @@ import { conversationTexts } from './harness.ts';
 
 const driver = claudeCode();
 
+/**
+ * How long the agent may take to show its first screen: no hook tells it
+ * here. Under a full suite's load it has taken up to 4 s (0.4 s alone).
+ */
+const START_PATIENCE_MS = 15_000;
+
 it("86 — With every hook off (disableAllHooks in the person's settings), the agent shows its ordinary ready screen, takes the launch prompt and answers it, and fires no hook, SessionStart included", async () => {
   const cockpit = await startContractCockpit({ personsSettings: { disableAllHooks: true } });
   cockpit.api.script(turn('Unheard.'));
 
   const run = cockpit.say('say one line');
-  const screen = await eventually(async () => {
-    const shown = await cockpit.terminal(SAID_KEY).screen();
-    expect(driver.readScreen(shown)).toEqual({ shows: 'ready' });
-    return shown;
-  });
+  // One terminal, once the session is launched: each one reads its screen until the session ends.
+  const session = await eventually(() => cockpit.terminal(SAID_KEY));
+  const screen = await eventually(
+    async () => {
+      const shown = await session.screen();
+      expect(driver.readScreen(shown)).toEqual({ shows: 'ready' });
+      return shown;
+    },
+    undefined,
+    START_PATIENCE_MS,
+  );
   const request = await cockpit.api.conversationRequest(1);
 
   await expect(run).rejects.toMatchObject({
