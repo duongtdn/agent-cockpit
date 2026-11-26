@@ -48,6 +48,20 @@ describe('the fake agent at a start-up dialog', () => {
     expect(played.screen()).toMatchObject({ state: 'idle', startUpDialog: undefined });
   });
 
+  it('takes the answered dialog off the screen at once, before SessionStart is told', async () => {
+    const played = await playFakeAgent({
+      script: [],
+      startUpDialogs: ['trust-folder'],
+      prompt: 'say one line',
+      hookAnswers: { SessionStart: new Promise(() => {}) },
+    });
+
+    press(played, 'down', 'enter');
+
+    await vi.waitFor(() => expect(played.fired).toEqual(['SessionStart']));
+    expect(played.screen()).toMatchObject({ state: 'starting', startUpDialog: undefined });
+  });
+
   it.each([['enter'], ['escape']] as const)(
     'leaves at the warning of bypassPermissions on %s, with SessionEnd',
     async (key) => {

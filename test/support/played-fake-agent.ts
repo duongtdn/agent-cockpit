@@ -37,6 +37,8 @@ export interface Playing {
   readonly resumedAfterSeconds?: number;
   /** The start-up dialogs the configuration shows; none by default. */
   readonly startUpDialogs?: readonly StartUpDialogKind[];
+  /** The prompt given on the command line; none by default. */
+  readonly prompt?: string;
   /** Whether the person declined the environment's key before; not by default. */
   readonly keyRejected?: boolean;
   /** The API's address; the scripted API's usual one by default. */
@@ -68,6 +70,7 @@ export async function playFakeAgent({
   resumedAfterSeconds,
   startUpDialogs = [],
   keyRejected = false,
+  prompt,
   apiBaseUrl = API_BASE_URL,
   tasksReleased = Promise.resolve(),
 }: Playing): Promise<Played> {
@@ -84,7 +87,7 @@ export async function playFakeAgent({
       settingsFile: undefined,
       permissionMode: mode,
       model: 'haiku',
-      prompt: undefined,
+      prompt,
     },
     hooks: {
       configures: (event) => !withoutHooksFor.includes(event),

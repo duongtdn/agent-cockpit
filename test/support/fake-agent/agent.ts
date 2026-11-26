@@ -327,7 +327,9 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       await decline(kind);
       return false;
     }
+    // Seen of Claude Code: an answered dialog leaves the screen at once, well before SessionStart.
     startUpDialog = undefined;
+    show();
     if (answer === 'accept') surroundings.configuration.accept(kind);
     else {
       surroundings.configuration.rejectKey();
