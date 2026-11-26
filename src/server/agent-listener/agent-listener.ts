@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { HOOKS_PATH, type HookRequest } from '../driver.js';
+import { readBodyWithin } from '../http/body.js';
 import type { HookAccess } from '../sessions/sessions.js';
 import { writePrivateFile } from '../state/private-files.js';
 import { createHookTokens, type HookTokens } from './hook-tokens.js';
@@ -144,7 +145,7 @@ async function serve(
   const path = new URL(request.url ?? '/', 'http://listener').pathname;
   if (path !== HOOKS_PATH) return answer(response, 404);
   if (request.method !== 'POST') return answer(response, 405, { allow: 'POST' });
-  const text = await readBody(request);
+  const text = await readBodyWithin(request, MAX_HOOK_BODY_BYTES);
   if (text === undefined) return answer(response, 413);
   let body: unknown;
   try {
@@ -163,17 +164,6 @@ async function serve(
 
 function bearerToken(header: string | undefined): string | undefined {
   return /^Bearer (\S+)$/.exec(header ?? '')?.[1];
-}
-
-/** Reads a body whole; `undefined` when it passes the limit, the rest read and dropped. */
-async function readBody(request: IncomingMessage): Promise<string | undefined> {
-  const chunks: Buffer[] = [];
-  let length = 0;
-  for await (const chunk of request as AsyncIterable<Buffer>) {
-    length += chunk.length;
-    if (length <= MAX_HOOK_BODY_BYTES) chunks.push(chunk);
-  }
-  return length <= MAX_HOOK_BODY_BYTES ? Buffer.concat(chunks).toString('utf8') : undefined;
 }
 
 function answer(response: ServerResponse, status: number, headers: Record<string, string> = {}) {

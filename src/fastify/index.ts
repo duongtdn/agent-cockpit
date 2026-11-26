@@ -5,4 +5,4 @@
  * @packageDocumentation
  */
 
-export {};
+export { cockpitFastify } from './cockpit-fastify.js';

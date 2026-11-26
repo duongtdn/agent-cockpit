@@ -4,8 +4,10 @@ Every entry point of `@duongtdn/agent-cockpit`, with its exports, options,
 operations and events, and every `CockpitError` code. For the concepts behind
 them, read the [guide](guide.md).
 
-**Status:** the cockpit is not built yet. This reference lists exactly what
-the package exports today; a test compares the export tables and the error
+**Status:** the first operations are built: creating and mounting a cockpit,
+running a job on a key with no session, following the sessions, and the
+browser's client and terminal. This reference lists exactly what the package
+exports today; a test compares the export tables and the error
 table below with the code, so they cannot drift apart.
 
 ## Entry points
@@ -19,24 +21,43 @@ Each entry's table lists every export. The kind is `class`, `function`,
 
 ### `@duongtdn/agent-cockpit`
 
-Runs in Node, in the app's server: the server library and its handler. So
-far it exports only the errors and the types their fields use.
+Runs in Node, in the app's server: the server library and its handler.
 
-| Export               | Kind     | What it is                                                                                                                           |
-| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `CockpitError`       | class    | Every error the cockpit throws or rejects with; see [Errors](#errors).                                                               |
-| `isCockpitError`     | function | `isCockpitError(value, code?)` tells whether a value is a `CockpitError` (of that code, when one is given) and narrows its type.     |
-| `CockpitErrorCode`   | type     | The union of every error code.                                                                                                       |
-| `CockpitErrorFields` | type     | The fields each code carries, by code.                                                                                               |
-| `Issue`              | type     | `{ path, message }`: one way a value does not fit what was expected.                                                                 |
-| `SessionState`       | type     | `'starting' \| 'idle' \| 'busy' \| 'waiting' \| 'ended'`.                                                                            |
-| `Pending`            | type     | `{ kind, id?, dialog? }`: one thing a `waiting` session waits for.                                                                   |
-| `StartupDialog`      | type     | `'trust-folder' \| 'bypass-permissions' \| 'onboarding' \| 'login'`: a dialog the agent shows in its terminal before a first prompt. |
+| Export               | Kind     | What it is                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createCockpit`      | function | `await createCockpit({ name, directory, driver, jobs, stateDirectory?, agentPort? })` checks the options and the machine, opens the state folder, takes the app's lock (waiting a few seconds for a predecessor to exit), opens the app's token and the agent-facing listener, and resolves with the `Cockpit`. Any other option is refused, never ignored. Rejects with `invalid-options`, `unsupported-machine` or `cockpit-locked`. |
+| `Cockpit`            | type     | The cockpit: `run(jobId, args)`; `sessions.list()` and `sessions.follow(handler)`; `link(pageUrl)` gives the page's URL with the token in its fragment (`#cockpit=…`); `handle(req, res)` and `upgrade(req, socket, head)`, mounted (the app gives them the requests under its prefix, the prefix removed from `req.url`); `close()` closes every connection and releases the lock, the sessions going on in tmux.                     |
+| `CockpitOptions`     | type     | `{ name, directory, driver, jobs, stateDirectory?, agentPort? }`.                                                                                                                                                                                                                                                                                                                                                                      |
+| `Job`                | type     | `{ id, title, description?, args, key, prompt? }`: `args` a zod 4 schema; `key(args)` names the unit of work (`[a-z0-9-]+`); `prompt(args)` the first prompt, or none for a job for typing. Any other field is refused.                                                                                                                                                                                                                |
+| `RunResult`          | type     | `{ action, reason?, state }`: what a run did and the state it left the session in.                                                                                                                                                                                                                                                                                                                                                     |
+| `Session`            | type     | A session: `{ key, state, since }` and what its state carries.                                                                                                                                                                                                                                                                                                                                                                         |
+| `EndReason`          | type     | Why a session ended: `'app' \| 'idle-timeout' \| 'session-cap' \| 'restarted' \| 'agent-exit' \| 'declined' \| 'unobservable' \| 'lost'`.                                                                                                                                                                                                                                                                                              |
+| `CockpitError`       | class    | Every error the cockpit throws or rejects with; see [Errors](#errors).                                                                                                                                                                                                                                                                                                                                                                 |
+| `isCockpitError`     | function | `isCockpitError(value, code?)` tells whether a value is a `CockpitError` (of that code, when one is given) and narrows its type.                                                                                                                                                                                                                                                                                                       |
+| `CockpitErrorCode`   | type     | The union of every error code.                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `CockpitErrorFields` | type     | The fields each code carries, by code.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `Issue`              | type     | `{ path, message }`: one way a value does not fit what was expected.                                                                                                                                                                                                                                                                                                                                                                   |
+| `SessionState`       | type     | `'starting' \| 'idle' \| 'busy' \| 'waiting' \| 'ended'`.                                                                                                                                                                                                                                                                                                                                                                              |
+| `Pending`            | type     | `{ kind, id?, dialog? }`: one thing a `waiting` session waits for.                                                                                                                                                                                                                                                                                                                                                                     |
+| `StartupDialog`      | type     | `'trust-folder' \| 'bypass-permissions' \| 'onboarding' \| 'login'`: a dialog the agent shows in its terminal before a first prompt.                                                                                                                                                                                                                                                                                                   |
+
+Every browser request and WebSocket upgrade the handler is given passes the
+request checks before anything else: it is refused with `refused` when it
+comes from beyond the loopback (`remote`), carries `Forwarded`,
+`X-Forwarded-For` or `X-Real-IP` (`forwarded`), reaches a local address other
+than `127.0.0.1` or `::1` (`local-address`), or names a `Host` or an `Origin`
+other than `127.0.0.1` or `localhost`, any port (`host`, `origin`); then
+with `no-token` when it does not carry the app's token. A path under the
+mount the cockpit does not know is answered 404; an upgrade to one is
+refused and its socket ended.
 
 ### `@duongtdn/agent-cockpit/fastify`
 
-Runs in Node, in the app's server: the Fastify adapter. It exports nothing
-yet.
+Runs in Node, in the app's server: the Fastify adapter.
+
+| Export           | Kind     | What it is                                                                                                                                                                                                                      |
+| ---------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cockpitFastify` | function | `app.register(cockpitFastify(cockpit), { prefix: '/cockpit' })` mounts the cockpit under the prefix: its requests, their bodies unread by Fastify, and its WebSocket upgrades. Upgrades outside the prefix are left to the app. |
 
 ### `@duongtdn/agent-cockpit/claude-code`
 
@@ -117,7 +138,16 @@ the token is never on a command line or in the environment.
 
 ## Operations
 
-No operation is built yet.
+`cockpit.run(jobId, args)`, in the app's server and in the browser's client
+alike, checks the arguments against the job's schema (`unknown-job`,
+`invalid-arguments`), derives the key, launches the agent on a key with no
+session and resolves once the session leaves `starting`: `{ action:
+'started', state: 'busy' }` once the agent took the prompt, `state: 'idle'`
+for a job without one. In this version a run on a key that has a session,
+whatever its state, is refused with `wrong-state`; one whose agent reports
+nothing within 30 seconds is ended and refused with `unobservable`.
+`cockpit.sessions.list()` and `cockpit.sessions.follow(handler)` give each
+session's key, state, `since` and what its state carries.
 
 ## Events
 
@@ -132,9 +162,8 @@ person), and the fields of its code. The code decides the fields, so
 `switch (error.code)` narrows them in TypeScript. "Nothing to do" is never an
 error: an operation says so in its result.
 
-Nothing in the package throws one yet: the class, the codes and their fields
-are built, the operations that raise them are not. The table below says what
-each code is for.
+The table below says what each code is for; some belong to operations not
+built yet.
 
 ```ts
 import { isCockpitError } from '@duongtdn/agent-cockpit/client';
