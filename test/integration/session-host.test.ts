@@ -203,6 +203,24 @@ function isRunning(pid: number): boolean {
   }
 }
 
+/**
+ * Tells whether a session's process has ended: gone, or a zombie not yet
+ * reaped. tmux, its parent, may reap it only at its next start or its end:
+ * a tmux built with libutempter clears the pane's utmp record through a
+ * helper it waits for, with tmux's SIGCHLD handler set aside, and a command
+ * that ends then has its signal lost.
+ */
+function hasEnded(pid: number): boolean {
+  let stat: string;
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  } catch {
+    return true;
+  }
+  // The state follows the command's name, in parentheses that may hold anything.
+  return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z');
+}
+
 async function expectFailure(operation: Promise<unknown>, reason: string): Promise<void> {
   const error = await operation.then(
     () => undefined,
@@ -630,10 +648,10 @@ describe('the sessions of the host', () => {
     await eventually(async () => expect(await host.isLive('exits')).toBe(false));
     expect(await host.processOf('exits')).toBeUndefined();
     expect(await host.list()).toEqual(['stays']);
-    // tmux may report the session gone before it has reaped the command: a
-    // zombie still answers a signal, so its end is awaited.
+    // tmux reports the session gone at the end of its terminal, which comes
+    // just before the end of its command: that end is awaited.
     expect(exiting).toBeDefined();
-    await eventually(() => expect(isRunning(exiting?.pid ?? 0)).toBe(false));
+    await eventually(() => expect(hasEnded(exiting?.pid ?? 0)).toBe(true));
   });
 
   it('lose at once a session whose command cannot be run, its start not failing', async () => {
@@ -657,7 +675,7 @@ describe('the sessions of the host', () => {
     expect(await host.kill('victim')).toBe('gone');
     expect(await host.isLive('victim')).toBe(false);
     expect(await host.isLive('stays')).toBe(true);
-    await eventually(() => expect(isRunning(victim?.pid ?? 0)).toBe(false));
+    await eventually(() => expect(hasEnded(victim?.pid ?? 0)).toBe(true));
   });
 
   it('refuse to type into a session that is gone, others still living', async () => {
