@@ -42,10 +42,29 @@ export async function pressOnDialog(
   taken: (screen: string | undefined) => boolean,
 ): Promise<void> {
   for (let presses = 1; presses <= DIALOG_KEY_PRESSES; presses++) {
-    await session.press(key);
+    const t0 = Date.now();
+    const fs = await import('node:fs');
+    fs.mkdirSync('/tmp/cockpit-diagnostics', { recursive: true });
+    fs.appendFileSync(
+      '/tmp/cockpit-diagnostics/presses.log',
+      `${t0} ${session.name} ${key} press#${presses}\n`,
+    );
+    await session.press(key).catch((error: unknown) => {
+      fs.appendFileSync(
+        '/tmp/cockpit-diagnostics/presses.log',
+        `${Date.now()} ${session.name} ${key} press#${presses} FAILED ${String(error)}\n`,
+      );
+      throw error;
+    });
     const deadline = Date.now() + DIALOG_KEY_PATIENCE_MS;
     while (Date.now() < deadline) {
-      if (taken(await screenOrNothing(session))) return;
+      if (taken(await screenOrNothing(session))) {
+        (await import('node:fs')).appendFileSync(
+          '/tmp/cockpit-diagnostics/presses.log',
+          `${Date.now()} ${session.name} ${key} press#${presses} taken after ${Date.now() - t0}ms\n`,
+        );
+        return;
+      }
       await pause(SCREEN_POLL_MS);
     }
   }

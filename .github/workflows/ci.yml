@@ -61,7 +61,19 @@ jobs:
       - run: pnpm test:browser
       # The pinned agent, in tmux, against a scripted API of the suite's own: no login, no secret.
       # Its sandbox rows fail, saying why, where the sandbox cannot run: the step above makes it run.
+      - name: Diagnose the dialog keys on this tmux (temporary)
+        run: |
+          for run in 1 2 3; do
+            mkdir -p /tmp/cockpit-diagnostics
+            echo "#### run $run $(date +%s%3N)" | tee -a /tmp/cockpit-diagnostics/presses.log >> /tmp/cockpit-diagnostics/screens.log
+            pnpm test:contract 2>&1 | grep -E '×|FAIL|Error|Tests ' || true
+          done
       - run: pnpm test:contract
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cockpit-diagnostics-node-${{ matrix.node }}
+          path: /tmp/cockpit-diagnostics
       - uses: actions/upload-artifact@v7
         if: always()
         with:
