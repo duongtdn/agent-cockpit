@@ -47,8 +47,10 @@ export interface ClaudeCodeSandbox {
    */
   readonly excludedCommands?: readonly string[];
   /**
-   * Whether a command the sandbox refuses may run outside it instead, once
-   * the person approves; `false` when left out.
+   * Whether a command the sandbox refuses may run outside it instead, with
+   * none of the cockpit's lines; `false` when left out. In `default` and
+   * `acceptEdits` the person approves each such command first; in
+   * `bypassPermissions` and `auto` it runs with no person asked.
    */
   readonly allowUnsandboxedCommands?: boolean;
 }

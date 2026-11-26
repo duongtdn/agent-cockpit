@@ -197,8 +197,8 @@ export interface ContractCockpitOptions {
 
 /**
  * The person's own settings that turn the sandbox on, as a person does (the
- * driver never turns it on): a command it cannot run in fails, never runs
- * unconfined.
+ * driver turns it on only when the app asks, with `claudeCode({ sandbox })`):
+ * a command it cannot run in fails, never runs unconfined.
  */
 export const PERSONS_SANDBOX = { sandbox: { enabled: true, failIfUnavailable: true } };
 

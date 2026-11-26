@@ -47,7 +47,10 @@ export interface Cockpit {
    * @returns `{ action: 'started', state }`: `busy` once the agent took the
    * prompt, `idle` for a job without one, `waiting` while a start-up dialog
    * waits for the person in the terminal, `ended` when the agent exited
-   * before it reported anything (`declined` when the person left a dialog).
+   * before it took the prompt: before it reported anything, or right after
+   * `SessionStart`, as an agent does whose sandbox, which the app asked
+   * for, failed in a way the driver's checks did not foresee (`declined`
+   * when the person left a dialog).
    * @throws `CockpitError` `unknown-job`, `invalid-arguments`;
    * `invalid-options` when the job's driver part does not fit, or opens the
    * network of a cockpit opened beyond loopback that the app did not

@@ -7,7 +7,10 @@ export interface SandboxLines {
     readonly deniedDomains: readonly string[];
     readonly allowedDomains: readonly string[];
   };
-  /** `false`: a command the sandbox would refuse never runs outside it instead. */
+  /**
+   * `false`: a command the sandbox would refuse never runs outside it
+   * instead. The app's own `sandbox.allowUnsandboxedCommands` replaces it.
+   */
   readonly allowUnsandboxedCommands: false;
 }
 
@@ -58,8 +61,10 @@ export function settingsFileDenies(personsSettingsFiles: readonly string[]): str
  * Gives the sandbox's lines: every address of the app's the confinement
  * names denied (the core's list: every loopback name and local address, on
  * every port of the app's), the listener the one address allowed, and
- * no command let out of the sandbox. They do not turn the sandbox on: that
- * stays the person's choice, and without it they change nothing.
+ * no command let out of the sandbox. They do not turn the sandbox on
+ * themselves: the person's own settings do, or the app's `sandbox` option,
+ * whose `allowUnsandboxedCommands` then replaces their `false`. Without
+ * the sandbox they change nothing.
  *
  * @param confinement - The launch's confinement.
  * @returns The sandbox's section of the settings.
