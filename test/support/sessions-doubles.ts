@@ -1,0 +1,261 @@
+import type {
+  Conversation,
+  Driver,
+  DriverEvent,
+  HookRequest,
+  Launch,
+  LaunchCommand,
+} from '../../src/server/driver.ts';
+import type {
+  Attachment,
+  SessionHost,
+  StartOptions,
+  TerminalSize,
+} from '../../src/server/session-host/session-host.ts';
+import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
+import type { HookAccess, SessionFolders } from '../../src/server/sessions/sessions.ts';
+
+/** What a deferred host call waits for: the test settles it. */
+interface Gate {
+  readonly promise: Promise<void>;
+  open(): void;
+  fail(error: unknown): void;
+}
+
+function gate(): Gate {
+  let open = () => {};
+  let fail: (error: unknown) => void = () => {};
+  const promise = new Promise<void>((resolve, reject) => {
+    open = resolve;
+    fail = reject;
+  });
+  return { promise, open, fail };
+}
+
+/** An attachment a test ends by hand. */
+export interface FakeAttachment extends Attachment {
+  /** Ends it, as the host does when its session is gone. */
+  end(): void;
+}
+
+function fakeAttachment(): FakeAttachment {
+  const ends: (() => void)[] = [];
+  let ended = false;
+  const end = () => {
+    if (ended) return;
+    ended = true;
+    for (const listener of ends) listener();
+  };
+  return {
+    onData: () => () => {},
+    onEnd(listener) {
+      if (ended) listener();
+      else ends.push(listener);
+      return () => {};
+    },
+    write: () => {},
+    resize: () => {},
+    detach: async () => end(),
+    end,
+  };
+}
+
+/**
+ * A session host in memory: sessions live from their start until the test
+ * says they are gone, or one is killed. Only what the sessions core uses
+ * does anything; the rest refuses, so that a test sees a new use.
+ */
+export interface FakeHost extends SessionHost {
+  /** The options of every start, in order. */
+  readonly starts: StartOptions[];
+  /** The names of every kill, in order. */
+  readonly kills: string[];
+  /** How many times the sessions were listed. */
+  readonly listings: number;
+  /** The attachments given, in order. */
+  readonly attachments: FakeAttachment[];
+  /** Makes a session live, as one left by an earlier run. */
+  leave(name: string): void;
+  /** Makes a session gone, as when its process exits. */
+  exit(name: string): void;
+  /** Makes the next start fail with the error. */
+  failNextStart(error: unknown): void;
+  /** Makes the next start wait until the test opens the gate it returns. */
+  holdNextStart(): Gate;
+  /** Makes the next list wait until the test opens the gate it returns. */
+  holdNextList(): Gate;
+  /** Makes every list fail, or work again. */
+  failLists(failing: boolean): void;
+  /** Makes the next kill fail with the error. */
+  failNextKill(error: unknown): void;
+}
+
+export function createFakeHost(): FakeHost {
+  const live = new Set<string>();
+  const starts: StartOptions[] = [];
+  const kills: string[] = [];
+  const attachments: FakeAttachment[] = [];
+  let listings = 0;
+  let nextStart: { error?: unknown; gate?: Gate } = {};
+  let nextList: Gate | undefined;
+  let listsFail = false;
+  let nextKillError: unknown;
+  const unused = () => Promise.reject(new Error('The sessions core does not use this.'));
+
+  return {
+    starts,
+    kills,
+    attachments,
+    get listings() {
+      return listings;
+    },
+    leave: (name) => void live.add(name),
+    exit: (name) => void live.delete(name),
+    failNextStart(error) {
+      nextStart = { error };
+    },
+    holdNextStart() {
+      const held = gate();
+      nextStart = { gate: held };
+      return held;
+    },
+    holdNextList() {
+      nextList = gate();
+      return nextList;
+    },
+    failLists(failing) {
+      listsFail = failing;
+    },
+    failNextKill(error) {
+      nextKillError = error;
+    },
+    checkMachine: unused,
+    async start(options) {
+      const { error, gate: held } = nextStart;
+      nextStart = {};
+      starts.push(options);
+      if (held) await held.promise;
+      if (error !== undefined) throw error;
+      if (live.has(options.name)) {
+        throw new SessionHostError('session-exists', `${options.name} lives.`);
+      }
+      live.add(options.name);
+    },
+    async list() {
+      listings += 1;
+      const seen = [...live];
+      const held = nextList;
+      nextList = undefined;
+      if (held) await held.promise;
+      if (listsFail) throw new SessionHostError('host-failed', 'tmux failed.');
+      return seen;
+    },
+    isLive: async (name) => live.has(name),
+    processOf: unused,
+    sendText: unused,
+    sendKeys: unused,
+    sendBytes: unused,
+    readScreen: unused,
+    async attach(name: string, _size: TerminalSize) {
+      if (!live.has(name)) throw new SessionHostError('no-session', `${name} does not live.`);
+      const attachment = fakeAttachment();
+      attachments.push(attachment);
+      return attachment;
+    },
+    countAttached: unused,
+    async kill(name) {
+      const error = nextKillError;
+      nextKillError = undefined;
+      if (error !== undefined) throw error;
+      kills.push(name);
+      return live.delete(name) ? 'killed' : 'gone';
+    },
+    shutDown: unused,
+  };
+}
+
+/** The hook of a stub driver: its path names the events it tells, its body is ignored. */
+export const STUB_EVENTS: Readonly<Record<string, readonly DriverEvent[]>> = {
+  '/ready': [{ type: 'ready' }],
+  '/prompt-taken': [{ type: 'prompt-taken' }],
+  '/working': [{ type: 'working' }],
+  '/turn-ended': [{ type: 'turn-ended', lastMessage: 'Done.' }],
+  '/turn-ended-silently': [{ type: 'turn-ended' }],
+  '/agent-exit': [{ type: 'ending', reason: 'agent-exit' }],
+  '/start-and-take': [{ type: 'ready' }, { type: 'prompt-taken' }],
+  '/background': [],
+};
+
+/** A driver for tests: it launches what it is told and reads hooks by their path alone. */
+export interface StubDriver extends Driver {
+  /** Every launch it was asked for, in order. */
+  readonly launches: Launch[];
+  /** Every conversation it was asked about, in order. */
+  readonly resumeQuestions: Conversation[];
+  /** What `canResume` answers: a value, or an error it rejects with. */
+  resumable: boolean | Error;
+  /** Makes the next launch fail with the error. */
+  failNextLaunch(error: unknown): void;
+}
+
+export const STUB_COMMAND: LaunchCommand = {
+  command: 'stub-agent',
+  args: ['--stub'],
+  environment: { STUB_AGENT: 'yes' },
+};
+
+export function createStubDriver(): StubDriver {
+  const launches: Launch[] = [];
+  const resumeQuestions: Conversation[] = [];
+  let nextLaunchError: unknown;
+  return {
+    launches,
+    resumeQuestions,
+    resumable: true,
+    terminalKeys: [],
+    silentStartCause: 'The stub agent sent no hook.',
+    failNextLaunch(error) {
+      nextLaunchError = error;
+    },
+    async launch(launch) {
+      launches.push(launch);
+      const error = nextLaunchError;
+      nextLaunchError = undefined;
+      if (error !== undefined) throw error;
+      return STUB_COMMAND;
+    },
+    readHook(request: HookRequest) {
+      return { events: STUB_EVENTS[request.path] ?? [] };
+    },
+    async canResume(conversation) {
+      resumeQuestions.push(conversation);
+      if (this.resumable instanceof Error) throw this.resumable;
+      return this.resumable;
+    },
+  };
+}
+
+/** Hook access that hands out a token per key and remembers what it revoked. */
+export interface RecordingHookAccess extends HookAccess {
+  readonly granted: string[];
+  readonly revoked: string[];
+}
+
+export function createRecordingHookAccess(url = 'http://127.0.0.1:4000'): RecordingHookAccess {
+  const granted: string[] = [];
+  const revoked: string[] = [];
+  return {
+    granted,
+    revoked,
+    grant(key) {
+      granted.push(key);
+      return { url, token: `token-of-${key}` };
+    },
+    revoke: (key) => void revoked.push(key),
+  };
+}
+
+/** Session folders under a fixed root, created nowhere. */
+export function stubFolders(root = '/state/sessions'): SessionFolders {
+  return { prepare: async (key) => `${root}/${key}` };
+}
