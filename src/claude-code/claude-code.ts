@@ -1,0 +1,100 @@
+import { randomUUID } from 'node:crypto';
+import { rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { Driver, HookAddress, Launch, LaunchCommand } from '../server/driver.js';
+import type { KeyRule } from '../shared/wire.js';
+import { agentConfigFolder, keepsConversation } from './conversations.js';
+import { HOOK_PATH, readHook } from './hook-payloads.js';
+import {
+  AGENT_COMMAND,
+  agentArguments,
+  agentEnvironment,
+  sessionStartCommand,
+} from './launching.js';
+import { type CheckedOptions, type ClaudeCodeOptions, checkOptions } from './options.js';
+import { settingsDocument } from './settings-document.js';
+
+/** The session's settings, which carry the token in the HTTP hooks' header. */
+const SETTINGS_FILE = 'settings.json';
+
+/** Where the `SessionStart` hook reports, with the token: its command line names only this file. */
+const ADDRESS_FILE = 'hook-address.json';
+
+/**
+ * Claude Code's one terminal key: Shift+Enter sends ESC CR, a line break in
+ * its input box, where a terminal's bare CR would submit.
+ */
+const TERMINAL_KEYS: readonly KeyRule[] = [{ key: 'Enter', modifiers: ['shift'], send: '\x1b\r' }];
+
+const SILENT_START_CAUSE =
+  "Claude Code's SessionStart hook never reported: its hooks may be turned off " +
+  '(disableAllHooks, or managed settings that allow only their own), or the agent ' +
+  'stopped before it took input.';
+
+/**
+ * Creates the Claude Code driver, which `createCockpit` takes as its
+ * `driver`. It launches `claude` from the `PATH` of the server's
+ * environment, in the session's folder, with settings of its own written in
+ * the cockpit's state folder: the hooks that report to the cockpit and the
+ * app's permission rules.
+ *
+ * @param options - The permission mode every session is launched in
+ * (`default` when left out) and the permission rules its settings carry.
+ * @returns The driver.
+ * @throws `CockpitError` `invalid-options` when the options do not fit,
+ * any option other than these two among them.
+ */
+export function claudeCode(options?: ClaudeCodeOptions): Driver {
+  const checked = checkOptions(options);
+  return {
+    terminalKeys: TERMINAL_KEYS,
+    silentStartCause: SILENT_START_CAUSE,
+    launch: (launch) => launchSession(launch, checked),
+    readHook,
+    canResume: ({ conversationId }) =>
+      keepsConversation(agentConfigFolder(process.env), conversationId),
+  };
+}
+
+async function launchSession(launch: Launch, options: CheckedOptions): Promise<LaunchCommand> {
+  const address: HookAddress = { url: hookUrl(launch.hooks.url), token: launch.hooks.token };
+  const addressFile = join(launch.files, ADDRESS_FILE);
+  const settingsFile = join(launch.files, SETTINGS_FILE);
+  await writePrivateFile(addressFile, JSON.stringify(address));
+  await writePrivateFile(
+    settingsFile,
+    JSON.stringify(
+      settingsDocument({
+        hookUrl: address.url,
+        token: address.token,
+        sessionStartCommand: sessionStartCommand(addressFile),
+        permissions: options.permissions,
+      }),
+    ),
+  );
+  return {
+    command: AGENT_COMMAND,
+    args: agentArguments({
+      conversationId: launch.conversationId,
+      settingsFile,
+      permissionMode: options.permissionMode,
+      prompt: launch.prompt,
+    }),
+    environment: agentEnvironment(launch.environment),
+  };
+}
+
+function hookUrl(base: string): string {
+  return `${base.replace(/\/+$/, '')}${HOOK_PATH}`;
+}
+
+/**
+ * Writes a file only the app's user can read, whole or not at all: written
+ * aside, then put in place, so the agent never reads half of it and a file
+ * of an earlier launch never keeps wider rights.
+ */
+async function writePrivateFile(path: string, content: string): Promise<void> {
+  const aside = `${path}.${randomUUID()}`;
+  await writeFile(aside, content, { mode: 0o600, flag: 'wx' });
+  await rename(aside, path);
+}

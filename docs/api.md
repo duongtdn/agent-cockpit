@@ -40,8 +40,14 @@ yet.
 
 ### `@duongtdn/agent-cockpit/claude-code`
 
-Runs in Node, in the app's server: the Claude Code driver. It exports nothing
-yet.
+Runs in Node, in the app's server: the Claude Code driver.
+
+| Export              | Kind     | What it is                                                                                                               |
+| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `claudeCode`        | function | `claudeCode(options?)` creates the driver `createCockpit` takes; see [Options](#options). Throws `invalid-options`.      |
+| `ClaudeCodeOptions` | type     | `{ permissionMode?, permissions? }`: the driver's options.                                                               |
+| `PermissionMode`    | type     | `'default' \| 'acceptEdits' \| 'plan' \| 'auto' \| 'dontAsk' \| 'bypassPermissions'`: the mode a session is launched in. |
+| `PermissionRules`   | type     | `{ allow?, ask?, deny? }`: permission rules, as Claude Code's settings write them (`Read`, `Bash(git push:*)`).          |
 
 ### `@duongtdn/agent-cockpit/channel`
 
@@ -79,7 +85,20 @@ Runs in the browser: the mounted terminal. It exports nothing yet.
 
 ## Options
 
-Nothing takes options yet.
+### `claudeCode(options?)`
+
+| Option           | Default     | What it does                                                                                                                                                                                    |
+| ---------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `permissionMode` | `'default'` | The mode every session is launched in (`--permission-mode`). It is always passed, so the person's own `defaultMode` never applies by accident.                                                  |
+| `permissions`    | none        | Rules to allow, ask and deny, written in every session's settings, above the person's and the project's. Claude Code weighs deny, then ask, then allow: an allow never lifts their deny or ask. |
+
+Any other option is refused with `invalid-options`, never ignored. The driver
+launches `claude` from the `PATH` of the server's environment, without the
+variables Claude Code sets for the programs it runs (`CLAUDE_CODE_*`,
+`CLAUDECODE`), so a server started from a Claude Code terminal does not hand
+that session's to its agents. Each session's settings and its token are
+written in the cockpit's state folder, readable by the app's user alone;
+the token is never on a command line or in the environment.
 
 ## Operations
 

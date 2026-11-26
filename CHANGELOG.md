@@ -19,3 +19,9 @@ Nothing is published yet.
   error's `name`, `code`, `message` and fields.
 - The types `SessionState`, `Pending` and `StartupDialog`, from `.` and
   `./client`: what the errors' fields are made of.
+- `claudeCode({ permissionMode?, permissions? })` from `./claude-code`, with
+  the types `ClaudeCodeOptions`, `PermissionMode` and `PermissionRules`: the
+  Claude Code driver, which launches `claude` with settings of its own in the
+  cockpit's state folder and without the inherited `CLAUDE_CODE_*` and
+  `CLAUDECODE` variables. Any other option is refused with
+  `invalid-options`. No cockpit takes it yet.
