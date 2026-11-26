@@ -121,10 +121,25 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   `submitInputBox()`. Only a test of what an Enter does (behavior 4: keys
   typed before `SessionStart` keep their text, not surely their Enter)
   presses it bare.
+- **The confinement rows** (`confinement.test.ts`, `network-by-mode.test.ts`)
+  run sessions with `claudeCode()`'s own lines; the sandbox is turned on as a
+  person does, in the user's `settings.json` of the agent's configuration
+  folder (`personsSettings`), with `failIfUnavailable`. They need bubblewrap
+  and socat, and user namespaces (`bwrap --unshare-all --ro-bind / / true`
+  must run). Where the sandbox cannot run, those rows fail saying why
+  (`itInTheSandbox`); only CI may leave them out, by
+  `COCKPIT_CONTRACT_SANDBOX_LACKING=<why>` with `CI=true`, and the results
+  then say so. A mode's network is measured by `measureReach`: a person at
+  the terminal approves each command `auto`'s server-side check would judge
+  (the scripted API cannot stand in for it) and answers every network ask
+  "No"; the driver counts a mode as confined only where rows 80–81 show
+  every reach asked about or refused.
 - Each run writes `test-results/contract.json` (git-ignored; CI keeps it as
   an artifact): the agent's version, the date, each behavior's number, title
-  and outcome, and every Enter the agent lost in a submit (`lostEnters`: the
-  test, the text, how many), which fails no test.
+  and outcome, every Enter the agent lost in a submit (`lostEnters`: the
+  test, the text, how many), which fails no test, whether the sandbox ran
+  (`sandbox`: when not, why and the rows left out), and what a sandboxed
+  command reached in each mode measured (`networkByMode`).
 
 ## The fake agent
 
