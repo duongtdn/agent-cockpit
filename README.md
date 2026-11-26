@@ -40,7 +40,11 @@ has the details.
 
 ## A first working page
 
-Not written yet: it comes with the server, the client and the terminal.
+Not written up yet. Until it is,
+[examples/jobs-console](examples/jobs-console/DEMO.md) is one, whole: a
+Fastify app that mounts the cockpit, offers a job and prints its link, and a
+page in plain JavaScript that runs the job, follows the sessions and mounts
+a terminal. It runs with no login against a scripted API.
 
 ## Documents
 

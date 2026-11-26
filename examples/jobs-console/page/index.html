@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jobs console</title>
+    <link rel="stylesheet" href="/modules/xterm/xterm.css" />
+    <link rel="stylesheet" href="/page.css" />
+    <!--
+      The browser loads the package's modules as they are built: the import
+      map gives each bare name the path the app serves it at. No bundler.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@duongtdn/agent-cockpit/client": "/modules/agent-cockpit/client/index.js",
+          "@duongtdn/agent-cockpit/terminal": "/modules/agent-cockpit/terminal/index.js",
+          "@xterm/xterm": "/modules/xterm/xterm.mjs",
+          "@xterm/addon-fit": "/modules/addon-fit/addon-fit.mjs"
+        }
+      }
+    </script>
+    <script type="module" src="/page.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Jobs console</h1>
+      <p id="connection" role="status">Connecting…</p>
+    </header>
+    <main>
+      <section aria-labelledby="run-heading">
+        <h2 id="run-heading">Explain a file</h2>
+        <form id="run-form">
+          <label>File <input name="file" required placeholder="README.md" autocomplete="off" /></label>
+          <button type="submit">Run</button>
+        </form>
+        <p id="run-result" role="status"></p>
+      </section>
+      <section aria-labelledby="sessions-heading">
+        <h2 id="sessions-heading">Sessions</h2>
+        <p id="no-sessions" hidden>No sessions yet: run the job.</p>
+        <table id="sessions" hidden>
+          <thead>
+            <tr>
+              <th scope="col">Session</th>
+              <th scope="col">State</th>
+              <th scope="col">States seen</th>
+              <th scope="col">Since</th>
+              <th scope="col">Last answer</th>
+              <th scope="col"><span class="visually-hidden">Terminal</span></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section id="terminal-section" aria-labelledby="terminal-heading" hidden>
+        <h2 id="terminal-heading">
+          Terminal of <span id="terminal-key"></span>
+          <small id="terminal-status"></small>
+        </h2>
+        <div id="terminal"></div>
+      </section>
+    </main>
+  </body>
+</html>

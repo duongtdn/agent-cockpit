@@ -1,0 +1,71 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+body {
+  margin: 0 auto;
+  max-width: 64rem;
+  padding: 1rem;
+}
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+#connection {
+  margin: 0;
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  vertical-align: top;
+}
+td[data-state] {
+  font-weight: 600;
+}
+td[data-state="busy"],
+td[data-state="starting"] {
+  color: #b26b00;
+}
+td[data-state="idle"] {
+  color: #1d7a36;
+}
+td[data-state="ended"] {
+  opacity: 0.6;
+}
+.last-answer {
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#terminal {
+  height: 28rem;
+  padding: 0.25rem;
+  background: #000;
+}
+#terminal-status {
+  font-weight: normal;
+  opacity: 0.7;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
