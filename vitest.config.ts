@@ -10,6 +10,7 @@ export default defineConfig({
         test: {
           name: 'integration',
           include: ['test/integration/**/*.test.ts'],
+          globalSetup: ['test/support/tmux-sockets-global.ts'],
           setupFiles: ['test/support/tmux-sockets-setup.ts'],
           testTimeout: 15_000,
         },
@@ -21,6 +22,7 @@ export default defineConfig({
         test: {
           name: 'contract',
           include: ['test/contract/**/*.test.ts'],
+          globalSetup: ['test/support/tmux-sockets-global.ts'],
           setupFiles: ['test/support/tmux-sockets-setup.ts'],
           testTimeout: 60_000,
         },
@@ -32,6 +34,7 @@ export default defineConfig({
         test: {
           name: 'browser',
           include: ['test/browser/**/*.test.ts'],
+          globalSetup: ['test/support/tmux-sockets-global.ts'],
           setupFiles: ['test/support/tmux-sockets-setup.ts'],
           testTimeout: 30_000,
         },

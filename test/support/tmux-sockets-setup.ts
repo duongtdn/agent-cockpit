@@ -1,18 +1,15 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterAll } from 'vitest';
+import { afterAll, inject } from 'vitest';
 
 /**
  * Gives each test file that runs tmux a socket folder of its own
  * (`TMUX_TMPDIR`), and fails the file if it leaves a socket there: a tmux
  * server still running, or the file a server that ended left behind. The
  * person's own sockets, under `/tmp/tmux-<uid>`, are never seen nor touched.
- *
- * The folder is under `/tmp` itself, short, so that a socket's path keeps
- * within the 107 bytes Linux allows, whatever the machine's `TMPDIR`.
  */
-const folder = mkdtempSync('/tmp/cockpit-tmux-');
+const folder = mkdtempSync(join(inject('tmuxSocketsRoot'), 'f'));
 process.env.TMUX_TMPDIR = folder;
 const sockets = join(folder, `tmux-${process.getuid?.()}`);
 
