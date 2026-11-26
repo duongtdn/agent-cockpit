@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { appFileName } from '../app-name.js';
 import type { TerminalSize } from './session-host.js';
 
 /**
@@ -7,45 +7,17 @@ import type { TerminalSize } from './session-host.js';
  */
 const SOCKET_PREFIX = 'agent-cockpit-';
 
-/** What a socket name keeps of an app's name as it is. */
-const PLAIN_IN_SOCKET_NAME = /[a-z0-9-]/;
-
-/**
- * The most characters of a socket's name. tmux puts the socket at
- * `<TMUX_TMPDIR or /tmp>/tmux-<uid>/<name>`, and the path of a unix socket
- * holds 103 bytes on macOS (107 on Linux). Under `/tmp`, with a user id of
- * ten digits, the folder takes 21 of them: 64 for the name leave 18 for a
- * longer `TMUX_TMPDIR`.
- */
-const SOCKET_NAME_LENGTH = 64;
-
-/** Hexadecimal digits of the hash that ends the socket name of a long app name. */
-const SOCKET_HASH_LENGTH = 16;
-
 /**
  * Derives the name of an app's tmux socket (`tmux -L`) from the app's name:
- * `agent-cockpit-`, then the name with its lower-case letters, digits and
- * hyphens kept and every other character written as `_`, its code point in
- * hexadecimal, `_`. A name that would pass 64 characters keeps its
- * beginning, then `.` and 16 hexadecimal digits of the SHA-256 of the app's
- * name, 64 characters in all: longer, the socket's path would not fit a unix
- * socket. The result is a plain file name on any file system, and two names
- * do not share a socket — not even two that differ only by case.
+ * `agent-cockpit-`, then the app's file name ({@link appFileName}), 64
+ * characters at most: longer, the socket's path would not fit a unix socket.
+ * Two names do not share a socket — not even two that differ only by case.
  *
  * @param appName - The app's name, any string.
  * @returns The socket's name, of 64 characters at most.
  */
 export function socketNameFor(appName: string): string {
-  const encoded = Array.from(appName, (character) =>
-    PLAIN_IN_SOCKET_NAME.test(character)
-      ? character
-      : `_${(character.codePointAt(0) ?? 0).toString(16)}_`,
-  );
-  const name = `${SOCKET_PREFIX}${encoded.join('')}`;
-  if (name.length <= SOCKET_NAME_LENGTH) return name;
-  const hash = createHash('sha256').update(appName).digest('hex').slice(0, SOCKET_HASH_LENGTH);
-  // No other socket name holds a ".", so none is taken for a hashed one.
-  return `${name.slice(0, SOCKET_NAME_LENGTH - SOCKET_HASH_LENGTH - 1)}.${hash}`;
+  return `${SOCKET_PREFIX}${appFileName(appName)}`;
 }
 
 /**
