@@ -1,8 +1,8 @@
-import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import type { AgentFailure, AgentVersion, TestedRange } from '../server/agent-status.js';
+import { runBounded } from './bounded-run.js';
 import { AGENT_COMMAND } from './launching.js';
 
 /**
@@ -21,9 +21,6 @@ const VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]*[0-9A-Za-z])?(?=\s|$)/;
  * that launches, so the app gets the refusal and its reason.
  */
 const VERSION_TIMEOUT_MS = 10_000;
-
-/** The most of what the agent printed a failure keeps: enough for an error's first lines. */
-const MOST_OUTPUT_CHARACTERS = 4096;
 
 /**
  * An executable as the cache knows it: the file it really is, as it was
@@ -109,66 +106,16 @@ async function executableFile(program: string): Promise<ExecutableFile> {
   return { realPath, identity: `${ino}:${mtimeNs}:${ctimeNs}` };
 }
 
-/**
- * Runs `claude --version` in a process group of its own, so that on a
- * timeout the agent and whatever it started are ended together, and the
- * answer does not wait for a child still holding its output.
- */
-function askVersion(
+async function askVersion(
   program: string,
   environment: Readonly<Record<string, string>>,
   timeoutMs: number,
 ): Promise<Answer> {
   const asked = `${AGENT_COMMAND} --version`;
-  return new Promise((resolve) => {
-    let output = '';
-    const failed = (reason: string) => resolve({ failure: { reason, output: cut(output) } });
-    const child = spawn(program, ['--version'], {
-      env: environment,
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const timer = setTimeout(() => {
-      endGroup(child.pid);
-      failed(`${asked} did not answer within ${timeoutMs / 1000} s`);
-    }, timeoutMs);
-    const read = (chunk: Buffer) => {
-      if (output.length <= MOST_OUTPUT_CHARACTERS) output += chunk.toString('utf8');
-    };
-    child.stdout.on('data', read);
-    child.stderr.on('data', read);
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      failed(`${asked} could not be started: ${error.message}`);
-    });
-    child.on('close', (status, signal) => {
-      clearTimeout(timer);
-      if (status !== 0) {
-        failed(
-          `${asked} ${status === null ? `ended by ${signal}` : `exited with status ${status}`}`,
-        );
-        return;
-      }
-      const version = parseVersion(output);
-      if (version === undefined) failed(`${asked} printed no version`);
-      else resolve({ version });
-    });
-  });
-}
-
-function endGroup(pid: number | undefined): void {
-  if (pid === undefined) return;
-  try {
-    process.kill(-pid, 'SIGKILL');
-  } catch {
-    // Gone already.
-  }
-}
-
-function cut(output: string): string {
-  return output.length <= MOST_OUTPUT_CHARACTERS
-    ? output
-    : `${output.slice(0, MOST_OUTPUT_CHARACTERS)}…`;
+  const { output, failure } = await runBounded(program, ['--version'], environment, timeoutMs);
+  const version = failure === undefined ? parseVersion(output) : undefined;
+  if (version !== undefined) return { version };
+  return { failure: { reason: `${asked} ${failure ?? 'printed no version'}`, output } };
 }
 
 /**
