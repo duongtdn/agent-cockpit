@@ -9,6 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { connect, createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -98,6 +99,29 @@ function post(
     },
     ...(method === 'GET' ? {} : { body }),
   });
+}
+
+/**
+ * Sends a hook with the headers a test chooses, `Host` included, which
+ * `fetch` sets by itself: as a browser or a page's script would send it.
+ */
+async function postAs(
+  listener: AgentListener,
+  headers: Record<string, string>,
+): Promise<{ status: number; body: string }> {
+  const request = httpRequest({
+    host: '127.0.0.1',
+    port: listener.port,
+    path: '/hooks',
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    setHost: false,
+  });
+  request.end('{"hook_event_name":"Stop"}');
+  const [response] = (await once(request, 'response')) as [IncomingMessage];
+  const chunks: Buffer[] = [];
+  for await (const chunk of response) chunks.push(chunk as Buffer);
+  return { status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') };
 }
 
 describe('the agent-facing listener', () => {
@@ -314,6 +338,72 @@ describe('the agent-facing listener', () => {
       fail = false;
       expect((await post(listener, { token })).status).toBe(200);
       expect(received).toHaveLength(1);
+    });
+  });
+  describe('a request that looks like a browser’s', () => {
+    it('passes what the hooks send: Host 127.0.0.1 and its port, no Origin', async () => {
+      const listener = await open();
+      const { token } = listener.hooks.grant('a');
+
+      const answer = await postAs(listener, {
+        host: `127.0.0.1:${listener.port}`,
+        authorization: `Bearer ${token}`,
+      });
+
+      expect(answer.status).toBe(200);
+      expect(received).toHaveLength(1);
+    });
+
+    it.each([
+      ['a page’s', 'http://127.0.0.1:8765'],
+      ['its own', 'self'],
+      ['an opaque', 'null'],
+    ])('is refused 403 with %s Origin, even with a live token', async (_, origin) => {
+      const listener = await open();
+      const { token } = listener.hooks.grant('a');
+
+      const answer = await postAs(listener, {
+        host: `127.0.0.1:${listener.port}`,
+        origin: origin === 'self' ? listener.url : origin,
+        authorization: `Bearer ${token}`,
+      });
+
+      expect(answer).toEqual({ status: 403, body: '' });
+      expect(received).toEqual([]);
+    });
+
+    it.each([
+      ['another name for loopback', (port: number) => `localhost:${port}`],
+      ['a rebinding DNS name', (port: number) => `attacker.example:${port}`],
+      ['another port', (port: number) => `127.0.0.1:${port + 1}`],
+      ['no port', () => '127.0.0.1'],
+    ])('is refused 403 with a Host of %s, even with a live token', async (_, hostOf) => {
+      const listener = await open();
+      const { token } = listener.hooks.grant('a');
+
+      const answer = await postAs(listener, {
+        host: hostOf(listener.port),
+        authorization: `Bearer ${token}`,
+      });
+
+      expect(answer).toEqual({ status: 403, body: '' });
+      expect(received).toEqual([]);
+    });
+
+    it('is refused before the token is read: with no token or a wrong one, still 403, never 401', async () => {
+      const listener = await open();
+      listener.hooks.grant('a');
+      const host = `127.0.0.1:${listener.port}`;
+
+      expect((await postAs(listener, { host, origin: 'http://127.0.0.1:8765' })).status).toBe(403);
+      expect(
+        (
+          await postAs(listener, {
+            host: `localhost:${listener.port}`,
+            authorization: `Bearer ${'x'.repeat(43)}`,
+          })
+        ).status,
+      ).toBe(403);
     });
   });
 });

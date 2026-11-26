@@ -5,6 +5,7 @@ import { readBodyWithin } from '../http/body.js';
 import type { HookAccess } from '../sessions/sessions.js';
 import { readOwnFile, type UntrustedStateError } from '../state/own-files.js';
 import { writePrivateFile } from '../state/private-files.js';
+import { looksLikeBrowser } from './browser-like.js';
 import { createHookTokens, type HookTokens } from './hook-tokens.js';
 
 /** The only address the listener binds: never reachable from the network. */
@@ -59,8 +60,10 @@ export interface AgentListener {
  * for one the system chooses. The port bound is remembered.
  *
  * It serves `POST /hooks`, every request carrying a live session's token as
- * `Authorization: Bearer`; a request without one is refused 401 before
- * anything else is said, and its body is not read.
+ * `Authorization: Bearer`. A request that looks like a browser's — an
+ * `Origin` header, or a `Host` other than exactly `127.0.0.1:<port>` — is
+ * refused 403 before its token is read; one without a live token is refused
+ * 401 before anything else is said. A refused request's body is not read.
  *
  * @param options - See {@link AgentListenerOptions}.
  * @returns The listener, listening.
@@ -78,7 +81,7 @@ export async function openAgentListener(options: AgentListenerOptions): Promise<
   const tokens = createHookTokens(url);
   // Requests arrive on later turns of the event loop: none is missed.
   server.on('request', (request, response) => {
-    void serve(request, response, tokens, options);
+    void serve(request, response, port, tokens, options);
   });
   if (port !== remembered) {
     await writePrivateFile(portFile, String(port)).catch(async (error: unknown) => {
@@ -141,9 +144,12 @@ function close(server: Server): Promise<void> {
 async function serve(
   request: IncomingMessage,
   response: ServerResponse,
+  port: number,
   tokens: HookTokens,
   { receive, reportFailure }: Pick<AgentListenerOptions, 'receive' | 'reportFailure'>,
 ): Promise<void> {
+  // Before the token: a page learns nothing of the listener's answer to one.
+  if (looksLikeBrowser(request.headers, port)) return answer(response, 403);
   const key = tokens.keyOf(bearerToken(request.headers.authorization));
   if (key === undefined) return answer(response, 401);
   const path = new URL(request.url ?? '/', 'http://listener').pathname;
