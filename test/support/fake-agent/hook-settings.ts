@@ -25,6 +25,16 @@ interface HookGroup {
 /** The hooks of a settings file: for each event, its groups in the order of the file. */
 export type HookSettings = Readonly<Record<string, readonly HookGroup[]>>;
 
+/**
+ * The fields of a hook the fake agent takes, by the hook's type. Any other
+ * (`async`, `if`, `once`, …) would change when or how Claude Code runs the
+ * hook, which the fake agent does not play.
+ */
+const PLAYED_FIELDS: Readonly<Record<HookDefinition['type'], readonly string[]>> = {
+  command: ['type', 'command', 'timeout'],
+  http: ['type', 'url', 'headers', 'timeout'],
+};
+
 /** The matchers that select every tool: the only ones the settings the fake agent plays have. */
 const MATCHERS_OF_EVERY_TOOL: readonly (string | undefined)[] = [undefined, '', '*'];
 
@@ -32,12 +42,17 @@ const MATCHERS_OF_EVERY_TOOL: readonly (string | undefined)[] = [undefined, '', 
  * Reads the hooks of a settings file; what else the file holds is not the
  * fake agent's to play.
  *
+ * A hook's `timeout` is taken and not played: the fake agent never times a
+ * hook out. Seen of Claude Code, a hook that times out behaves as one with
+ * no decision, which a test gets by answering the hook with none.
+ *
  * @param text - The file's content, as JSON.
  * @returns The hooks of each event.
  * @throws `Error` beginning "the fake agent cannot play" for what is no
  * JSON, hooks that are not groups of hooks by event, a hook that is neither
- * a command nor an HTTP hook to a plain `http` address, and a matcher that
- * selects tools.
+ * a command nor an HTTP hook to a plain `http` address, a hook with a field
+ * beyond its command or its address and headers and a `timeout`, and a
+ * matcher that selects tools.
  */
 export function parseHookSettings(text: string): HookSettings {
   const hooks = hooksIn(text);
@@ -79,9 +94,16 @@ function readGroup(event: string, group: unknown): HookGroup {
 }
 
 function readHook(hook: unknown): HookDefinition {
-  const { type, command, url, headers } = (isRecord(hook) ? hook : {}) as Partial<RawHook>;
-  if (type === 'command' && typeof command === 'string') return { type, command };
-  if (type !== 'http') throw cannotPlay(`a hook of type ${JSON.stringify(type)}`);
+  if (!isRecord(hook)) throw cannotPlay(`a hook that is no object: ${JSON.stringify(hook)}`);
+  const { type, command, url, headers } = hook as Partial<RawHook>;
+  if (type !== 'command' && type !== 'http') {
+    throw cannotPlay(`a hook of type ${JSON.stringify(type)}`);
+  }
+  refuseUnplayedFields(type, hook);
+  if (type === 'command') {
+    if (typeof command !== 'string') throw cannotPlay('a command hook without its command');
+    return { type, command };
+  }
   // The hooks a session is given go to the loopback interface, which has no TLS.
   if (typeof url !== 'string' || !url.startsWith('http://')) {
     throw cannotPlay(
@@ -89,6 +111,15 @@ function readHook(hook: unknown): HookDefinition {
     );
   }
   return { type, url, headers: headers ?? {} };
+}
+
+function refuseUnplayedFields(type: HookDefinition['type'], hook: object): void {
+  const unplayed = Object.keys(hook).find((field) => !PLAYED_FIELDS[type].includes(field));
+  if (unplayed !== undefined) {
+    throw cannotPlay(
+      `the field ${JSON.stringify(unplayed)} of a ${type} hook: it plays a hook's ${PLAYED_FIELDS[type].slice(1).join(', ')} only`,
+    );
+  }
 }
 
 interface RawHook {

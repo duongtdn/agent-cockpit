@@ -32,7 +32,7 @@ describe('the fake agent, asked to play what it has no evidence for', () => {
     submit(played, 'not scripted');
 
     await expectFailure(played, /no turn for prompt 2.*1 turn/);
-    expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'Stop']);
+    expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'MessageDisplay', 'Stop']);
   });
 
   it('fails on a script it cannot read', async () => {
@@ -117,6 +117,7 @@ describe('the fake agent, asked to play what it has no evidence for', () => {
         'PreToolUse',
         'PermissionRequest',
         'PostToolUse',
+        'MessageDisplay',
         'Stop',
       ],
     ],
@@ -154,6 +155,36 @@ describe('the fake agent, asked to play what it has no evidence for', () => {
     },
   );
 
+  it('fails on a reply of several lines when MessageDisplay has a hook: how Claude Code parts one is not known', async () => {
+    const played = await start({ script: [[{ do: 'reply', text: 'One.\n\nTwo.' }]] });
+
+    submit(played, 'do it');
+
+    await expectFailure(played, /MessageDisplay.*a reply of several lines/);
+    expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit']);
+    expect(played.recorded).toEqual(['do it']);
+  });
+
+  it('fails when a MessageDisplay hook answers what it does not play, after the turn too', async () => {
+    const played = await start({
+      script: [[reply]],
+      hookAnswers: { MessageDisplay: { continue: false } },
+    });
+
+    submit(played, 'do it');
+
+    await expectFailure(played, /MessageDisplay.*"continue"/);
+  });
+
+  it('fails when a hook fails, with what its runner says of it', async () => {
+    const failed = Promise.reject(new Error('a Stop command hook exited with status 3'));
+    const played = await start({ script: [[reply]], hookAnswers: { Stop: failed } });
+
+    submit(played, 'do it');
+
+    await expectFailure(played, /a Stop command hook exited with status 3/);
+  });
+
   it('fails when a SessionEnd hook answers what it does not play, in place of its own exit', async () => {
     const played = await start({
       script: [[reply]],
@@ -183,13 +214,14 @@ describe('the fake agent, asked to play what it has no evidence for', () => {
         'UserPromptSubmit',
         'PreToolUse',
         'PostToolUse',
+        'MessageDisplay',
         'Stop',
       ]);
 
       submit(played, 'write it');
 
       await expectFailure(played, new RegExp(`Write.*${mode}`));
-      expect(played.fired.slice(5)).toEqual(['UserPromptSubmit', 'PreToolUse']);
+      expect(played.fired.slice(6)).toEqual(['UserPromptSubmit', 'PreToolUse']);
     },
   );
 

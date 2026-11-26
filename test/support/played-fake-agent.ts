@@ -22,8 +22,10 @@ export interface Played {
 export interface Playing {
   readonly script: readonly Turn[] | (() => readonly Turn[]);
   readonly mode?: string;
-  /** What the one hook of an event answers; `{}` for an event not named. */
+  /** What the one hook of an event answers, or a promise of it; `{}` for an event not named. */
   readonly hookAnswers?: Readonly<Record<string, unknown>>;
+  /** The events the settings give no hook; none by default: every event has its hook. */
+  readonly withoutHooksFor?: readonly string[];
 }
 
 /**
@@ -37,6 +39,7 @@ export async function playFakeAgent({
   script,
   mode = 'default',
   hookAnswers = {},
+  withoutHooksFor = [],
 }: Playing): Promise<Played> {
   const events: HookEvent[] = [];
   const fired: string[] = [];
@@ -52,10 +55,13 @@ export async function playFakeAgent({
       prompt: undefined,
     },
     hooks: {
+      configures: (event) => !withoutHooksFor.includes(event),
       fire: async (event) => {
         events.push(event);
         fired.push(event.name);
-        return [hookAnswers[event.name] ?? {}];
+        const answer = hookAnswers[event.name] ?? {};
+        // A plain answer comes at once, as it always did; a promised one when it settles.
+        return [answer instanceof Promise ? await answer : answer];
       },
     },
     transcript: {

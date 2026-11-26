@@ -157,6 +157,36 @@ describe('the guard of the real agent', () => {
   });
 
   it.each([
+    ['the work folder', folders.workFolder],
+    ['a folder above it', root],
+  ])(
+    'refuses a work folder in a git worktree, whose .git in %s is a file: the agent would read the settings of a repository elsewhere',
+    (_where, folder) => {
+      writeFile(
+        join(folder, '.git'),
+        `gitdir: ${join(elsewhere, 'repository', '.git', 'worktrees', 'work')}\n`,
+      );
+
+      expect(check()).toThrow(/the work folder .* is in a git worktree/);
+      expect(check()).toThrow(join(folder, '.git'));
+    },
+  );
+
+  it('refuses a work folder whose .git is a link: where it leads is not what was checked', () => {
+    const marker = join(folders.workFolder, '.git');
+    symlinkSync(elsewhere, marker);
+    made.push(marker);
+
+    expect(check()).toThrow(/is in a git worktree/);
+  });
+
+  it('lets a work folder start that is a git repository of its own: its .git is a folder', () => {
+    makeFolder(join(folders.workFolder, '.git'));
+
+    expect(check()).not.toThrow();
+  });
+
+  it.each([
     'HTTP_PROXY',
     'HTTPS_PROXY',
     'ALL_PROXY',
@@ -290,6 +320,12 @@ describe("the guard of the real agent's settings", () => {
       expect(withSettings({ hooks })).toThrow(/settings.*"hooks"/);
     },
   );
+
+  it.each([[null], ['x'], [7], [[]]])('refuses a hook that is no object: %j', (hook) => {
+    expect(withSettings({ hooks: { Stop: [{ hooks: [hook] }] } })).toThrow(
+      /The real agent is not started: .*settings.*"hooks", a hook that is no object/,
+    );
+  });
 });
 
 describe("the guard of the real agent's arguments", () => {
@@ -299,6 +335,18 @@ describe("the guard of the real agent's arguments", () => {
     expect(check({ args: [...options, '--', 'the prompt'] })).not.toThrow();
     expect(check({ args: ['--resume', SESSION[1] as string, '--', '--mcp-config'] })).not.toThrow();
   });
+
+  it.each(['--session-id', '--resume'])(
+    'refuses %s with anything but a UUID: the agent would read another value as an option',
+    (option) => {
+      for (const value of ['--mcp-config=/x.json', '-p', 'latest', `${SESSION[1]} `, '']) {
+        expect(check({ args: [option, value] }), value).toThrow(
+          new RegExp(`${option} is not a UUID`),
+        );
+      }
+      expect(check({ args: [option, (SESSION[1] as string).toUpperCase()] })).not.toThrow();
+    },
+  );
 
   it('refuses settings given as a file: it could change after its check', () => {
     const file = writeFile(join(root, 'settings.json'), JSON.stringify(settings));
@@ -375,6 +423,20 @@ describe('the guard of the settings files the real agent reads', () => {
 
     expect(check()).toThrow(/cannot be read as JSON/);
   });
+
+  it.each([
+    ['the work folder', join(folders.workFolder, '.mcp.json')],
+    ['a folder above the work folder', join(root, '.mcp.json')],
+    ["the machine's managed settings folder", join(managedSettingsFolder, 'managed-mcp.json')],
+  ])(
+    'refuses MCP servers configured in %s, whatever they are: no launch needs any yet',
+    (_where, path) => {
+      writeFile(path, JSON.stringify({ mcpServers: {} }));
+
+      expect(check()).toThrow(/MCP servers.*no launch needs them yet/);
+      expect(check()).toThrow(path);
+    },
+  );
 
   it('refuses a settings file that is a link to nowhere: what it will hold is not known', () => {
     const path = join(folders.workFolder, '.claude', 'settings.json');

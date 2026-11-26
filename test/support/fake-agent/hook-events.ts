@@ -77,10 +77,38 @@ export function stop(lastAssistantMessage: string): HookEvent {
   return event('Stop', { last_assistant_message: lastAssistantMessage });
 }
 
+/** A message of the agent's, as its turn and its text name it. */
+export interface DisplayedMessage {
+  /** The id of the turn the message is of. */
+  readonly turnId: string;
+  /** The message's own id. */
+  readonly messageId: string;
+  /** The text of the message: one line. */
+  readonly text: string;
+}
+
+/**
+ * A text of the agent's was shown. Seen of Claude Code for a text of one
+ * line: it comes as one part, the first and the last. How a longer text is
+ * cut into parts was not made out, so no such event is built here.
+ */
+export function messageDisplay(message: DisplayedMessage): HookEvent {
+  return event('MessageDisplay', {
+    turn_id: message.turnId,
+    message_id: message.messageId,
+    index: 0,
+    final: true,
+    delta: message.text,
+  });
+}
+
 /** The session ends, for this reason. */
 export function sessionEnd(reason: 'prompt_input_exit' | 'other'): HookEvent {
   return event('SessionEnd', { reason });
 }
+
+/** The events whose payload, seen of Claude Code, carries no permission mode. */
+const EVENTS_WITHOUT_THE_MODE: readonly string[] = ['MessageDisplay'];
 
 /**
  * Builds the payload a hook receives for an event.
@@ -94,7 +122,9 @@ export function payloadOf(session: SessionContext, hookEvent: HookEvent): Record
     session_id: session.sessionId,
     transcript_path: session.transcriptPath,
     cwd: session.cwd,
-    permission_mode: session.permissionMode,
+    ...(EVENTS_WITHOUT_THE_MODE.includes(hookEvent.name)
+      ? {}
+      : { permission_mode: session.permissionMode }),
     hook_event_name: hookEvent.name,
     ...hookEvent.fields,
   };

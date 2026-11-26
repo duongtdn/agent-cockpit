@@ -136,13 +136,8 @@ export const VARIABLE_RULES: Readonly<Record<string, VariableRule>> = {
   ...Object.fromEntries(TERMINAL_VARIABLES.map((name) => [name, theTerminals])),
 };
 
-/** A hook of the settings, as far as its rule reads it. */
-interface Hook {
-  readonly type?: unknown;
-  readonly url?: unknown;
-}
-
-function hookProblem(hook: Hook): string | undefined {
+function hookProblem(hook: unknown): string | undefined {
+  if (!isRecord(hook)) return `a hook that is no object: ${JSON.stringify(hook)}`;
   // A command hook is the test's own program, as the test itself is.
   if (hook.type === 'command') return undefined;
   if (hook.type !== 'http') return `a hook of type ${JSON.stringify(hook.type)}`;
@@ -157,7 +152,7 @@ const hooksThatStayLocal: Check<unknown> = (hooks) => {
   if (!groups.every((group) => isRecord(group) && Array.isArray(group.hooks))) {
     return 'not a list of groups of hooks for each event';
   }
-  const problems = groups.flatMap((group) => (group.hooks as Hook[]).map(hookProblem));
+  const problems = groups.flatMap((group) => (group.hooks as unknown[]).map(hookProblem));
   return problems.find((problem) => problem !== undefined);
 };
 
@@ -205,6 +200,14 @@ const settingsWrittenOut: Check<string> = (value, root) => {
   return settingsProblem(settings, root);
 };
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A conversation is named by its id and nothing else: the agent reads a
+ * value that begins with a dash as an option of its own, which no rule saw.
+ */
+const aUuid: Check<string> = (value) => (UUID.test(value) ? undefined : 'not a UUID');
+
 function notNeededYet(what: string): Check<string> {
   return refused(
     `${what}, and no launch needs it yet: one that does changes its rule in OPTION_RULES (${RULES_FILE})`,
@@ -216,8 +219,8 @@ function notNeededYet(what: string): Check<string> {
  * what the value must be. An option with no rule is refused.
  */
 export const OPTION_RULES: Readonly<Record<string, Check<string>>> = {
-  '--session-id': allowedAsIs,
-  '--resume': allowedAsIs,
+  '--session-id': aUuid,
+  '--resume': aUuid,
   '--settings': settingsWrittenOut,
   '--permission-mode': allowedAsIs,
   '--model': allowedAsIs,

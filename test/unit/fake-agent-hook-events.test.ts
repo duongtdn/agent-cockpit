@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { decisionOf } from '../support/fake-agent/hook-answers.ts';
 import {
+  messageDisplay,
   payloadOf,
   permissionRequest,
   postToolUse,
@@ -67,6 +68,22 @@ describe("the payloads of the fake agent's hooks", () => {
 
   it('Stop carries the last message of the turn (behavior 7)', () => {
     expect(payloadOf(session, stop('Done.'))).toMatchObject({ last_assistant_message: 'Done.' });
+  });
+
+  it('MessageDisplay carries a whole message as its one and last part, its turn, and no mode', () => {
+    const shown = messageDisplay({ turnId: 'turn-1', messageId: 'message-1', text: 'Done.' });
+
+    expect(payloadOf(session, shown)).toEqual({
+      session_id: session.sessionId,
+      cwd: '/work/unit',
+      transcript_path: session.transcriptPath,
+      hook_event_name: 'MessageDisplay',
+      turn_id: 'turn-1',
+      message_id: 'message-1',
+      index: 0,
+      final: true,
+      delta: 'Done.',
+    });
   });
 
   it('SessionEnd carries the reason', () => {

@@ -64,6 +64,7 @@ describe('the fake agent, interrupted with Esc', () => {
       'SessionStart',
       'think about it',
       'think about it',
+      'MessageDisplay',
       'Stop',
     ]);
   });
@@ -109,6 +110,67 @@ describe('the fake agent, interrupted with Esc', () => {
       lastPrompt: 'think about it',
       input: 'typed meanwhile',
     });
+  });
+});
+
+describe('the fake agent, showing a reply', () => {
+  const messageDisplays = (played: Played) =>
+    played.events.filter((event) => event.name === 'MessageDisplay').map((event) => event.fields);
+
+  it('tells MessageDisplay of the reply, then Stop', async () => {
+    const played = await playFakeAgent({ script: [[reply]] });
+
+    submit(played, 'do it');
+
+    await fires(played, 'Stop');
+    expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'MessageDisplay', 'Stop']);
+    expect(messageDisplays(played)).toEqual([
+      {
+        turn_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        message_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        index: 0,
+        final: true,
+        delta: 'Done.',
+      },
+    ]);
+  });
+
+  it('gives each turn a turn of its own and each reply a message of its own', async () => {
+    const played = await playFakeAgent({ script: [[reply], [reply]] });
+    submit(played, 'first');
+    await fires(played, 'Stop');
+
+    submit(played, 'second');
+
+    await vi.waitFor(() => expect(messageDisplays(played)).toHaveLength(2));
+    const [first, second] = messageDisplays(played);
+    expect(second?.turn_id).not.toBe(first?.turn_id);
+    expect(second?.message_id).not.toBe(first?.message_id);
+  });
+
+  it('ends the turn with Stop while a MessageDisplay hook has not answered', async () => {
+    const played = await playFakeAgent({
+      script: [[reply]],
+      hookAnswers: { MessageDisplay: new Promise(() => {}) },
+    });
+
+    submit(played, 'do it');
+
+    await becomesIdle(played);
+    expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'MessageDisplay', 'Stop']);
+  });
+
+  it('tells no MessageDisplay when the settings give it no hook, whatever the reply', async () => {
+    const played = await playFakeAgent({
+      script: [[{ do: 'reply', text: 'One.\n\nTwo.' }]],
+      withoutHooksFor: ['MessageDisplay'],
+    });
+
+    submit(played, 'do it');
+
+    await becomesIdle(played);
+    expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'Stop']);
+    expect(played.exits).toEqual([]);
   });
 });
 

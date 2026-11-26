@@ -75,7 +75,12 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   (`test/support/real-agent/`). The runner refuses to launch an agent that
   could reach Anthropic or the person's configuration: every variable,
   argument and setting of a launch, in every settings file the agent would
-  read, needs a rule that lets it pass. The rules are three tables in
+  read, needs a rule that lets it pass. Two things are refused whatever
+  they hold, since no rule could check them: a work folder in a git
+  worktree (the agent would read the settings of the repository it belongs
+  to, elsewhere), and a file that gives the agent MCP servers (`.mcp.json`
+  in the work folder or above it, the machine's managed one). The rules are
+  three tables in
   `test/support/real-agent/launch-rules.ts`; a feature that needs one more
   option or setting adds its rule there.
 - **A behavior that does not hold is a finding**: the test keeps stating the

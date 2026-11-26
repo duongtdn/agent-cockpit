@@ -101,6 +101,44 @@ describe("the hooks of the fake agent's settings file", () => {
     expect(hooksFor(parseHookSettings('{}'), 'Stop')).toEqual([]);
   });
 
+  it('takes the timeout of a hook, of either type, a 30-day one too (behavior 45)', () => {
+    const thirtyDays = 30 * 24 * 60 * 60;
+    const parsed = parseHookSettings(
+      settings({
+        Stop: [
+          {
+            hooks: [
+              { ...http('Stop'), timeout: thirtyDays },
+              { ...command, timeout: 5 },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(hooksFor(parsed, 'Stop').map((hook) => hook.type)).toEqual(['http', 'command']);
+  });
+
+  it.each([
+    ['async', { ...command, async: true }],
+    ['if', { ...command, if: 'Bash(git *)' }],
+    ['once', { ...command, once: true }],
+    ['shell', { ...command, shell: 'powershell' }],
+    ['if', { ...http('Stop'), if: 'Bash(git *)' }],
+    ['allowedEnvVars', { ...http('Stop'), allowedEnvVars: ['TOKEN'] }],
+    ['command', { ...http('Stop'), command: 'report Stop' }],
+  ])('refuses a hook with the field %j, which it does not play', (field, hook) => {
+    expect(() => parseHookSettings(settings({ Stop: [{ hooks: [hook] }] }))).toThrow(
+      new RegExp(`^the fake agent cannot play the field "${field}" of a ${hook.type} hook`),
+    );
+  });
+
+  it.each([[null], ['report Stop'], [[]]])('refuses a hook that is no object: %j', (hook) => {
+    expect(() => parseHookSettings(settings({ Stop: [{ hooks: [hook] }] }))).toThrow(
+      'the fake agent cannot play a hook that is no object',
+    );
+  });
+
   it('refuses a hook of a type it cannot play', () => {
     expect(() =>
       parseHookSettings(settings({ Stop: [{ hooks: [{ type: 'prompt', prompt: 'Check.' }] }] })),

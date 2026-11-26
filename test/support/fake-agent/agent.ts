@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import type { CommandLine } from './command-line.ts';
 import { type Decision, decisionOf } from './hook-answers.ts';
 import {
   type HookEvent,
+  messageDisplay,
   permissionRequest,
   postToolUse,
   preToolUse,
@@ -82,6 +84,8 @@ class Interruption extends Error {}
 
 /** A turn that runs. */
 interface RunningTurn {
+  /** The turn's id, which the messages shown in it carry. */
+  readonly id: string;
   /** Aborted when the turn is interrupted: the hooks it waits for are let go. */
   readonly signal: AbortSignal;
   /**
@@ -104,6 +108,7 @@ function startTurn(): RunningTurn {
   // An interruption nobody waits for, between two steps, is still handled by the next wait.
   interrupted.catch(() => {});
   return {
+    id: randomUUID(),
     signal: controller.signal,
     produced: false,
     toolCallOpen: false,
@@ -128,7 +133,8 @@ interface OpenDialog {
  * as the hooks, the keys and the screen show it — and only what was observed
  * of Claude Code. Asked for anything else (a prompt its script has no turn
  * for, an Enter while a turn runs, a hook's answer or a tool in a mode
- * whose effect is not known), it shows the problem on its screen and exits
+ * whose effect is not known, a hook that fails, a reply of several lines
+ * that `MessageDisplay` hooks would be told of), it shows the problem on its screen and exits
  * with {@link CANNOT_PLAY_STATUS}, with no hook: a guess would let a test
  * pass on a behavior Claude Code may not have.
  *
@@ -283,9 +289,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   function play(step: Step, running: RunningTurn): Promise<unknown> {
     switch (step.do) {
       case 'reply':
-        running.produced = true;
-        transcript.recordReply(step.text);
-        return running.during(fire(stop(step.text), running.signal));
+        return playReply(step.text, running);
       case 'tool':
       case 'question':
         return playCall(planCall(step), running);
@@ -294,6 +298,32 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       case 'exit':
         return end('prompt_input_exit', LEFT_STATUS);
     }
+  }
+
+  function playReply(text: string, running: RunningTurn): Promise<unknown> {
+    running.produced = true;
+    displayMessage(text, running);
+    transcript.recordReply(text);
+    return running.during(fire(stop(text), running.signal));
+  }
+
+  /**
+   * Tells the `MessageDisplay` hooks, when the settings have any, of a reply.
+   * Seen of Claude Code: the turn does not wait for their answer, and `Stop`
+   * follows while they are still open.
+   *
+   * @throws `Error` for a reply of several lines, which Claude Code tells in
+   * parts cut in a way that was not made out.
+   */
+  function displayMessage(text: string, running: RunningTurn): void {
+    if (!hooks.configures('MessageDisplay')) return;
+    if (text.includes('\n')) {
+      throw new Error(
+        'the settings have a MessageDisplay hook, and the script a reply of several lines: nothing tells how Claude Code parts it',
+      );
+    }
+    const shown = messageDisplay({ turnId: running.id, messageId: randomUUID(), text });
+    fire(shown, running.signal).catch((error: unknown) => fail(messageOf(error)));
   }
 
   async function playCall(planned: PlannedCall, running: RunningTurn): Promise<void> {

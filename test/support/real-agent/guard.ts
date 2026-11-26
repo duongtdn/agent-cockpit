@@ -13,7 +13,12 @@ import {
   settingsProblem,
   VARIABLE_RULES,
 } from './launch-rules.ts';
-import { settingsFilesOf } from './settings-sources.ts';
+import {
+  mcpServerFilesOf,
+  type SettingsFolders,
+  settingsFilesOf,
+  worktreeMarkerOf,
+} from './settings-sources.ts';
 
 /** Everything a launch hands the agent that decides whom it calls and whose files it reads. */
 export interface AgentLaunch {
@@ -57,19 +62,24 @@ const MANAGED_SETTINGS_FOLDERS = ['/etc/claude-code', '/mnt/c/Program Files/Clau
  *
  * A machine's managed settings are read under the same rules as any other
  * settings file: an organization's file that only adds permissions lets
- * the suite run, one that could send the agent elsewhere stops it.
+ * the suite run, one that could send the agent elsewhere stops it. A file
+ * that would give the agent MCP servers — a `.mcp.json` in the work folder
+ * or above it, the machine's managed one — stops it whatever it holds: no
+ * launch needs servers yet, so none has a rule.
  *
  * @param launch - What the agent would be started with.
  * @param machine - The machine's temporary folder, the person's home and
  * where managed settings are; this machine's by default.
  * @throws Error saying what is refused: a root that is not a folder the
  * runner made in the temporary folder, or that holds the person's home; a
- * work folder that is no real folder inside the root; a variable with no
+ * work folder that is no real folder inside the root, or that is in a git
+ * worktree, whose repository's settings are elsewhere; a variable with no
  * rule, or one missing or holding something else — `ANTHROPIC_BASE_URL`
  * anything but a loopback origin, `HOME`, `CLAUDE_CONFIG_DIR` or `TMPDIR`
  * anything but a real folder inside the root; an argument with no rule, or
  * settings given as a file; a setting with no rule, or one its rule
- * refuses, on the command line or in any settings file the agent reads.
+ * refuses, on the command line or in any settings file the agent reads; a
+ * file of MCP servers the agent would read.
  */
 export function assertStaysLocal(launch: AgentLaunch, machine: Machine = thisMachine()): void {
   const problem =
@@ -77,7 +87,8 @@ export function assertStaysLocal(launch: AgentLaunch, machine: Machine = thisMac
     workFolderProblem(launch) ??
     environmentProblem(launch.environment, launch.root) ??
     argumentsProblem(launch.args, launch.root) ??
-    settingsFilesProblem(launch, machine);
+    settingsFilesProblem(launch, machine) ??
+    mcpServerFilesProblem(launch, machine);
   if (problem !== undefined) throw new Error(`The real agent is not started: ${problem}.`);
 }
 
@@ -133,10 +144,27 @@ function isMadeByTheRunner(root: string, machine: Machine): boolean {
 }
 
 function workFolderProblem(launch: AgentLaunch): string | undefined {
-  const problem = aRealFolderInsideTheRoot(launch.workFolder, launch.root);
+  const problem =
+    aRealFolderInsideTheRoot(launch.workFolder, launch.root) ?? worktreeProblem(launch.workFolder);
   return problem === undefined
     ? undefined
     : `the work folder ${describe(launch.workFolder)} is ${problem}`;
+}
+
+function worktreeProblem(workFolder: string): string | undefined {
+  const marker = worktreeMarkerOf(workFolder);
+  return marker === undefined
+    ? undefined
+    : `in a git worktree (${marker} is no folder): the agent would read the settings of a repository elsewhere, which are not checked`;
+}
+
+function settingsFoldersOf(launch: AgentLaunch, machine: Machine): SettingsFolders {
+  return {
+    // Checked before: the environment has it, a real folder inside the root.
+    configFolder: launch.environment.CLAUDE_CONFIG_DIR as string,
+    workFolder: launch.workFolder,
+    managedSettingsFolders: machine.managedSettingsFolders,
+  };
 }
 
 function environmentProblem(
@@ -162,18 +190,19 @@ function environmentProblem(
 
 /** Every settings file the agent would read passes the rules the settings of the command line pass. */
 function settingsFilesProblem(launch: AgentLaunch, machine: Machine): string | undefined {
-  const files = settingsFilesOf({
-    // Checked before: the environment has it, a real folder inside the root.
-    configFolder: launch.environment.CLAUDE_CONFIG_DIR as string,
-    workFolder: launch.workFolder,
-    managedSettingsFolders: machine.managedSettingsFolders,
-  });
-  for (const file of files) {
+  for (const file of settingsFilesOf(settingsFoldersOf(launch, machine))) {
     const problem = settingsFileProblem(file, launch.root);
     if (problem !== undefined)
       return `the settings of ${file}, which the agent would read: ${problem}`;
   }
   return undefined;
+}
+
+function mcpServerFilesProblem(launch: AgentLaunch, machine: Machine): string | undefined {
+  const [file] = mcpServerFilesOf(settingsFoldersOf(launch, machine));
+  return file === undefined
+    ? undefined
+    : `the MCP servers of ${file}, which the agent would read: no launch needs them yet, so no rule lets any pass`;
 }
 
 function settingsFileProblem(file: string, root: string): string | undefined {

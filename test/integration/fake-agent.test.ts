@@ -101,11 +101,16 @@ function prepare(script: readonly Turn[] | undefined, settings: string, resumedI
   return { name, folder, settingsFile };
 }
 
+/** The settings a receiver gives, as far as a test picks events from them. */
+interface ReceiverSettings {
+  readonly hooks: Readonly<Record<string, unknown>>;
+}
+
 /** A fake agent run as a process of the test's own, with no terminal: for what a terminal hides, its exit. */
 interface DirectRun {
   readonly process: ChildProcess;
-  /** Fulfilled when the process has ended, with its status and what it wrote to its error output. */
-  readonly ended: Promise<{ status: number | null; errors: string }>;
+  /** Fulfilled when the process has ended, with its status, what it wrote to its error output and all it drew. */
+  readonly ended: Promise<{ status: number | null; errors: string; drawn: string }>;
 }
 
 function runDirectly(options: {
@@ -134,9 +139,14 @@ function runDirectly(options: {
   child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
     errors += chunk;
   });
+  let drawn = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+    drawn += chunk;
+  });
   const ended = once(child, 'close').then(([status]) => ({
     status: status as number | null,
     errors,
+    drawn,
   }));
   return { process: child, ended };
 }
@@ -324,7 +334,54 @@ describe('the fake agent: taking a prompt', () => {
       hook_event_name: 'Stop',
       last_assistant_message: 'All done.',
     });
-    expect(receiver.events()).toEqual(['SessionStart', 'UserPromptSubmit', 'Stop']);
+    expect(receiver.events()).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'MessageDisplay',
+      'Stop',
+    ]);
+  });
+
+  it('tells MessageDisplay of a reply as its one and last part, and ends the turn without its answer', async () => {
+    receiver.hold('MessageDisplay');
+    const session = await launch({ script: oneReply, prompt: 'hello' });
+
+    const shown = await receiver.next('MessageDisplay');
+    const stop = await receiver.next('Stop');
+
+    expect(shown.isOpen()).toBe(true);
+    expect(shown.payload).toEqual({
+      session_id: session.id,
+      transcript_path: stop.payload.transcript_path,
+      cwd: session.folder,
+      hook_event_name: 'MessageDisplay',
+      turn_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      message_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      index: 0,
+      final: true,
+      delta: 'Done.',
+    });
+    await expectScreen(session, 'state: idle');
+  });
+
+  it('goes on working when the address of its hooks does not answer (behavior 40)', async () => {
+    const silent = await startHookReceiver();
+    const { UserPromptSubmit, MessageDisplay } = (silent.settings() as ReceiverSettings).hooks;
+    const { Stop } = (receiver.settings() as ReceiverSettings).hooks;
+    const settings = { hooks: { UserPromptSubmit, MessageDisplay, Stop } };
+    await silent.close();
+
+    const run = runDirectly({
+      script: oneReply,
+      settings: JSON.stringify(settings),
+      prompt: 'hello',
+    });
+    const stop = await receiver.next('Stop');
+    run.process.kill('SIGTERM');
+
+    expect(stop.payload.last_assistant_message).toBe('Done.');
+    expect(receiver.events()).toEqual(['Stop']);
+    expect((await run.ended).status).toBe(143);
   });
 
   it('shows on its screen its state and the last prompt', async () => {
@@ -358,7 +415,7 @@ describe('the fake agent: what it cannot play', () => {
 
     await type(session, 'not scripted');
 
-    await expectFailed(session, ['SessionStart', 'UserPromptSubmit', 'Stop']);
+    await expectFailed(session, ['SessionStart', 'UserPromptSubmit', 'MessageDisplay', 'Stop']);
   });
 
   it('ends, failing, on an Enter while a turn runs', async () => {
@@ -391,7 +448,7 @@ describe('the fake agent: what it cannot play', () => {
 
     (await receiver.next('Stop')).answer({ decision: 'block', reason: 'Go on.' });
 
-    await expectFailed(session, ['SessionStart', 'UserPromptSubmit', 'Stop']);
+    await expectFailed(session, ['SessionStart', 'UserPromptSubmit', 'MessageDisplay', 'Stop']);
   });
 
   it.each([
@@ -412,6 +469,36 @@ describe('the fake agent: what it cannot play', () => {
       expect(receiver.events()).toEqual([]);
     },
   );
+
+  it('ends, failing, when a hook fails: it does not guess what Claude Code makes of it', async () => {
+    const settings = {
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'exit 3' }] }] },
+    };
+
+    const { status, drawn } = await runDirectly({ settings: JSON.stringify(settings) }).ended;
+
+    expect(status).toBe(70);
+    expect(drawn).toContain('a SessionStart command hook exited with status 3');
+  });
+
+  it('refuses to start on a hook with a field it does not play', async () => {
+    const hook = { type: 'command', command: 'true', async: true };
+    const settings = JSON.stringify({ hooks: { Stop: [{ hooks: [hook] }] } });
+
+    const { status, errors } = await runDirectly({ settings }).ended;
+
+    expect(status).toBe(70);
+    expect(errors).toMatch(/the field "async" of a command hook/);
+  });
+
+  it('ends, failing, on a reply of several lines while MessageDisplay has a hook', async () => {
+    const session = await launch({
+      script: [[{ do: 'reply', text: 'One.\n\nTwo.' }]],
+      prompt: 'hello',
+    });
+
+    await expectFailed(session, ['SessionStart', 'UserPromptSubmit']);
+  });
 
   it('ends, failing, on a tool nothing tells the fate of in the mode of the session', async () => {
     const write = {
@@ -498,6 +585,7 @@ describe('the fake agent: a tool that needs permission', () => {
         'UserPromptSubmit',
         'PreToolUse',
         'PostToolUse',
+        'MessageDisplay',
         'Stop',
       ]);
     },
@@ -596,7 +684,13 @@ describe('the fake agent: a question', () => {
 
     await receiver.next('Stop');
 
-    expect(receiver.events()).toEqual(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop']);
+    expect(receiver.events()).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'MessageDisplay',
+      'Stop',
+    ]);
   });
 
   it('is denied at once in dontAsk when PreToolUse does not answer it (behavior 47)', async () => {
@@ -604,7 +698,13 @@ describe('the fake agent: a question', () => {
 
     await receiver.next('Stop');
 
-    expect(receiver.events()).toEqual(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop']);
+    expect(receiver.events()).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'MessageDisplay',
+      'Stop',
+    ]);
   });
 });
 
@@ -628,6 +728,7 @@ describe('the fake agent: an interruption', () => {
       'PreToolUse',
       'PostToolUse',
       'UserPromptSubmit',
+      'MessageDisplay',
       'Stop',
     ]);
   });
@@ -707,7 +808,12 @@ describe('the fake agent: an interruption', () => {
     await type(session, 'hello');
 
     await receiver.next('Stop');
-    expect(receiver.events()).toEqual(['SessionStart', 'UserPromptSubmit', 'Stop']);
+    expect(receiver.events()).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'MessageDisplay',
+      'Stop',
+    ]);
   });
 });
 
