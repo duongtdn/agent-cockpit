@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCockpitClient } from '../../src/client/index.ts';
 import {
   type CockpitError,
   isCockpitError,
@@ -7,7 +6,7 @@ import {
   mountTerminal,
   type TerminalStatus,
 } from '../../src/terminal/index.ts';
-import { openPage, RefusedStorage } from '../support/browser-page.ts';
+import { loadAfresh, openPage, RefusedStorage } from '../support/browser-page.ts';
 import { FakeWebSocket } from '../support/fake-web-socket.ts';
 import { FakeFitAddon, FakeResizeObserver, FakeTerminal } from '../support/fake-xterm.ts';
 
@@ -103,11 +102,19 @@ describe('mounting', () => {
     expect(socket.binaryType).toBe('arraybuffer');
   });
 
-  it("offers the token the page's client took from the link, when the browser refuses storage", () => {
-    openPage(`http://127.0.0.1:8765/#cockpit=${token}`, { storage: new RefusedStorage() });
+  it("offers the token the page's client took from the link, when the browser refuses storage", async () => {
+    const page = openPage(`http://127.0.0.1:8765/#cockpit=${token}`, {
+      storage: new RefusedStorage(),
+    });
+    const { createCockpitClient, mountTerminal } = await loadAfresh(async () => ({
+      ...(await import('../../src/client/index.ts')),
+      ...(await import('../../src/terminal/index.ts')),
+    }));
     createCockpitClient({ baseUrl: '/cockpit' });
+    // The link is gone and the storage refused: only the client's token is left.
+    expect(page.address()).toBe('http://127.0.0.1:8765/');
 
-    mount();
+    terminal = mountTerminal(element, 'explain-a', { baseUrl: '/cockpit' });
 
     expect(FakeWebSocket.last().protocols).toEqual([
       'agent-cockpit',
