@@ -54,6 +54,13 @@ export type FakeApi = {
    */
   requests(): readonly LoggedRequest[];
   /**
+   * Gives the requests to paths the double does not know, each answered
+   * with a 404: for a test to tell the ones it expects from the others.
+   *
+   * @returns The requests, in order.
+   */
+  unknownRequests(): readonly LoggedRequest[];
+  /**
    * Awaits a conversation request, to read what the agent sent.
    *
    * @param number - Which one, counting from 1 among the conversation requests.
@@ -258,6 +265,7 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
       script.push(...answers);
     },
     requests: () => [...log],
+    unknownRequests: () => log.filter((request) => request.kind === 'unknown'),
     conversationRequest: (number) => conversationRequests.nth(number),
     heldRequest: (number = 1) => heldRequests.nth(number),
     assertNothingUnexpected: () => {

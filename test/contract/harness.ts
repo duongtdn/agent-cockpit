@@ -11,11 +11,18 @@ import {
   type LaunchOptions,
   startRealAgentRunner,
 } from '../support/real-agent/runner.ts';
+import { runAll } from '../support/run-all.ts';
 
 /**
  * The real agent as one contract test has it: a scripted API, a hook
  * receiver and a runner of its own, so that tests and files run side by
  * side without sharing a port, a socket or a folder.
+ *
+ * Every wait it offers fails by itself, with the reason: when it lasts too
+ * long, saying what was awaited, which hooks came and what the sessions
+ * show; at once, naming the request, when the agent sent a conversation
+ * request the test scripted no answer for; at once, naming the session and
+ * its last screen, when a session is gone that the test did not end.
  */
 export interface ContractAgent {
   /** The scripted double of the API the agent talks to. */
@@ -31,11 +38,19 @@ export interface ContractAgent {
   /**
    * Waits for the next hook of an event that no earlier call was given.
    *
-   * @throws Error when none comes in time, saying which hooks came and what
-   * the sessions show; at once, naming the request, when the agent sent a
-   * conversation request the test scripted no answer for.
+   * @throws Error as every wait of the agent's.
    */
   hook(event: string): Promise<ReceivedHook>;
+  /**
+   * Waits for something a double promises: a request the API holds, the
+   * end of a hold.
+   *
+   * @param what - What is awaited, for the failure to say.
+   * @param awaited - The promise of it.
+   * @returns What was promised.
+   * @throws Error as every wait of the agent's.
+   */
+  waitFor<T>(what: string, awaited: Promise<T>): Promise<T>;
   /**
    * Waits until a check passes, for what no event announces: what a session
    * shows, what it has written.
@@ -43,17 +58,32 @@ export interface ContractAgent {
    * @param check - Throws until what is awaited is true.
    * @returns What the check returned when it passed.
    * @throws The check's last error when it never passes in time; at once,
-   * naming the request, when the agent sent a conversation request the test
-   * scripted no answer for.
+   * for an unscripted request or a session that is gone, as every wait.
    */
   eventually<T>(check: () => T | Promise<T>): Promise<T>;
+  /**
+   * Signals a session's agent and waits until the session is gone. The
+   * waits no longer fail on that session being gone.
+   *
+   * @param session - A session that lives.
+   * @param signal - `SIGTERM`, on which the agent exits by itself, or `SIGKILL`.
+   */
+  end(session: AgentSession, signal: 'SIGTERM' | 'SIGKILL'): Promise<void>;
 }
 
 /** Registers what runs when the test finishes, passed or failed. */
 export type WhenFinished = (finish: () => Promise<void>) => void;
 
+/** What a test may choose about its agent's surroundings. */
+export interface ContractAgentOptions {
+  /** Registers the test's end; the running test's by default. */
+  readonly whenFinished?: WhenFinished;
+  /** How long a wait may last before it fails, in milliseconds. */
+  readonly patienceMs?: number;
+}
+
 /** Far longer than the agent takes (a start is under a second), short enough to fail with the reason. */
-const HOOK_TIMEOUT_MS = 15_000;
+const PATIENCE_MS = 15_000;
 
 /**
  * The scripted model may run any shell command without an ask: a
@@ -63,29 +93,39 @@ const HOOK_TIMEOUT_MS = 15_000;
 const PERMISSIONS = { allow: ['Bash'] };
 
 /**
+ * The requests the agent makes to paths the API's double does not know, and
+ * is content to see refused. Any other is a call nothing here answers as
+ * the API would: the test fails on it.
+ */
+const EXPECTED_UNKNOWN_REQUESTS: readonly string[] = ['HEAD /api/hello'];
+
+/**
  * Starts the real agent's surroundings for the running test, and ends them
  * when the test finishes, passed or failed: the sessions, their tmux server,
- * the temporary folders, the receiver and the API's double. The test then
- * fails if the agent sent a conversation request it scripted no answer for,
- * or if a session left something outside its temporary root.
+ * the temporary folders, the receiver and the API's double — each of them,
+ * whatever the others did. The test then fails if the agent sent a
+ * conversation request it scripted no answer for or a request to a path
+ * nobody expects, or if a session left something outside its temporary
+ * root; every such failure is reported.
  *
- * @param whenFinished - Registers the test's end; the running test's by default.
+ * @param options - See {@link ContractAgentOptions}.
  * @returns The agent, with nothing launched yet.
  */
 export async function startContractAgent(
-  whenFinished: WhenFinished = onTestFinished,
+  options: ContractAgentOptions = {},
 ): Promise<ContractAgent> {
+  const { whenFinished = onTestFinished, patienceMs = PATIENCE_MS } = options;
   // Closed last started first: the sessions end while their hooks still have somewhere to go.
   const closers: (() => Promise<void>)[] = [];
   const finalChecks: (() => void)[] = [];
-  whenFinished(async () => {
-    for (const close of closers.reverse()) await close();
-    // After the closing: a check that fails leaves nothing running.
-    for (const check of finalChecks) check();
-  });
+  // The checks after the closing: one that fails leaves nothing running.
+  whenFinished(() => runAll([...closers.reverse(), ...finalChecks]));
   const api = await startFakeApi();
   closers.push(() => api.close());
-  finalChecks.push(() => api.assertNothingUnexpected());
+  finalChecks.push(
+    () => api.assertNothingUnexpected(),
+    () => assertNoUnexpectedPath(api),
+  );
   const hooks = await startHookReceiver();
   closers.push(() => hooks.close());
   const runner = await startRealAgentRunner({
@@ -94,61 +134,149 @@ export async function startContractAgent(
   });
   closers.push(() => runner.close());
   finalChecks.push(() => expect(runner.leftOutsideRoot()).toEqual([]));
-  const sessions: AgentSession[] = [];
-  const remembered = async (launching: Promise<AgentSession>) => {
-    const session = await launching;
-    sessions.push(session);
-    return session;
-  };
+  const sessions = watchedSessions();
+  const waits = failFastWaits({ api, hooks, sessions, patienceMs });
+  const launched = async (launching: Promise<AgentSession>) => sessions.watch(await launching);
 
   return {
     api,
     hooks,
     workFolder: runner.workFolder,
-    startNew: (options) => remembered(runner.startNew(options)),
-    resume: (sessionId, options) => remembered(runner.resume(sessionId, options)),
-    hook: (event) => nextHook(api, hooks, event, sessions),
-    eventually: (check) => eventually(check, () => api.assertNothingUnexpected()),
+    startNew: (launchOptions) => launched(runner.startNew(launchOptions)),
+    resume: (sessionId, launchOptions) => launched(runner.resume(sessionId, launchOptions)),
+    hook: (event) => waits.waitFor(`a ${event} hook`, hooks.next(event)),
+    waitFor: waits.waitFor,
+    eventually: waits.eventually,
+    end: async (session, signal) => {
+      sessions.expectEndOf(session);
+      process.kill(await session.processId(), signal);
+      await waits.waitFor(`the session ${session.name} to be gone`, session.ended);
+    },
   };
 }
 
-async function nextHook(
-  api: FakeApi,
-  hooks: HookReceiver,
-  event: string,
-  sessions: readonly AgentSession[],
-): Promise<ReceivedHook> {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<'late'>((resolve) => {
-    timer = setTimeout(() => resolve('late'), HOOK_TIMEOUT_MS);
-  });
-  // The session of an unscripted request stops there: the hook would never come.
-  const hook = await Promise.race([hooks.next(event), late, api.unexpectedRequest()]).finally(() =>
-    clearTimeout(timer),
-  );
-  if (hook instanceof Error) throw hook;
-  if (hook !== 'late') return hook;
-  const screens = await Promise.all(sessions.map((session) => session.screen().catch(() => '')));
+function assertNoUnexpectedPath(api: FakeApi): void {
+  const unexpected = api
+    .unknownRequests()
+    .map((request) => `${request.method} ${request.path}`)
+    .filter((request) => !EXPECTED_UNKNOWN_REQUESTS.includes(request));
+  if (unexpected.length === 0) return;
   throw new Error(
     [
-      `No ${event} hook within ${HOOK_TIMEOUT_MS} ms. Hooks received: ${hooks.events().join(', ') || 'none'}.`,
-      ...screens.filter((screen) => screen !== '').map((screen) => `A session shows:\n${screen}`),
+      `Requests to paths the API's double does not know (${unexpected.length}):`,
+      ...unexpected.map((request) => `  ${request}`),
     ].join('\n'),
   );
 }
 
-/**
- * Signals a session's agent and waits until the session is gone.
- *
- * @param session - A session that lives.
- * @param signal - `SIGTERM`, on which the agent exits by itself, or `SIGKILL`.
- */
-export async function endSession(
-  session: AgentSession,
-  signal: 'SIGTERM' | 'SIGKILL',
-): Promise<void> {
-  process.kill(await session.processId(), signal);
-  await eventually(async () => expect(await session.isLive()).toBe(false));
+/** The sessions a test launched, and the news of one that went without the test ending it. */
+interface WatchedSessions {
+  /** Every session launched, the gone ones too. */
+  readonly all: readonly AgentSession[];
+  /** Watches a session from now on; gives it back. */
+  watch(session: AgentSession): AgentSession;
+  /** Tells that the test ends a session itself: its going is no failure. */
+  expectEndOf(session: AgentSession): void;
+  /** Fulfilled with the failure once a session is gone unexpectedly; pending until then. */
+  readonly unexpectedEnd: Promise<Error>;
+  /**
+   * The check of a wait that polls.
+   *
+   * @throws The failure, once a session is gone unexpectedly.
+   */
+  assertNoneGone(): void;
+}
+
+function watchedSessions(): WatchedSessions {
+  const all: AgentSession[] = [];
+  const endedByTheTest = new Set<AgentSession>();
+  let failure: Error | undefined;
+  let tell: (error: Error) => void = () => {};
+  const unexpectedEnd = new Promise<Error>((resolve) => {
+    tell = resolve;
+  });
+
+  async function watch(session: AgentSession): Promise<void> {
+    const { lastScreen } = await session.ended;
+    if (endedByTheTest.has(session) || failure !== undefined) return;
+    failure = new Error(
+      [
+        `The session ${session.name} is gone: its agent exited, and the test did not end it.`,
+        lastScreen === undefined ? 'It was gone before its screen was read.' : shown(lastScreen),
+      ].join('\n'),
+    );
+    tell(failure);
+  }
+
+  return {
+    all,
+    watch(session) {
+      all.push(session);
+      void watch(session);
+      return session;
+    },
+    expectEndOf: (session) => void endedByTheTest.add(session),
+    unexpectedEnd,
+    assertNoneGone() {
+      if (failure !== undefined) throw failure;
+    },
+  };
+}
+
+function shown(screen: string): string {
+  return `A session shows:\n${screen}`;
+}
+
+/** What the waits of an agent look at to fail with a reason. */
+interface WaitSurroundings {
+  readonly api: FakeApi;
+  readonly hooks: HookReceiver;
+  readonly sessions: WatchedSessions;
+  readonly patienceMs: number;
+}
+
+/** The waits of {@link ContractAgent}, which fail as it says. */
+function failFastWaits({
+  api,
+  hooks,
+  sessions,
+  patienceMs,
+}: WaitSurroundings): Pick<ContractAgent, 'waitFor' | 'eventually'> {
+  async function tooLong(what: string): Promise<Error> {
+    const screens = await Promise.all(
+      sessions.all.map((session) => session.screen().catch(() => undefined)),
+    );
+    return new Error(
+      [
+        `Waited ${patienceMs} ms for ${what}. Hooks received: ${hooks.events().join(', ') || 'none'}.`,
+        ...screens.filter((screen) => screen !== undefined).map(shown),
+      ].join('\n'),
+    );
+  }
+
+  async function waitFor<T>(what: string, awaited: Promise<T>): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<Error>((resolve) => {
+      timer = setTimeout(() => resolve(tooLong(what)), patienceMs);
+    });
+    // After either, what is awaited would never come: the session stopped there, or is no more.
+    const stopped = Promise.race([late, api.unexpectedRequest(), sessions.unexpectedEnd]);
+    const outcome = await Promise.race([
+      awaited.then((value) => ({ value })),
+      stopped.then((failure) => ({ failure })),
+    ]).finally(() => clearTimeout(timer));
+    if ('failure' in outcome) throw outcome.failure;
+    return outcome.value;
+  }
+
+  return {
+    waitFor,
+    eventually: (check) =>
+      eventually(check, () => {
+        api.assertNothingUnexpected();
+        sessions.assertNoneGone();
+      }),
+  };
 }
 
 /** Gives the texts of a list of content blocks, or the content itself when it is a text. */

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { endSession, startContractAgent } from './harness.ts';
+import { startContractAgent } from './harness.ts';
 
 /** A session the agent exits from by itself tells its end: the receiver would hear a SessionEnd. */
 async function exitAndHearTheEnd(): Promise<void> {
@@ -7,7 +7,7 @@ async function exitAndHearTheEnd(): Promise<void> {
   const session = await agent.startNew();
   await agent.hook('SessionStart');
 
-  await endSession(session, 'SIGTERM');
+  await agent.end(session, 'SIGTERM');
 
   expect(await session.isLive()).toBe(false);
   expect((await agent.hook('SessionEnd')).payload.session_id).toBe(session.id);
@@ -18,7 +18,7 @@ async function killAndHearNothing(): Promise<void> {
   const session = await agent.startNew();
   await agent.hook('SessionStart');
 
-  await endSession(session, 'SIGKILL');
+  await agent.end(session, 'SIGKILL');
 
   expect(await session.isLive()).toBe(false);
   // A killed process sends nothing more: what it sent has arrived.

@@ -1,13 +1,22 @@
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import {
   type AgentFolders,
   agentEnvironment,
   ROOT_NAME_PREFIX,
+  TERMINAL_VARIABLES,
 } from '../support/real-agent/environment.ts';
-import { assertStaysLocal, loopbackOrigin } from '../support/real-agent/guard.ts';
+import { type AgentLaunch, assertStaysLocal, loopbackOrigin } from '../support/real-agent/guard.ts';
 
 const temporaryFolder = realpathSync(tmpdir());
 const root = mkdtempSync(join(temporaryFolder, ROOT_NAME_PREFIX));
@@ -19,19 +28,72 @@ const folders: AgentFolders = {
   workFolder: join(root, 'work'),
   temporaryFolder: join(root, 'tmp'),
 };
+for (const folder of Object.values(folders)) mkdirSync(folder, { recursive: true });
 const environment = agentEnvironment(folders, 'http://127.0.0.1:4010');
 const settings = { hooks: {}, permissions: { allow: ['Bash'] } };
+const managedSettingsFolder = join(elsewhere, 'managed');
+const machine = {
+  temporaryFolder,
+  home: '/home/someone',
+  managedSettingsFolders: [managedSettingsFolder],
+};
+const SESSION = ['--session-id', '0c9a3d4e-0000-4000-8000-000000000000'];
+/** What a test made inside the root or the managed folder, removed after it. */
+const made: string[] = [];
+
+afterEach(() => {
+  for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true });
+});
 
 afterAll(() => {
   for (const folder of [root, elsewhere]) rmSync(folder, { recursive: true, force: true });
 });
+
+function argsWith(given: unknown): string[] {
+  return [...SESSION, '--settings', JSON.stringify(given), '--permission-mode', 'default'];
+}
+
+/** The guard's check of a launch that would pass, with some of it changed. */
+function check(changes: Partial<AgentLaunch> = {}): () => void {
+  const launch = { environment, args: argsWith(settings), workFolder: folders.workFolder, root };
+  return () => assertStaysLocal({ ...launch, ...changes }, machine);
+}
 
 /** The guard's check of the recipe's environment with some variables changed, or removed when undefined. */
 function withVariables(changes: Record<string, string | undefined>): () => void {
   const changed = Object.fromEntries(
     Object.entries({ ...environment, ...changes }).filter(([, value]) => value !== undefined),
   ) as Record<string, string>;
-  return () => assertStaysLocal({ environment: changed, settings, root });
+  return check({ environment: changed });
+}
+
+/** Makes a folder and those above it that are missing; what it made goes with the test. */
+function makeFolder(path: string): void {
+  const firstMade = mkdirSync(path, { recursive: true });
+  if (firstMade !== undefined) made.push(firstMade);
+}
+
+function writeFile(path: string, content: string): string {
+  makeFolder(dirname(path));
+  writeFileSync(path, content);
+  made.push(path);
+  return path;
+}
+
+/** Makes what a folder variable must not be, each inside the root by its path's text. */
+function notRealFolders(): Record<string, string> {
+  const paths = {
+    'a folder that does not exist': join(root, 'never-made'),
+    'a file': writeFile(join(root, 'a-file'), ''),
+    'a link to a folder outside the root': join(root, 'link-out'),
+    'a link to a folder inside the root': join(root, 'link-in'),
+    'a folder behind a link': join(root, 'link-in', 'below'),
+  };
+  makeFolder(join(folders.home, 'below'));
+  symlinkSync(elsewhere, paths['a link to a folder outside the root']);
+  symlinkSync(folders.home, paths['a link to a folder inside the root']);
+  made.push(...Object.values(paths));
+  return paths;
 }
 
 describe('the guard of the real agent', () => {
@@ -77,6 +139,23 @@ describe('the guard of the real agent', () => {
     },
   );
 
+  it.each(['HOME', 'CLAUDE_CONFIG_DIR', 'TMPDIR'])(
+    'refuses a %s that is no real folder, whatever its path says',
+    (name) => {
+      for (const [what, path] of Object.entries(notRealFolders())) {
+        expect(withVariables({ [name]: path }), what).toThrow(
+          new RegExp(`${name} is not a real folder inside`),
+        );
+      }
+    },
+  );
+
+  it('refuses a work folder that is outside the root or no real folder', () => {
+    for (const path of [elsewhere, root, ...Object.values(notRealFolders())]) {
+      expect(check({ workFolder: path }), path).toThrow(/the work folder .* is not a real folder/);
+    }
+  });
+
   it.each([
     'HTTP_PROXY',
     'HTTPS_PROXY',
@@ -106,7 +185,15 @@ describe('the guard of the real agent', () => {
     expect(withVariables({ anthropic_base_url: 'https://example.com' })).toThrow(
       /anthropic_base_url/,
     );
+    expect(withVariables({ constructor: 'x' })).toThrow(/constructor/);
   });
+
+  it.each(TERMINAL_VARIABLES)(
+    'refuses %s from a launch: the terminal gives it, whatever a launch says',
+    (name) => {
+      expect(withVariables({ [name]: 'x' })).toThrow(new RegExp(`${name} is the terminal's`));
+    },
+  );
 
   it('refuses a key that is not the fake one', () => {
     expect(withVariables({ ANTHROPIC_API_KEY: 'sk-ant-api03-a-real-key' })).toThrow(
@@ -126,39 +213,182 @@ describe('the guard of the real agent', () => {
 });
 
 describe("the guard of the real agent's settings", () => {
-  const check = (given: unknown) => () => assertStaysLocal({ environment, settings: given, root });
+  const withSettings = (given: unknown) => check({ args: argsWith(given) });
 
   it('refuses settings that give the agent variables: they would replace the checked ones', () => {
-    expect(check({ ...settings, env: { ANTHROPIC_BASE_URL: 'https://example.com' } })).toThrow(
-      /settings.*"env"/,
-    );
-    expect(check({ ...settings, env: {} })).toThrow(/settings.*"env"/);
+    expect(
+      withSettings({ ...settings, env: { ANTHROPIC_BASE_URL: 'https://example.com' } }),
+    ).toThrow(/settings.*"env"/);
+    expect(withSettings({ ...settings, env: {} })).toThrow(/settings.*"env"/);
   });
 
   it('refuses settings that name a program to get a key from', () => {
-    expect(check({ ...settings, apiKeyHelper: '/usr/bin/print-my-key' })).toThrow(
+    expect(withSettings({ ...settings, apiKeyHelper: '/usr/bin/print-my-key' })).toThrow(
       /settings.*"apiKeyHelper"/,
     );
   });
 
-  it('refuses any setting but the hooks and the permissions', () => {
-    expect(check({ ...settings, forceLoginMethod: 'claudeai' })).toThrow(
-      /settings.*"forceLoginMethod"/,
+  it('refuses a setting that has no rule, and says where a rule is added', () => {
+    expect(withSettings({ ...settings, forceLoginMethod: 'claudeai' })).toThrow(
+      /settings.*"forceLoginMethod".*SETTINGS_RULES.*launch-rules\.ts/,
     );
+    for (const name of ['toString', 'valueOf', 'constructor', '__proto__']) {
+      const given = JSON.parse(`{ "${name}": {} }`);
+      expect(withSettings(given), name).toThrow(/has no rule in SETTINGS_RULES/);
+    }
   });
 
-  it.each([[null], ['{}'], [[]], [undefined]])(
-    'refuses settings that are no object: %j',
-    (given) => {
-      expect(check(given)).toThrow(/settings/);
+  it.each([[null], ['{}'], [[]]])('refuses settings that are no object: %j', (given) => {
+    expect(withSettings(given)).toThrow(/settings/);
+  });
+
+  it('lets hooks pass that run a command or post to the loopback interface', () => {
+    const hooks = {
+      Stop: [
+        {
+          matcher: '*',
+          hooks: [
+            {
+              type: 'http',
+              url: 'http://127.0.0.1:4011/http/Stop',
+              headers: { Authorization: 'x' },
+            },
+            { type: 'command', command: 'report Stop' },
+          ],
+        },
+      ],
+    };
+
+    expect(withSettings({ hooks })).not.toThrow();
+  });
+
+  it.each([
+    [
+      'an http hook to another host',
+      { type: 'http', url: 'https://example.com/hook' },
+      /off the loopback/,
+    ],
+    [
+      'an http hook to a name',
+      { type: 'http', url: 'http://localhost:4011/hook' },
+      /off the loopback/,
+    ],
+    ['an http hook with no address', { type: 'http' }, /off the loopback/],
+    [
+      'a hook that asks a model',
+      { type: 'prompt', prompt: 'Is it done?' },
+      /a hook of type "prompt"/,
+    ],
+  ])('refuses %s', (_what, hook, problem) => {
+    expect(withSettings({ hooks: { Stop: [{ hooks: [hook] }] } })).toThrow(/settings.*"hooks"/);
+    expect(withSettings({ hooks: { Stop: [{ hooks: [hook] }] } })).toThrow(problem);
+  });
+
+  it.each([[[]], ['x'], [{ Stop: 'x' }], [{ Stop: [{ hooks: 'x' }] }], [{ Stop: [null] }]])(
+    'refuses hooks that are not groups of hooks by event: %j',
+    (hooks) => {
+      expect(withSettings({ hooks })).toThrow(/settings.*"hooks"/);
     },
   );
 });
 
+describe("the guard of the real agent's arguments", () => {
+  it('lets a launch pass with a new or a resumed session, a mode, a model and a prompt', () => {
+    const options = [...argsWith(settings), '--model', 'haiku'];
+
+    expect(check({ args: [...options, '--', 'the prompt'] })).not.toThrow();
+    expect(check({ args: ['--resume', SESSION[1] as string, '--', '--mcp-config'] })).not.toThrow();
+  });
+
+  it('refuses settings given as a file: it could change after its check', () => {
+    const file = writeFile(join(root, 'settings.json'), JSON.stringify(settings));
+
+    expect(check({ args: [...SESSION, '--settings', file] })).toThrow(
+      /settings of --settings.*not written out as JSON/,
+    );
+  });
+
+  it.each(['--mcp-config', '--plugin-dir', '--setting-sources'])(
+    'refuses %s, which no launch needs yet, and says where a rule is added',
+    (option) => {
+      expect(check({ args: [...SESSION, option, 'x'] })).toThrow(
+        new RegExp(`${option} is refused.*OPTION_RULES.*launch-rules\\.ts`),
+      );
+    },
+  );
+
+  it('refuses an argument that has no rule, and says where a rule is added', () => {
+    for (const argument of [
+      '--dangerously-skip-permissions',
+      '--settings={}',
+      '-p',
+      'a word',
+      'constructor',
+      '__proto__',
+    ]) {
+      expect(check({ args: [...SESSION, argument] }), argument).toThrow(
+        /has no rule in OPTION_RULES.*launch-rules\.ts/,
+      );
+    }
+  });
+
+  it('refuses an option without its value, and more than one prompt', () => {
+    expect(check({ args: [...SESSION, '--model'] })).toThrow(/--model has no value/);
+    expect(check({ args: [...SESSION, '--', 'one', 'two'] })).toThrow(/more than one prompt/);
+  });
+});
+
+describe('the guard of the settings files the real agent reads', () => {
+  const elsewhereSettings = JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://example.com' } });
+  const places: [string, string][] = [
+    ["the user's settings", join(folders.configFolder, 'settings.json')],
+    [
+      "an organization's settings the agent kept",
+      join(folders.configFolder, 'remote-settings.json'),
+    ],
+    ["the project's settings", join(folders.workFolder, '.claude', 'settings.json')],
+    ["the project's local settings", join(folders.workFolder, '.claude', 'settings.local.json')],
+    ['the settings of a folder above the work folder', join(root, '.claude', 'settings.json')],
+    ['the local settings of a folder above it', join(root, '.claude', 'settings.local.json')],
+    ["the machine's managed settings", join(managedSettingsFolder, 'managed-settings.json')],
+    ['a drop-in of them', join(managedSettingsFolder, 'managed-settings.d', '10-more.json')],
+  ];
+
+  it.each(places)('refuses %s when they would send the agent elsewhere', (_what, path) => {
+    writeFile(path, elsewhereSettings);
+
+    expect(check()).toThrow(/settings.*"env"/);
+    expect(check()).toThrow(path);
+  });
+
+  it.each(places)(
+    'lets %s pass when every one of them has a rule that allows it',
+    (_what, path) => {
+      writeFile(path, JSON.stringify(settings));
+
+      expect(check()).not.toThrow();
+    },
+  );
+
+  it.each(places)('refuses %s when they cannot be read as JSON', (_what, path) => {
+    writeFile(path, '{ "env": ');
+
+    expect(check()).toThrow(/cannot be read as JSON/);
+  });
+
+  it('refuses a settings file that is a link to nowhere: what it will hold is not known', () => {
+    const path = join(folders.workFolder, '.claude', 'settings.json');
+    makeFolder(dirname(path));
+    symlinkSync(join(elsewhere, 'not-there-yet.json'), path);
+    made.push(path);
+
+    expect(check()).toThrow(/cannot be read as JSON/);
+  });
+});
+
 describe("the guard of the real agent's root", () => {
-  const machine = { temporaryFolder, home: '/home/someone' };
-  const check =
-    (given: string, on = machine) =>
+  const checkRoot =
+    (given: string, on: { temporaryFolder: string; home: string } = machine) =>
     () => {
       const inGiven = (folder: string) => folder.replace(root, given);
       const moved = {
@@ -167,34 +397,42 @@ describe("the guard of the real agent's root", () => {
         CLAUDE_CONFIG_DIR: inGiven(folders.configFolder),
         TMPDIR: inGiven(folders.temporaryFolder),
       };
-      assertStaysLocal({ environment: moved, settings, root: given }, on);
+      assertStaysLocal(
+        {
+          environment: moved,
+          args: argsWith(settings),
+          workFolder: inGiven(folders.workFolder),
+          root: given,
+        },
+        { ...on, managedSettingsFolders: [] },
+      );
     };
 
   it('lets a folder start that the runner made in the temporary folder', () => {
-    expect(check(root)).not.toThrow();
+    expect(checkRoot(root)).not.toThrow();
   });
 
   it('refuses the file system root and the temporary folder itself', () => {
-    expect(check('/')).toThrow(/root/);
-    expect(check(temporaryFolder)).toThrow(/root/);
+    expect(checkRoot('/')).toThrow(/root/);
+    expect(checkRoot(temporaryFolder)).toThrow(/root/);
   });
 
   it('refuses a folder outside the temporary folder', () => {
-    expect(check(root, { temporaryFolder: elsewhere, home: '/home/someone' })).toThrow(/root/);
+    expect(checkRoot(root, { temporaryFolder: elsewhere, home: '/home/someone' })).toThrow(/root/);
   });
 
   it("refuses the person's home and every folder above it", () => {
     const home = join(root, 'people', 'someone');
     for (const given of [root, dirname(home)]) {
-      expect(check(given, { temporaryFolder: '/', home })).toThrow(/home/);
+      expect(checkRoot(given, { temporaryFolder: '/', home })).toThrow(/home/);
     }
-    expect(check(root, { temporaryFolder, home: root })).toThrow(/home/);
+    expect(checkRoot(root, { temporaryFolder, home: root })).toThrow(/home/);
   });
 
   it('refuses a folder of the temporary folder that the runner did not make', () => {
-    expect(check(elsewhere)).toThrow(/root/);
-    expect(check(join(root, 'work'))).toThrow(/root/);
-    expect(check(`${root}-never-made`)).toThrow(/root/);
+    expect(checkRoot(elsewhere)).toThrow(/root/);
+    expect(checkRoot(join(root, 'work'))).toThrow(/root/);
+    expect(checkRoot(`${root}-never-made`)).toThrow(/root/);
   });
 
   it('refuses what is no real folder: a file, a link to a folder, a path not resolved', () => {
@@ -203,9 +441,9 @@ describe("the guard of the real agent's root", () => {
     writeFileSync(file, '');
     symlinkSync(root, link);
     try {
-      expect(check(file)).toThrow(/root/);
-      expect(check(link)).toThrow(/root/);
-      expect(check(`${root}/../${root.split('/').at(-1)}`)).toThrow(/root/);
+      expect(checkRoot(file)).toThrow(/root/);
+      expect(checkRoot(link)).toThrow(/root/);
+      expect(checkRoot(`${root}/../${root.split('/').at(-1)}`)).toThrow(/root/);
     } finally {
       unlinkSync(file);
       unlinkSync(link);

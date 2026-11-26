@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { findTranscript } from '../transcript-files.ts';
-import { createFakeAgent, type FakeAgent } from './agent.ts';
+import { CANNOT_PLAY_STATUS, createFakeAgent, type FakeAgent } from './agent.ts';
 import { type CommandLine, parseCommandLine } from './command-line.ts';
 import { createHookRunner } from './hook-runner.ts';
 import { type HookSettings, parseHookSettings } from './hook-settings.ts';
@@ -52,9 +52,19 @@ function transcriptPathOf(commandLine: CommandLine, cwd: string): string {
   );
 }
 
+/** Ends the process at once on settings it has no evidence for, as on anything else it cannot play. */
+function refuseToPlay(error: unknown): never {
+  process.stderr.write(`fake agent: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(CANNOT_PLAY_STATUS);
+}
+
 function hookSettingsOf(commandLine: CommandLine): HookSettings {
   if (commandLine.settingsFile === undefined) return {};
-  return parseHookSettings(readFileSync(commandLine.settingsFile, 'utf8'));
+  try {
+    return parseHookSettings(readFileSync(commandLine.settingsFile, 'utf8'));
+  } catch (error) {
+    refuseToPlay(error);
+  }
 }
 
 function show(view: ScreenView): void {

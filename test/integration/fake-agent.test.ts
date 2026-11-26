@@ -1,4 +1,6 @@
+import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,16 +89,66 @@ interface Launch {
   readonly without?: readonly string[];
 }
 
-async function launch(options: Launch = {}): Promise<Session> {
+/** Makes the folder of a new session, with its script, and its settings file. */
+function prepare(script: readonly Turn[] | undefined, settings: string, resumedIn?: string) {
   sessions += 1;
   const name = `session-${sessions}`;
-  const folder = options.resume?.folder ?? join(root, name);
-  const id = options.resume?.id ?? randomUUID();
+  const folder = resumedIn ?? join(root, name);
   mkdirSync(folder, { recursive: true });
-  if (options.script) writeScript(folder, options.script);
-  if (options.heldStart) holdStart(folder);
+  if (script) writeScript(folder, script);
   const settingsFile = join(root, `${name}.settings.json`);
-  writeFileSync(settingsFile, JSON.stringify(receiver.settings()));
+  writeFileSync(settingsFile, settings);
+  return { name, folder, settingsFile };
+}
+
+/** A fake agent run as a process of the test's own, with no terminal: for what a terminal hides, its exit. */
+interface DirectRun {
+  readonly process: ChildProcess;
+  /** Fulfilled when the process has ended, with its status and what it wrote to its error output. */
+  readonly ended: Promise<{ status: number | null; errors: string }>;
+}
+
+function runDirectly(options: {
+  script?: readonly Turn[];
+  settings?: string;
+  prompt?: string;
+}): DirectRun {
+  const { folder, settingsFile } = prepare(
+    options.script,
+    options.settings ?? JSON.stringify(receiver.settings()),
+  );
+  const agent = fakeAgentCommand();
+  const child = spawn(
+    agent.command,
+    [
+      ...agent.args,
+      '--session-id',
+      randomUUID(),
+      '--settings',
+      settingsFile,
+      ...(options.prompt === undefined ? [] : ['--', options.prompt]),
+    ],
+    { cwd: folder, env: { PATH: process.env.PATH, CLAUDE_CONFIG_DIR: configFolder } },
+  );
+  let errors = '';
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+    errors += chunk;
+  });
+  const ended = once(child, 'close').then(([status]) => ({
+    status: status as number | null,
+    errors,
+  }));
+  return { process: child, ended };
+}
+
+async function launch(options: Launch = {}): Promise<Session> {
+  const { name, folder, settingsFile } = prepare(
+    options.script,
+    JSON.stringify(receiver.settings()),
+    options.resume?.folder,
+  );
+  const id = options.resume?.id ?? randomUUID();
+  if (options.heldStart) holdStart(folder);
 
   const agent = fakeAgentCommand();
   await host.start({
@@ -333,6 +385,34 @@ describe('the fake agent: what it cannot play', () => {
     await expectFailed(session, ['SessionStart', 'UserPromptSubmit', 'PreToolUse']);
   });
 
+  it('ends, failing, when a hook answers what it does not play: a Stop that keeps the turn from ending', async () => {
+    receiver.hold('Stop');
+    const session = await launch({ script: oneReply, prompt: 'hello' });
+
+    (await receiver.next('Stop')).answer({ decision: 'block', reason: 'Go on.' });
+
+    await expectFailed(session, ['SessionStart', 'UserPromptSubmit', 'Stop']);
+  });
+
+  it.each([
+    [
+      'a hook of a type it does not play',
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'prompt', prompt: 'Done?' }] }] } }),
+      /a hook of type "prompt"/,
+    ],
+    ['settings that are no JSON', '{ "hooks": ', /settings that are no JSON/],
+  ])(
+    'refuses to start on %s, with the status of what it cannot play and no stack',
+    async (_what, settings, problem) => {
+      const { status, errors } = await runDirectly({ settings }).ended;
+
+      expect(status).toBe(70);
+      expect(errors).toMatch(problem);
+      expect(errors.trim().split('\n')).toHaveLength(1);
+      expect(receiver.events()).toEqual([]);
+    },
+  );
+
   it('ends, failing, on a tool nothing tells the fate of in the mode of the session', async () => {
     const write = {
       do: 'tool',
@@ -481,18 +561,30 @@ describe('the fake agent: a question', () => {
     expect(after.payload).toMatchObject({ tool_response: { answers: { 'Which fruit?': 'Lime' } } });
   });
 
-  it('answered in the terminal, reports the answers in PostToolUse (behavior 46)', async () => {
+  it('answered in the terminal, reports the answers in PostToolUse and leaves the hook open (behavior 46)', async () => {
+    const drink: Question = { ...fruit, question: 'Which drink?', header: 'Drink' };
     receiver.hold('PermissionRequest');
-    const session = await launch({ script, prompt: 'ask me' });
-    await receiver.next('PermissionRequest');
+    const session = await launch({
+      script: [
+        [
+          { do: 'question', questions: [fruit, drink] },
+          { do: 'reply', text: 'Noted.' },
+        ],
+      ],
+      prompt: 'ask me',
+    });
+    const ask = await receiver.next('PermissionRequest');
     await expectScreen(session, 'dialog: question AskUserQuestion');
 
     await host.sendKeys(session.name, ['Enter']);
 
     const after = await receiver.next('PostToolUse');
+    await receiver.next('Stop');
     expect(after.payload).toMatchObject({
-      tool_response: { answers: { 'Which fruit?': 'Mango' } },
+      tool_input: { answers: { 'Which fruit?': 'Mango', 'Which drink?': 'Mango' } },
+      tool_response: { answers: { 'Which fruit?': 'Mango', 'Which drink?': 'Mango' } },
     });
+    expect(ask.isOpen()).toBe(true);
   });
 
   it('denies a tool at once, with no ask, in dontAsk', async () => {
@@ -517,25 +609,44 @@ describe('the fake agent: a question', () => {
 });
 
 describe('the fake agent: an interruption', () => {
-  it('ends the turn on Esc with no hook, records the marker, and takes prompts again (behavior 6)', async () => {
-    const script: Turn[] = [[{ do: 'stay-busy' }], [{ do: 'reply', text: 'Back.' }]];
-    const session = await launch({ script, prompt: 'work' });
-    const taken = await receiver.next('UserPromptSubmit');
+  it('ends on Esc a turn that produced something, with no hook, records the marker, and takes prompts again (behaviors 6, 22)', async () => {
+    const script: Turn[] = [[touch, { do: 'stay-busy' }], [{ do: 'reply', text: 'Back.' }]];
+    const session = await launch({ script, prompt: 'work', mode: 'acceptEdits' });
+    const ran = await receiver.next('PostToolUse');
     await expectScreen(session, 'state: busy');
 
     await host.sendKeys(session.name, ['Escape']);
 
-    await expectScreen(session, 'state: idle');
-    expect(transcriptOf(taken)).toContain(`"${INTERRUPTED}"`);
+    await expectScreen(session, 'state: idle', '\n>\n');
+    expect(transcriptOf(ran)).toContain(`"${INTERRUPTED}"`);
     await type(session, 'again');
     const end = await receiver.next('Stop');
     expect(end.payload).toMatchObject({ last_assistant_message: 'Back.' });
     expect(receiver.events()).toEqual([
       'SessionStart',
       'UserPromptSubmit',
+      'PreToolUse',
+      'PostToolUse',
       'UserPromptSubmit',
       'Stop',
     ]);
+  });
+
+  it('withdraws on Esc a prompt nothing was produced for: back in the input box, no hook, no marker (behavior 23)', async () => {
+    const script: Turn[] = [[{ do: 'stay-busy' }], [{ do: 'reply', text: 'Back.' }]];
+    const session = await launch({ script, prompt: 'think about it' });
+    const taken = await receiver.next('UserPromptSubmit');
+    await expectScreen(session, 'state: busy', 'prompt: "think about it"');
+
+    await host.sendKeys(session.name, ['Escape']);
+
+    await expectScreen(session, 'state: idle', 'prompt: none', '> think about it');
+    expect(transcriptOf(taken)).not.toContain('interrupted');
+    expect(receiver.events()).toEqual(['SessionStart', 'UserPromptSubmit']);
+    await host.sendKeys(session.name, ['Enter']);
+    const again = await receiver.next('UserPromptSubmit');
+    expect(again.payload.prompt).toBe('think about it');
+    await receiver.next('Stop');
   });
 
   it('closes on Esc the connection of the hook it holds, and fires no hook (behavior 11)', async () => {
@@ -621,6 +732,22 @@ describe('the fake agent: an exit', () => {
     expect(end.payload).toMatchObject({ reason: 'other' });
     await expectGone(session);
     expect(transcriptOf(taken)).not.toContain(INTERRUPTED);
+  });
+
+  it('exits with success on a scripted exit, as Claude Code does when the person leaves', async () => {
+    const run = runDirectly({ script: [[{ do: 'exit' }]], prompt: 'leave' });
+
+    expect((await run.ended).status).toBe(0);
+  });
+
+  it('exits on SIGTERM with the status of the signal, 143, as Claude Code does', async () => {
+    const run = runDirectly({});
+    await receiver.next('SessionStart');
+
+    run.process.kill('SIGTERM');
+
+    expect((await run.ended).status).toBe(143);
+    expect((await receiver.next('SessionEnd')).payload).toMatchObject({ reason: 'other' });
   });
 
   it('on kill -9, ends with no SessionEnd, and the tmux session is gone (behavior 8)', async () => {

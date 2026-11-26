@@ -345,6 +345,20 @@ describe('requests that are not turns of the conversation', () => {
 });
 
 describe('the log of requests', () => {
+  it('lists the requests to paths it does not know, for a test to say which it expects', async () => {
+    const api = await start();
+    api.script(turn('Hello.'));
+
+    await post(api, conversation('hi'));
+    await fetch(`${api.baseUrl}/api/hello`, { method: 'HEAD' });
+    await post(api, {}, { path: '/v1/models?limit=1' });
+
+    expect(api.unknownRequests().map((request) => `${request.method} ${request.path}`)).toEqual([
+      'HEAD /api/hello',
+      'POST /v1/models?limit=1',
+    ]);
+  });
+
   it('keeps the method, the path and the parsed body, and no header', async () => {
     const api = await start();
     api.script(turn('ok'));

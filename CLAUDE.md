@@ -73,7 +73,11 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   and `CLAUDE_CONFIG_DIR`, a fake API key, a fake API and a hook receiver on
   loopback ports of its own, and its own tmux socket
   (`test/support/real-agent/`). The runner refuses to launch an agent that
-  could reach Anthropic or the person's configuration.
+  could reach Anthropic or the person's configuration: every variable,
+  argument and setting of a launch, in every settings file the agent would
+  read, needs a rule that lets it pass. The rules are three tables in
+  `test/support/real-agent/launch-rules.ts`; a feature that needs one more
+  option or setting adds its rule there.
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:

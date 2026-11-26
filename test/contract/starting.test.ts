@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { turn } from '../support/fake-api/index.ts';
-import { conversationTexts, endSession, startContractAgent, userTexts } from './harness.ts';
+import { conversationTexts, startContractAgent, userTexts } from './harness.ts';
 
 it('1 — SessionStart arrives as a command hook, not as an HTTP hook', async () => {
   const agent = await startContractAgent();
@@ -30,7 +30,7 @@ it('2 — A prompt given on the command line is submitted without keys, for a ne
   const session = await agent.startNew({ prompt: 'the prompt of a new session' });
   const first = await agent.hook('UserPromptSubmit');
   await agent.hook('Stop');
-  await endSession(session, 'SIGTERM');
+  await agent.end(session, 'SIGTERM');
   await agent.resume(session.id, { prompt: 'the prompt of a resumed session' });
   const second = await agent.hook('UserPromptSubmit');
   await agent.hook('Stop');
@@ -46,7 +46,7 @@ it('3 — --resume <uuid> keeps the session id and the conversation', async () =
   const session = await agent.startNew({ prompt: 'the earlier prompt' });
   await agent.hook('SessionStart');
   await agent.hook('Stop');
-  await endSession(session, 'SIGTERM');
+  await agent.end(session, 'SIGTERM');
 
   const resumed = await agent.resume(session.id, { prompt: 'the later prompt' });
   const start = await agent.hook('SessionStart');
@@ -55,7 +55,9 @@ it('3 — --resume <uuid> keeps the session id and the conversation', async () =
   expect(start.payload).toMatchObject({ source: 'resume', session_id: session.id });
   // The agent adds texts of its own around what was said; the conversation is these, in order.
   const said = ['the earlier prompt', 'The earlier answer.', 'the later prompt'];
-  const texts = conversationTexts(await agent.api.conversationRequest(2));
+  const texts = conversationTexts(
+    await agent.waitFor('the second conversation request', agent.api.conversationRequest(2)),
+  );
   expect(texts.filter((text) => said.includes(text))).toEqual(said);
   expect(userTexts(resumed)).toEqual(['the earlier prompt', 'the later prompt']);
 });

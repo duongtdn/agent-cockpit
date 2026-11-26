@@ -32,11 +32,11 @@ export interface HookReceiver {
   /** Gives the names of the events received so far, in the order of arrival. */
   events(): string[];
   /**
-   * Gives settings that send a session's hooks here: HTTP hooks for the
-   * events of a session's start, prompts, tools, turn ends and end,
-   * `SessionStart` included, with an `Authorization` header; command hooks
-   * for `SessionStart` and `SessionEnd`. An agent, real or fake, is given
-   * both kinds so that a test sees which one it uses.
+   * Gives settings that send a session's hooks here: an HTTP hook for every
+   * event there is ({@link HOOK_EVENTS}), `SessionStart` included, with an
+   * `Authorization` header; command hooks for `SessionStart` and
+   * `SessionEnd`. An agent, real or fake, is given both kinds so that a
+   * test sees which one it uses.
    */
   settings(): object;
   /** Holds, from now on, the hooks of an event until the test answers them; the others get `{}` at once. */
@@ -54,15 +54,49 @@ export interface HookReceiver {
 /** The header the receiver's settings give every HTTP hook. */
 export const RECEIVER_AUTHORIZATION = 'Bearer hook-receiver-test-token';
 
-const HTTP_EVENTS = [
-  'SessionStart',
-  'UserPromptSubmit',
+/**
+ * Every hook event of the pinned Claude Code, as its settings name them. The
+ * receiver registers them all, so that a test that saw no hook saw that
+ * none fired. A contract test compares the list with the agent's own.
+ */
+export const HOOK_EVENTS: readonly string[] = [
   'PreToolUse',
-  'PermissionRequest',
   'PostToolUse',
-  'Stop',
+  'PostToolUseFailure',
+  'PostToolBatch',
+  'Notification',
+  'UserPromptSubmit',
+  'UserPromptExpansion',
+  'SessionStart',
   'SessionEnd',
+  'Stop',
+  'StopFailure',
+  'SubagentStart',
+  'SubagentStop',
+  'PreCompact',
+  'PostCompact',
+  'PreModelSwitch',
+  'PostModelSwitch',
+  'PermissionRequest',
+  'PermissionDenied',
+  'Setup',
+  'TeammateIdle',
+  'TaskCreated',
+  'TaskCompleted',
+  'Elicitation',
+  'ElicitationResult',
+  'ConfigChange',
+  'WorktreeCreate',
+  'WorktreeRemove',
+  'InstructionsLoaded',
+  'CwdChanged',
+  'FileChanged',
+  'DirectoryAdded',
+  'MessageDisplay',
+  'PreSkillShellCommand',
 ];
+
+/** The events that also get a command hook: the one Claude Code does not post, and the one it tells both ways. */
 const COMMAND_EVENTS = ['SessionStart', 'SessionEnd'];
 
 const REPORT_HOOK = fileURLToPath(new URL('./report-hook.mjs', import.meta.url));
@@ -137,7 +171,7 @@ function settingsFor(address: string): object {
   const groups = new Map<string, object[]>();
   const add = (event: string, hook: object) =>
     groups.set(event, [...(groups.get(event) ?? []), { matcher: '*', hooks: [hook] }]);
-  for (const event of HTTP_EVENTS) {
+  for (const event of HOOK_EVENTS) {
     add(event, {
       type: 'http',
       url: `${address}/http/${event}`,

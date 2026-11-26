@@ -36,3 +36,29 @@ export function pinnedAgentVersion(): string {
   if (version === undefined) throw new Error(`The pinned agent printed no version: ${printed}`);
   return version;
 }
+
+/** How the agent's program begins the list of its hook events, wherever it writes it. */
+const HOOK_EVENTS_START = '["PreToolUse","PostToolUse",';
+
+/**
+ * Reads the hook events the pinned agent has from its own program, which
+ * holds their names as a list: what its settings accept under `hooks`.
+ *
+ * @returns The names, each once.
+ * @throws Error when the program holds no such list: it is written another
+ * way in this version, and the list is to be found again.
+ */
+export function pinnedAgentHookEvents(): string[] {
+  const program = readFileSync(pinnedAgentBinary());
+  const events = new Set<string>();
+  let start = program.indexOf(HOOK_EVENTS_START);
+  while (start !== -1) {
+    const end = program.indexOf(']', start);
+    for (const event of JSON.parse(program.toString('utf8', start, end + 1)) as string[]) {
+      events.add(event);
+    }
+    start = program.indexOf(HOOK_EVENTS_START, end);
+  }
+  if (events.size === 0) throw new Error('The pinned agent holds no list of its hook events.');
+  return [...events];
+}

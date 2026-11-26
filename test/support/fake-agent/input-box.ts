@@ -12,6 +12,8 @@ export interface InputBox {
    * @returns The text it held.
    */
   take(): string;
+  /** Puts a text back into the box, at its end. */
+  putBack(text: string): void;
 }
 
 /**
@@ -47,5 +49,9 @@ export function createInputBox(): InputBox {
     return taken;
   }
 
-  return { text: () => text, press, take };
+  function putBack(returned: string): void {
+    text += returned;
+  }
+
+  return { text: () => text, press, take, putBack };
 }

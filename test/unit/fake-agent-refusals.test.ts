@@ -1,67 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  CANNOT_PLAY_STATUS,
-  createFakeAgent,
-  type FakeAgent,
-} from '../support/fake-agent/agent.ts';
-import type { ScreenView } from '../support/fake-agent/screen.ts';
-import type { Turn } from '../support/fake-agent/script.ts';
+import { CANNOT_PLAY_STATUS } from '../support/fake-agent/agent.ts';
+import { type Played, playFakeAgent as start, submit } from '../support/played-fake-agent.ts';
 
 const touch = { do: 'tool', name: 'Bash', input: { command: 'touch a.txt' } } as const;
 const write = { do: 'tool', name: 'Write', input: { file_path: 'a.txt', content: '' } } as const;
 const reply = { do: 'reply', text: 'Done.' } as const;
-
-/** A fake agent with nothing around it, and what it showed, fired and exited with. */
-interface Played {
-  readonly agent: FakeAgent;
-  /** The names of the hook events fired, in order. */
-  readonly fired: string[];
-  /** The statuses the agent exited with: one at most, unless it went on after its exit. */
-  readonly exits: number[];
-  /** What the screen shows now. */
-  screen(): ScreenView;
-}
-
-/** What a test chooses about an agent: its script, its mode, what its hooks answer by event. */
-interface Playing {
-  readonly script: readonly Turn[] | (() => readonly Turn[]);
-  readonly mode?: string;
-  readonly hookAnswers?: Readonly<Record<string, unknown>>;
-}
-
-async function start({ script, mode = 'default', hookAnswers = {} }: Playing): Promise<Played> {
-  const fired: string[] = [];
-  const exits: number[] = [];
-  const views: ScreenView[] = [];
-  const agent = createFakeAgent({
-    commandLine: {
-      sessionId: '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11',
-      resumes: false,
-      settingsFile: undefined,
-      permissionMode: mode,
-      prompt: undefined,
-    },
-    hooks: {
-      fire: async (event) => {
-        fired.push(event.name);
-        return [hookAnswers[event.name] ?? {}];
-      },
-    },
-    transcript: { recordPrompt: () => {}, recordReply: () => {}, recordInterruption: () => {} },
-    promptsTaken: 0,
-    startReleased: async () => {},
-    readScript: typeof script === 'function' ? script : () => script,
-    show: (view) => views.push(view),
-    exit: (status) => exits.push(status),
-  });
-  await agent.start();
-  return { agent, fired, exits, screen: () => views.at(-1) as ScreenView };
-}
-
-function submit(played: Played, prompt: string): void {
-  played.agent.press({ kind: 'text', text: prompt });
-  played.agent.press({ kind: 'enter' });
-}
 
 /** Waits until the agent has failed, and checks it said why and went no further. */
 async function expectFailure(played: Played, problem: RegExp): Promise<void> {
@@ -146,6 +89,82 @@ describe('the fake agent, asked to play what it has no evidence for', () => {
       expect(played.fired).toEqual(['SessionStart', 'UserPromptSubmit', 'PreToolUse']);
     },
   );
+
+  const permissionAnswer = (decision: object) => ({
+    hookSpecificOutput: { hookEventName: 'PermissionRequest', decision },
+  });
+
+  it.each([
+    [
+      'SessionStart',
+      { hookSpecificOutput: { additionalContext: 'Remember.' } },
+      /SessionStart.*"hookSpecificOutput"/,
+      ['SessionStart'],
+    ],
+    [
+      'UserPromptSubmit',
+      { decision: 'block', reason: 'Not now.' },
+      /UserPromptSubmit.*"decision"/,
+      ['SessionStart', 'UserPromptSubmit'],
+    ],
+    [
+      'Stop',
+      { decision: 'block', reason: 'Go on.' },
+      /Stop.*"decision"/,
+      [
+        'SessionStart',
+        'UserPromptSubmit',
+        'PreToolUse',
+        'PermissionRequest',
+        'PostToolUse',
+        'Stop',
+      ],
+    ],
+    [
+      'PostToolUse',
+      { continue: false },
+      /PostToolUse.*"continue"/,
+      ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse'],
+    ],
+    [
+      'PermissionRequest',
+      permissionAnswer({ behavior: 'allow', updatedPermissions: [{ type: 'addRules' }] }),
+      /PermissionRequest.*"updatedPermissions"/,
+      ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest'],
+    ],
+    [
+      'PermissionRequest',
+      permissionAnswer({ behavior: 'ask' }),
+      /PermissionRequest.*"ask"/,
+      ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest'],
+    ],
+  ])(
+    'fails when a %s hook answers what it does not play: %j',
+    async (event, answer, problem, firedBefore) => {
+      const allowed = permissionAnswer({ behavior: 'allow' });
+      const played = await start({
+        script: [[touch, reply]],
+        hookAnswers: { PermissionRequest: allowed, [event]: answer },
+      });
+
+      submit(played, 'touch it');
+
+      await expectFailure(played, problem);
+      expect(played.fired).toEqual(firedBefore);
+    },
+  );
+
+  it('fails when a SessionEnd hook answers what it does not play, in place of its own exit', async () => {
+    const played = await start({
+      script: [[reply]],
+      hookAnswers: { SessionEnd: { continue: false } },
+    });
+
+    await played.agent.terminate();
+
+    expect(played.exits).toEqual([CANNOT_PLAY_STATUS]);
+    expect(played.screen().problem).toMatch(/SessionEnd.*"continue"/);
+  });
 
   it.each(['acceptEdits', 'plan', 'auto', 'bypassPermissions'])(
     'fails on a tool that is no touch in the %s mode, and runs a touch',

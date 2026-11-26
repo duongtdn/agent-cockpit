@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
@@ -16,7 +16,7 @@ import {
   ROOT_NAME_PREFIX,
   variablesAfter,
 } from './environment.ts';
-import { assertStaysLocal, loopbackOrigin } from './guard.ts';
+import { type AgentLaunch, assertStaysLocal, loopbackOrigin } from './guard.ts';
 
 /** What a runner is started with. */
 export interface RealAgentRunnerOptions {
@@ -25,7 +25,10 @@ export interface RealAgentRunnerOptions {
    * its origin. A plain HTTP address of the loopback interface, with its port.
    */
   readonly apiBaseUrl: string;
-  /** The content of the `--settings` file of every session: its hooks and its permissions, nothing else. */
+  /**
+   * The settings of every session, given written out with `--settings`:
+   * what the launch rules let pass, its hooks and its permissions.
+   */
   readonly settings: object;
 }
 
@@ -38,8 +41,16 @@ export interface LaunchOptions {
 /** An entry of a transcript: one line of its file, parsed. Its format is the agent's own. */
 export type TranscriptEntry = Readonly<Record<string, unknown>>;
 
+/** How a session was when it was last seen. */
+export interface SessionEnd {
+  /** The last screen read of the session; `undefined` when it was gone before any was. */
+  readonly lastScreen: string | undefined;
+}
+
 /** A session of the real agent, in a terminal of its own. */
 export interface AgentSession {
+  /** The session's name on its host, for a message to tell it from the others. */
+  readonly name: string;
   /** The conversation's id. */
   readonly id: string;
   /** Types text into the terminal, as a person would. */
@@ -58,6 +69,11 @@ export interface AgentSession {
   processId(): Promise<number>;
   /** Tells whether the session lives: its terminal exists. */
   isLive(): Promise<boolean>;
+  /**
+   * Fulfilled once the session is gone, however it went: its agent exited,
+   * at its launch too, it was killed, or the runner closed.
+   */
+  readonly ended: Promise<SessionEnd>;
 }
 
 /** Runs the pinned agent for one test, in folders and on a tmux socket of its own. */
@@ -70,9 +86,9 @@ export interface RealAgentRunner {
    * Launches a new conversation (`--session-id`).
    *
    * @returns The session, as soon as its terminal exists: the agent is still starting.
-   * @throws Error when what the agent would be started with — its
-   * environment, its settings, its root — could take it to Anthropic or to
-   * the person's configuration.
+   * @throws Error when what the agent would be started with or would read —
+   * its environment, its arguments, its folders, any settings file — could
+   * take it to Anthropic or to the person's configuration.
    */
   startNew(options?: LaunchOptions): Promise<AgentSession>;
   /**
@@ -103,12 +119,13 @@ const TYPING = { chunkLength: 100, pauseMs: 5 };
 /** How long an agent's process may take to exit once its terminal is gone, before it is killed. */
 const EXIT_TIMEOUT_MS = 5000;
 const EXIT_POLL_MS = 20;
+/** How often a session is looked at, to know when it is gone and what it showed last. */
+const WATCH_POLL_MS = 50;
 
 /**
  * Starts a runner: makes its temporary root (the agent's `HOME`, its
- * configuration folder, a trusted work folder, its temporary folder, the
- * settings file) and names
- * a tmux socket no other run has. Nothing runs until a launch.
+ * configuration folder, a trusted work folder, its temporary folder) and
+ * names a tmux socket no other run has. Nothing runs until a launch.
  *
  * @param options - The API's address and the sessions' settings.
  * @returns The runner; the caller closes it, whatever the test's outcome.
@@ -120,8 +137,6 @@ export async function startRealAgentRunner(
 ): Promise<RealAgentRunner> {
   const apiOrigin = loopbackOrigin(options.apiBaseUrl);
   const folders = await createFolders();
-  const settingsFile = join(folders.root, 'settings.json');
-  await writeFile(settingsFile, JSON.stringify(options.settings));
   const environment = agentEnvironment(folders, apiOrigin);
   const host = createTmuxSessionHost({ appName: `real-agent-${randomUUID()}` });
   const processIds: number[] = [];
@@ -133,33 +148,35 @@ export async function startRealAgentRunner(
     { prompt }: LaunchOptions,
   ): Promise<AgentSession> {
     const changes = onlyTheseVariables(environment, process.env);
-    assertStaysLocal({
+    const checked: AgentLaunch = {
       environment: variablesAfter(changes, process.env),
-      // Read back: what is checked is what the agent will read.
-      settings: JSON.parse(await readFile(settingsFile, 'utf8')),
-      root: folders.root,
-    });
-    launches += 1;
-    const name = `agent-${launches}`;
-    await host.start({
-      name,
-      folder: folders.workFolder,
-      command: pinnedAgentBinary(),
       args: [
         ...conversation,
+        // Written out: the agent reads the very text that is checked, and no file that could change after it.
         '--settings',
-        settingsFile,
+        JSON.stringify(options.settings),
         '--permission-mode',
         'default',
         '--model',
         'haiku',
         ...(prompt === undefined ? [] : ['--', prompt]),
       ],
+      workFolder: folders.workFolder,
+      root: folders.root,
+    };
+    assertStaysLocal(checked);
+    launches += 1;
+    const name = `agent-${launches}`;
+    await host.start({
+      name,
+      folder: checked.workFolder,
+      command: pinnedAgentBinary(),
+      args: checked.args,
       environment: changes,
       size: TERMINAL_SIZE,
     });
     const session = sessionOf(host, name, conversation[1], folders.configFolder);
-    // Remembered for the teardown; an agent that exited at once has none.
+    // Remembered for the teardown. An agent that exited at once has none: its session's end tells.
     await session.processId().then(
       (pid) => processIds.push(pid),
       () => undefined,
@@ -204,11 +221,17 @@ function sessionOf(
   id: string,
   configFolder: string,
 ): AgentSession {
+  let lastScreen: string | undefined;
+  const screen = async () => {
+    lastScreen = (await host.readScreen(name)).text;
+    return lastScreen;
+  };
   return {
+    name,
     id,
     type: (text) => host.sendText(name, text, TYPING),
     press: (...keys) => host.sendKeys(name, keys),
-    screen: async () => (await host.readScreen(name)).text,
+    screen,
     transcript: () => readTranscript(configFolder, id),
     processId: async () => {
       const running = await host.processOf(name);
@@ -216,7 +239,24 @@ function sessionOf(
       return running.pid;
     },
     isLive: () => host.isLive(name),
+    ended: gone(host, name, screen).then(() => ({ lastScreen })),
   };
+}
+
+/**
+ * Waits until a session is gone, reading its screen meanwhile: a session
+ * host tells of no end, and a session that is gone shows nothing.
+ */
+async function gone(
+  host: SessionHost,
+  name: string,
+  readScreen: () => Promise<unknown>,
+): Promise<void> {
+  // A host that cannot be asked has no session to show either.
+  while (await host.isLive(name).catch(() => false)) {
+    await readScreen().catch(() => undefined);
+    await pause(WATCH_POLL_MS);
+  }
 }
 
 function readTranscript(configFolder: string, sessionId: string): TranscriptEntry[] {
@@ -252,7 +292,7 @@ async function tearDown(
   } finally {
     try {
       // An agent still writes its files while it exits.
-      await Promise.all(processIds.map(gone));
+      await Promise.all(processIds.map(exited));
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5 });
     }
@@ -269,7 +309,7 @@ function isRunning(pid: number): boolean {
 }
 
 /** Waits for a process to exit, and kills one that does not. */
-async function gone(pid: number): Promise<void> {
+async function exited(pid: number): Promise<void> {
   const deadline = Date.now() + EXIT_TIMEOUT_MS;
   while (isRunning(pid)) {
     if (Date.now() > deadline) {

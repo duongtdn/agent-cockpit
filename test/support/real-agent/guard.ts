@@ -1,14 +1,31 @@
-import { lstatSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
-import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
-import { FAKE_API_KEY, ROOT_NAME_PREFIX } from './environment.ts';
+import { basename, dirname, resolve } from 'node:path';
+import { ROOT_NAME_PREFIX } from './environment.ts';
+import {
+  aRealFolderInsideTheRoot,
+  argumentsProblem,
+  isInside,
+  isRealFolder,
+  plainLoopbackOrigin,
+  RULES_FILE,
+  ruleIn,
+  settingsProblem,
+  VARIABLE_RULES,
+} from './launch-rules.ts';
+import { settingsFilesOf } from './settings-sources.ts';
 
 /** Everything a launch hands the agent that decides whom it calls and whose files it reads. */
 export interface AgentLaunch {
-  /** Every variable the agent would start with. */
+  /**
+   * Every variable the launch gives the agent. Its process has the
+   * terminal's own beside them, which no launch carries.
+   */
   readonly environment: Readonly<Record<string, string>>;
-  /** The content of its `--settings` file, parsed. */
-  readonly settings: unknown;
+  /** The agent's arguments, its settings among them, exactly as it would get them. */
+  readonly args: readonly string[];
+  /** The folder the session would work in. */
+  readonly workFolder: string;
   /** The temporary folder the run owns. */
   readonly root: string;
 }
@@ -19,80 +36,48 @@ export interface Machine {
   readonly temporaryFolder: string;
   /** The person's home. */
   readonly home: string;
-}
-
-/** Tells why a variable's value is refused, or nothing when it may pass. */
-type Rule = (value: string, root: string) => string | undefined;
-
-const anyValue: Rule = () => undefined;
-
-const aFolderInsideTheRoot: Rule = (value, root) =>
-  isInside(value, root) ? undefined : `not a folder inside ${root}`;
-
-const aLoopbackOrigin: Rule = (value) =>
-  plainLoopbackOrigin(value) === value
-    ? undefined
-    : 'not the origin of a plain http address of the loopback interface, with its port';
-
-function exactly(expected: string): Rule {
-  return (value) => (value === expected ? undefined : `not ${JSON.stringify(expected)}`);
+  /** The folders the agent reads an organization's managed settings from, on this system. */
+  readonly managedSettingsFolders: readonly string[];
 }
 
 /**
- * The variables an agent must start with, and what each must be: without
- * any of them it would read the person's files or call hosts of its own.
+ * Where the agent reads managed settings on Linux, and on WSL, where it
+ * may be told to take the ones of Windows. A folder that does not exist
+ * holds none.
  */
-const REQUIRED_VARIABLES: Readonly<Record<string, Rule>> = {
-  HOME: aFolderInsideTheRoot,
-  CLAUDE_CONFIG_DIR: aFolderInsideTheRoot,
-  TMPDIR: aFolderInsideTheRoot,
-  ANTHROPIC_BASE_URL: aLoopbackOrigin,
-  ANTHROPIC_API_KEY: exactly(FAKE_API_KEY),
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: exactly('1'),
-  CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: exactly('1'),
-  DISABLE_AUTOUPDATER: exactly('1'),
-};
-
-/**
- * Every variable an agent may start with. Any other is refused, whatever it
- * holds: a proxy, a switch to a cloud provider's API, another login or a
- * loader's option would each take the agent past what is checked here.
- */
-const ALLOWED_VARIABLES: Readonly<Record<string, Rule>> = {
-  ...REQUIRED_VARIABLES,
-  PATH: anyValue,
-  LANG: anyValue,
-};
-
-/**
- * The settings an agent may be given. Any other is refused: `env` would
- * replace the variables checked here, `apiKeyHelper` would run a program
- * for a key, and what a setting not listed does is not known here.
- */
-const ALLOWED_SETTINGS: readonly string[] = ['hooks', 'permissions'];
-
-/** The addresses that are the loopback interface, as a URL names its host. */
-const LOOPBACK_HOSTS: readonly string[] = ['127.0.0.1', '[::1]'];
+const MANAGED_SETTINGS_FOLDERS = ['/etc/claude-code', '/mnt/c/Program Files/ClaudeCode'];
 
 /**
  * Refuses a launch in which the agent could reach Anthropic or the person's
  * own configuration. The runner calls it before every launch: no mistake in
- * a test may cost a real request or touch a real login.
+ * a test may cost a real request or touch a real login. It asks one
+ * question of everything the agent would read — its variables, its
+ * arguments, every settings file — is it inside the run's root, and does a
+ * rule let it pass? The rules are the tables of `launch-rules.ts`.
+ *
+ * A machine's managed settings are read under the same rules as any other
+ * settings file: an organization's file that only adds permissions lets
+ * the suite run, one that could send the agent elsewhere stops it.
  *
  * @param launch - What the agent would be started with.
- * @param machine - The machine's temporary folder and the person's home; this machine's by default.
+ * @param machine - The machine's temporary folder, the person's home and
+ * where managed settings are; this machine's by default.
  * @throws Error saying what is refused: a root that is not a folder the
- * runner made in the temporary folder, or that holds the person's home;
- * settings other than hooks and permissions; a variable that is not the
- * recipe's, or one of the recipe's that is missing or holds something else —
- * `ANTHROPIC_BASE_URL` anything but a loopback origin, `HOME`,
- * `CLAUDE_CONFIG_DIR` or `TMPDIR` anything but a folder inside the root.
+ * runner made in the temporary folder, or that holds the person's home; a
+ * work folder that is no real folder inside the root; a variable with no
+ * rule, or one missing or holding something else — `ANTHROPIC_BASE_URL`
+ * anything but a loopback origin, `HOME`, `CLAUDE_CONFIG_DIR` or `TMPDIR`
+ * anything but a real folder inside the root; an argument with no rule, or
+ * settings given as a file; a setting with no rule, or one its rule
+ * refuses, on the command line or in any settings file the agent reads.
  */
 export function assertStaysLocal(launch: AgentLaunch, machine: Machine = thisMachine()): void {
   const problem =
     rootProblem(launch.root, machine) ??
-    settingsProblem(launch.settings) ??
-    environmentProblem(launch.environment, launch.root);
+    workFolderProblem(launch) ??
+    environmentProblem(launch.environment, launch.root) ??
+    argumentsProblem(launch.args, launch.root) ??
+    settingsFilesProblem(launch, machine);
   if (problem !== undefined) throw new Error(`The real agent is not started: ${problem}.`);
 }
 
@@ -117,23 +102,13 @@ export function loopbackOrigin(address: string): string {
   return origin;
 }
 
-function plainLoopbackOrigin(text: string): string | undefined {
-  if (!URL.canParse(text)) return undefined;
-  const url = new URL(text);
-  const hasOnlyAnOrigin =
-    url.username === '' &&
-    url.password === '' &&
-    url.pathname === '/' &&
-    url.search === '' &&
-    url.hash === '';
-  const isLoopback =
-    url.protocol === 'http:' && LOOPBACK_HOSTS.includes(url.hostname) && url.port !== '';
-  return hasOnlyAnOrigin && isLoopback ? url.origin : undefined;
-}
-
 function thisMachine(): Machine {
-  // The home of the account, not of a `HOME` a caller may have changed.
-  return { temporaryFolder: realpathSync(tmpdir()), home: userInfo().homedir };
+  return {
+    temporaryFolder: realpathSync(tmpdir()),
+    // The home of the account, not of a `HOME` a caller may have changed.
+    home: userInfo().homedir,
+    managedSettingsFolders: MANAGED_SETTINGS_FOLDERS,
+  };
 }
 
 function rootProblem(root: string, machine: Machine): string | undefined {
@@ -154,42 +129,63 @@ function isMadeByTheRunner(root: string, machine: Machine): boolean {
     resolve(root) === root &&
     dirname(root) === machine.temporaryFolder &&
     basename(root).startsWith(ROOT_NAME_PREFIX);
-  // A link is no folder to lstat: what it leads to is not what was checked.
-  return isNamedAsOne && lstatSync(root, { throwIfNoEntry: false })?.isDirectory() === true;
+  return isNamedAsOne && isRealFolder(root);
 }
 
-function settingsProblem(settings: unknown): string | undefined {
-  if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) {
-    return 'the settings are no object';
-  }
-  const refused = Object.keys(settings).find((name) => !ALLOWED_SETTINGS.includes(name));
-  if (refused === undefined) return undefined;
-  return `the settings carry ${describe(refused)}, and an agent is given only ${ALLOWED_SETTINGS.join(' and ')}`;
+function workFolderProblem(launch: AgentLaunch): string | undefined {
+  const problem = aRealFolderInsideTheRoot(launch.workFolder, launch.root);
+  return problem === undefined
+    ? undefined
+    : `the work folder ${describe(launch.workFolder)} is ${problem}`;
 }
 
 function environmentProblem(
   environment: Readonly<Record<string, string>>,
   root: string,
 ): string | undefined {
-  const refused = Object.keys(environment).find((name) => !Object.hasOwn(ALLOWED_VARIABLES, name));
-  if (refused !== undefined) return `${refused} is no variable an agent is given`;
-  for (const name of Object.keys(REQUIRED_VARIABLES)) {
-    if (environment[name] === undefined) return `${name} is not set`;
+  for (const [name, rule] of Object.entries(VARIABLE_RULES)) {
+    if (rule.given === 'required' && environment[name] === undefined) return `${name} is not set`;
   }
   for (const [name, value] of Object.entries(environment)) {
-    const reason = ALLOWED_VARIABLES[name]?.(value, root);
+    const rule = ruleIn(VARIABLE_RULES, name);
+    if (rule === undefined) {
+      return `${name} is no variable an agent is given: it has no rule in VARIABLE_RULES (${RULES_FILE})`;
+    }
+    if (rule.given === 'by the terminal')
+      return `${name} is the terminal's to give, not a launch's`;
+    const reason = rule.check(value, root);
     // The key's value stays out of a failure message, fake or not.
     if (reason !== undefined) return `${name} is ${reason}`;
   }
   return undefined;
 }
 
-function describe(value: string): string {
-  return JSON.stringify(value);
+/** Every settings file the agent would read passes the rules the settings of the command line pass. */
+function settingsFilesProblem(launch: AgentLaunch, machine: Machine): string | undefined {
+  const files = settingsFilesOf({
+    // Checked before: the environment has it, a real folder inside the root.
+    configFolder: launch.environment.CLAUDE_CONFIG_DIR as string,
+    workFolder: launch.workFolder,
+    managedSettingsFolders: machine.managedSettingsFolders,
+  });
+  for (const file of files) {
+    const problem = settingsFileProblem(file, launch.root);
+    if (problem !== undefined)
+      return `the settings of ${file}, which the agent would read: ${problem}`;
+  }
+  return undefined;
 }
 
-function isInside(folder: string, root: string): boolean {
-  if (!isAbsolute(folder)) return false;
-  const fromRoot = relative(resolve(root), resolve(folder));
-  return fromRoot !== '' && !fromRoot.startsWith('..') && !isAbsolute(fromRoot);
+function settingsFileProblem(file: string, root: string): string | undefined {
+  let settings: unknown;
+  try {
+    settings = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return 'they cannot be read as JSON';
+  }
+  return settingsProblem(settings, root);
+}
+
+function describe(value: string): string {
+  return JSON.stringify(value);
 }

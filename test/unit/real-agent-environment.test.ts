@@ -4,6 +4,7 @@ import {
   agentEnvironment,
   FAKE_API_KEY,
   onlyTheseVariables,
+  TERMINAL_VARIABLES,
   variablesAfter,
 } from '../support/real-agent/environment.ts';
 
@@ -78,6 +79,16 @@ describe('what a session finds in its environment', () => {
     const variables = { PATH: '/usr/bin' };
 
     expect(variablesAfter(onlyTheseVariables(variables, inherited), inherited)).toEqual(variables);
+  });
+
+  it("leaves the terminal's own variables to the host: neither removed nor taken from the calling process", () => {
+    const inherited = Object.fromEntries(TERMINAL_VARIABLES.map((name) => [name, "the caller's"]));
+    const variables = { PATH: '/usr/bin' };
+
+    const changes = onlyTheseVariables(variables, { ...inherited, EDITOR: 'vi' });
+
+    expect(changes.remove).toEqual(['EDITOR']);
+    expect(variablesAfter(changes, inherited)).toEqual(variables);
   });
 });
 

@@ -27,18 +27,20 @@ export interface ToolCall {
 export interface HookEvent {
   /** The event's name, as Claude Code names it. */
   readonly name: string;
-  /** The tool of a tool event, which a hook's matcher selects on. */
-  readonly toolName: string | undefined;
   /** The fields that are the event's own. */
   readonly fields: Readonly<Record<string, unknown>>;
 }
 
 function event(name: string, fields: Readonly<Record<string, unknown>>): HookEvent {
-  return { name, toolName: undefined, fields };
+  return { name, fields };
 }
 
-function toolEvent(name: string, call: ToolCall, fields: Readonly<Record<string, unknown>>) {
-  return { name, toolName: call.name, fields: { tool_name: call.name, ...fields } };
+function toolEvent(
+  name: string,
+  call: ToolCall,
+  fields: Readonly<Record<string, unknown>>,
+): HookEvent {
+  return event(name, { tool_name: call.name, ...fields });
 }
 
 /** The session takes input: it started (`startup`) or was resumed (`resume`). */

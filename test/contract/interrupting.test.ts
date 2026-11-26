@@ -19,6 +19,12 @@ const RUNS_UNTIL_INTERRUPTED = `touch ${TOOL_STARTED}; timeout 30 tail -f /dev/n
 /** The prompt given once a turn was interrupted, and the scripted answer that ends its turn. */
 const NEXT_PROMPT = 'go on';
 const NEXT_ANSWER = turn('Going on.');
+/**
+ * Every hook of the turn that answers the next prompt: the prompt, its
+ * answer shown, the end. With every event registered, these alone since
+ * the Esc mean the interruption fired none.
+ */
+const NEXT_TURN_HOOKS = ['UserPromptSubmit', 'MessageDisplay', 'Stop'];
 
 /**
  * Presses Esc in a session that is busy with a prompt, and checks what
@@ -46,7 +52,7 @@ async function expectInterruption(
   expect(hooksSince()).toEqual(['UserPromptSubmit']);
   const stop = await agent.hook('Stop');
   expect(stop.payload.last_assistant_message).toBe('Going on.');
-  expect(hooksSince()).toEqual(['UserPromptSubmit', 'Stop']);
+  expect(hooksSince()).toEqual(NEXT_TURN_HOOKS);
   await agent.eventually(() =>
     expect(userTexts(session)).toEqual([interrupted.prompt, interrupted.marker, NEXT_PROMPT]),
   );
@@ -62,11 +68,11 @@ async function interruptWhileGenerating(): Promise<void> {
   );
   const session = await agent.startNew({ prompt: 'check, then think' });
   await agent.hook('UserPromptSubmit');
-  const held = await agent.api.heldRequest();
+  const held = await agent.waitFor('the request the API holds', agent.api.heldRequest());
 
   await expectInterruption(agent, session, { prompt: 'check, then think', marker: INTERRUPTED });
 
-  expect(await held.ended).toBe('client-gone');
+  expect(await agent.waitFor('the held request to end', held.ended)).toBe('client-gone');
 }
 
 async function interruptWhileAToolRuns(): Promise<void> {
@@ -81,8 +87,6 @@ async function interruptWhileAToolRuns(): Promise<void> {
   await agent.eventually(() => expect(existsSync(join(agent.workFolder, TOOL_STARTED))).toBe(true));
 
   await expectInterruption(agent, session, { prompt: 'wait', marker: INTERRUPTED_FOR_TOOL_USE });
-
-  expect(agent.hooks.events()).not.toContain('PostToolUse');
 }
 
 it('6 — Esc while the agent generates or runs a tool fires no hook; the transcript records an interruption marker at once', async () => {

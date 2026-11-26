@@ -1,6 +1,7 @@
 import type { CommandLine } from './command-line.ts';
-import { type Decision, decisionOf } from './hook-decisions.ts';
+import { type Decision, decisionOf } from './hook-answers.ts';
 import {
+  type HookEvent,
   permissionRequest,
   postToolUse,
   preToolUse,
@@ -70,8 +71,11 @@ export interface FakeAgent {
   terminate(): Promise<void>;
 }
 
-/** The exit status of a process ended by SIGTERM, by the shells' convention. */
+/** The status Claude Code exits with on a SIGTERM: the signal's, by the shells' convention. */
 const TERMINATED_STATUS = 143;
+
+/** The status Claude Code exits with when the person leaves. */
+const LEFT_STATUS = 0;
 
 /** Thrown inside a turn to end it as an interruption does: with no hook. */
 class Interruption extends Error {}
@@ -80,6 +84,11 @@ class Interruption extends Error {}
 interface RunningTurn {
   /** Aborted when the turn is interrupted: the hooks it waits for are let go. */
   readonly signal: AbortSignal;
+  /**
+   * Whether the turn produced anything yet, a tool call or a text: an Esc
+   * before that withdraws the prompt instead of interrupting an answer.
+   */
+  produced: boolean;
   /** Whether a tool call is open, which names the interruption in the transcript. */
   toolCallOpen: boolean;
   interrupt(): void;
@@ -96,6 +105,7 @@ function startTurn(): RunningTurn {
   interrupted.catch(() => {});
   return {
     signal: controller.signal,
+    produced: false,
     toolCallOpen: false,
     interrupt: () => controller.abort(),
     during: (work) => Promise.race([work, interrupted]),
@@ -117,7 +127,7 @@ interface OpenDialog {
  * Creates a fake agent: it plays what Claude Code does in a session, as far
  * as the hooks, the keys and the screen show it — and only what was observed
  * of Claude Code. Asked for anything else (a prompt its script has no turn
- * for, an Enter while a turn runs, a hook's decision or a tool in a mode
+ * for, an Enter while a turn runs, a hook's answer or a tool in a mode
  * whose effect is not known), it shows the problem on its screen and exits
  * with {@link CANNOT_PLAY_STATUS}, with no hook: a guess would let a test
  * pass on a behavior Claude Code may not have.
@@ -154,16 +164,30 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     if (!ending) surroundings.show(view());
   }
 
+  /**
+   * Tells the hooks of an event, and reads what they answered.
+   *
+   * @throws `Error` for an answer the fake agent does not play.
+   */
+  async function fire(event: HookEvent, signal?: AbortSignal): Promise<Decision> {
+    return decisionOf(event.name, await hooks.fire(event, signal));
+  }
+
   async function start(): Promise<void> {
     show();
     await surroundings.startReleased();
-    const reported = hooks.fire(sessionStart(commandLine.resumes ? 'resume' : 'startup'));
+    const reported = fire(sessionStart(commandLine.resumes ? 'resume' : 'startup')).then(
+      () => true,
+      (error: unknown) => {
+        fail(messageOf(error));
+        return false;
+      },
+    );
     if (commandLine.prompt === undefined) {
       // Whoever learns of SessionStart may type at once: no key may be lost from here on.
       state = 'idle';
       show();
-    } else {
-      await reported;
+    } else if (await reported) {
       submit(commandLine.prompt);
     }
   }
@@ -188,10 +212,15 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     else if (state === 'idle' && box.text() !== '') submit(box.take());
   }
 
-  /** Ends the process as a program that cannot go on does, the reason on its screen. */
+  /** Ends the process as a program that cannot go on does, unless it ends already. */
   function fail(reason: string): void {
     if (ending) return;
     ending = true;
+    quit(reason);
+  }
+
+  /** Exits with the reason on the screen, which stays. */
+  function quit(reason: string): void {
     problem = reason;
     surroundings.show(view());
     surroundings.exit(CANNOT_PLAY_STATUS);
@@ -199,27 +228,47 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
 
   function submit(prompt: string): void {
     const running = startTurn();
+    const promptBefore = lastPrompt;
     turn = running;
     lastPrompt = prompt;
     state = 'busy';
     show();
-    void playTurn(prompt, running);
+    void playTurn(prompt, running, () => withdraw(prompt, promptBefore));
   }
 
-  async function playTurn(prompt: string, running: RunningTurn): Promise<void> {
+  /**
+   * Takes a prompt back as Claude Code does on an Esc before anything was
+   * produced: into the input box, with no word to the hooks or the
+   * transcript. The entry the prompt got when it was taken stays, as Claude
+   * Code leaves it, and so does its place in the script.
+   */
+  function withdraw(prompt: string, promptBefore: string | undefined): void {
+    box.putBack(prompt);
+    lastPrompt = promptBefore;
+  }
+
+  async function playTurn(
+    prompt: string,
+    running: RunningTurn,
+    withdrawPrompt: () => void,
+  ): Promise<void> {
     try {
       transcript.recordPrompt(prompt);
       const place = promptsTaken;
       promptsTaken += 1;
       const steps = turnAt(surroundings.readScript(), place);
-      await running.during(hooks.fire(userPromptSubmit(prompt), running.signal));
+      await running.during(fire(userPromptSubmit(prompt), running.signal));
       for (const step of steps) await play(step, running);
     } catch (error) {
       if (!(error instanceof Interruption)) {
-        fail(error instanceof Error ? error.message : String(error));
+        fail(messageOf(error));
         return;
       }
-      recordInterruption(running);
+      // What Esc did not abort, a deny that interrupts did not either: let go of every hook.
+      running.interrupt();
+      // Seen of Claude Code: a prompt is withdrawn only into an empty input box.
+      if (running.produced || box.text() !== '') recordInterruption(running);
+      else withdrawPrompt();
     }
     dialog = undefined;
     turn = undefined;
@@ -228,36 +277,35 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   }
 
   function recordInterruption(running: RunningTurn): void {
-    // What Esc did not abort, a deny that interrupts did not either: let go of every hook.
-    running.interrupt();
     transcript.recordInterruption(running.toolCallOpen ? INTERRUPTED_FOR_TOOL_USE : INTERRUPTED);
   }
 
   function play(step: Step, running: RunningTurn): Promise<unknown> {
     switch (step.do) {
       case 'reply':
+        running.produced = true;
         transcript.recordReply(step.text);
-        return running.during(hooks.fire(stop(step.text), running.signal));
+        return running.during(fire(stop(step.text), running.signal));
       case 'tool':
       case 'question':
         return playCall(planCall(step), running);
       case 'stay-busy':
         return running.during(new Promise(() => {}));
       case 'exit':
-        return end('prompt_input_exit', 0);
+        return end('prompt_input_exit', LEFT_STATUS);
     }
   }
 
   async function playCall(planned: PlannedCall, running: RunningTurn): Promise<void> {
     toolCalls += 1;
     const call = { id: `toolu_fake_${toolCalls}`, name: planned.name, input: planned.input };
+    running.produced = true;
     running.toolCallOpen = true;
-    const before = await running.during(hooks.fire(preToolUse(call), running.signal));
-    const input =
-      inputSettledBy(decisionOf(before), planned) ?? (await inputByMode(planned, call, running));
+    const before = await running.during(fire(preToolUse(call), running.signal));
+    const input = inputSettledBy(before, planned) ?? (await inputByMode(planned, call, running));
     if (input !== undefined) {
       const ran = postToolUse({ ...call, input }, planned.responseTo(input));
-      await running.during(hooks.fire(ran, running.signal));
+      await running.during(fire(ran, running.signal));
     }
     running.toolCallOpen = false;
   }
@@ -294,9 +342,11 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     });
     state = 'waiting';
     show();
-    const fromHooks = hooks
-      .fire(permissionRequest(call), running.signal)
-      .then((outputs) => outcomeOf(decisionOf(outputs), planned) ?? fromTerminal);
+    const fromHooks = fire(permissionRequest(call), running.signal).then(
+      (decision) => outcomeOf(decision, planned) ?? fromTerminal,
+    );
+    // The hook stays open after an answer in the terminal: what it answers then is still read.
+    fromHooks.catch((error: unknown) => fail(messageOf(error)));
     const outcome = await running.during(Promise.race([fromTerminal, fromHooks]));
     dialog = undefined;
     state = 'busy';
@@ -307,11 +357,20 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   async function end(reason: 'prompt_input_exit' | 'other', status: number): Promise<void> {
     if (ending) return;
     ending = true;
-    await hooks.fire(sessionEnd(reason));
+    try {
+      await fire(sessionEnd(reason));
+    } catch (error) {
+      quit(messageOf(error));
+      return;
+    }
     surroundings.exit(status);
   }
 
   return { start, press, terminate: () => end('other', TERMINATED_STATUS) };
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Gives the input an allow lets a call run with, or none when the decision does not settle the call. */

@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
-import { request as httpRequest } from 'node:http';
-import { request as httpsRequest } from 'node:https';
+import { request } from 'node:http';
 import { type HookEvent, payloadOf, type SessionContext } from './hook-events.ts';
 import { type CommandHook, type HookSettings, type HttpHook, hooksFor } from './hook-settings.ts';
 
@@ -33,7 +32,7 @@ export function createHookRunner(settings: HookSettings, session: SessionContext
       const payload = JSON.stringify(payloadOf(session, event));
       const abort = signal ? { signal } : {};
       return Promise.all(
-        hooksFor(settings, event.name, event.toolName).map((hook) =>
+        hooksFor(settings, event.name).map((hook) =>
           hook.type === 'command'
             ? runCommandHook(hook, payload, session.cwd, abort)
             : postHttpHook(hook, payload, abort),
@@ -75,7 +74,6 @@ function runCommandHook(
 
 /** Posts an HTTP hook, on a connection of its own so that letting go of it closes the connection. */
 function postHttpHook(hook: HttpHook, payload: string, abort: Abort): Promise<unknown> {
-  const request = hook.url.startsWith('https:') ? httpsRequest : httpRequest;
   return new Promise((resolve) => {
     const posting = request(
       hook.url,

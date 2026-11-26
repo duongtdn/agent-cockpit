@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decisionOf } from '../support/fake-agent/hook-decisions.ts';
+import { decisionOf } from '../support/fake-agent/hook-answers.ts';
 import {
   payloadOf,
   permissionRequest,
@@ -72,78 +72,140 @@ describe("the payloads of the fake agent's hooks", () => {
   it('SessionEnd carries the reason', () => {
     expect(payloadOf(session, sessionEnd('other'))).toMatchObject({ reason: 'other' });
   });
-
-  it('tool events name their tool, for the matchers; the others name none', () => {
-    expect(preToolUse(call).toolName).toBe('Bash');
-    expect(stop('Done.').toolName).toBeUndefined();
-  });
 });
 
 describe('what the hooks answered, as the fake agent reads it', () => {
   const updatedInput = { questions: [], answers: { 'Which?': 'A' } };
-
-  it('reads no decision from no answer, an empty one or one that is no object', () => {
-    expect(decisionOf([])).toEqual({ behavior: 'none' });
-    expect(decisionOf([{}, null, 'text'])).toEqual({ behavior: 'none' });
+  const beforeTheCall = (specific: object) => ({
+    hookSpecificOutput: { hookEventName: 'PreToolUse', ...specific },
+  });
+  const asked = (decision: object) => ({
+    hookSpecificOutput: { hookEventName: 'PermissionRequest', decision },
   });
 
-  it("reads a PreToolUse hook's allow, with the input it gives (behavior 13)", () => {
-    const output = {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        updatedInput,
-      },
-    };
+  it.each(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'Stop'])(
+    'reads no decision from no answer or an empty one of %s',
+    (event) => {
+      expect(decisionOf(event, [])).toEqual({ behavior: 'none' });
+      expect(decisionOf(event, [{}, {}])).toEqual({ behavior: 'none' });
+    },
+  );
 
-    expect(decisionOf([output])).toEqual({ behavior: 'allow', updatedInput });
+  it("reads a PreToolUse hook's allow, with the input it gives (behavior 13)", () => {
+    expect(decisionOf('PreToolUse', [beforeTheCall({ permissionDecision: 'allow' })])).toEqual({
+      behavior: 'allow',
+      updatedInput: undefined,
+    });
+    expect(
+      decisionOf('PreToolUse', [beforeTheCall({ permissionDecision: 'allow', updatedInput })]),
+    ).toEqual({ behavior: 'allow', updatedInput });
   });
 
   it.each(['deny', 'ask', 'defer', 7])(
     "refuses to read a PreToolUse hook's %j: nothing tells what Claude Code does with it",
     (permissionDecision) => {
-      const output = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision } };
-
-      expect(() => decisionOf([{}, output])).toThrow(
+      expect(() => decisionOf('PreToolUse', [{}, beforeTheCall({ permissionDecision })])).toThrow(
         `a PreToolUse hook answered ${JSON.stringify(permissionDecision)}`,
       );
     },
   );
 
   it("reads a PermissionRequest hook's allow, with or without an input (behavior 9)", () => {
-    const allow = (decision: object) => ({
-      hookSpecificOutput: { hookEventName: 'PermissionRequest', decision },
-    });
-
-    expect(decisionOf([allow({ behavior: 'allow' })])).toEqual({
+    expect(decisionOf('PermissionRequest', [asked({ behavior: 'allow' })])).toEqual({
       behavior: 'allow',
       updatedInput: undefined,
     });
-    expect(decisionOf([allow({ behavior: 'allow', updatedInput })])).toEqual({
+    expect(decisionOf('PermissionRequest', [asked({ behavior: 'allow', updatedInput })])).toEqual({
       behavior: 'allow',
       updatedInput,
     });
   });
 
-  it("reads a PermissionRequest hook's deny, and whether it interrupts the turn", () => {
-    const deny = (decision: object) => ({
-      hookSpecificOutput: { hookEventName: 'PermissionRequest', decision },
-    });
-
-    expect(decisionOf([deny({ behavior: 'deny', message: 'No.' })])).toEqual({
+  it("reads a PermissionRequest hook's deny, and whether it interrupts the turn (behavior 26)", () => {
+    expect(decisionOf('PermissionRequest', [asked({ behavior: 'deny', message: 'No.' })])).toEqual({
       behavior: 'deny',
       interrupts: false,
     });
-    expect(decisionOf([deny({ behavior: 'deny', interrupt: true })])).toEqual({
-      behavior: 'deny',
-      interrupts: true,
-    });
+    expect(decisionOf('PermissionRequest', [asked({ behavior: 'deny', interrupt: true })])).toEqual(
+      { behavior: 'deny', interrupts: true },
+    );
   });
 
   it('takes the first decision among several answers', () => {
-    const deny = { hookSpecificOutput: { decision: { behavior: 'deny' } } };
-    const allow = { hookSpecificOutput: { decision: { behavior: 'allow' } } };
+    const answers = [{}, asked({ behavior: 'deny' }), asked({ behavior: 'allow' })];
 
-    expect(decisionOf([{}, deny, allow])).toEqual({ behavior: 'deny', interrupts: false });
+    expect(decisionOf('PermissionRequest', answers)).toEqual({
+      behavior: 'deny',
+      interrupts: false,
+    });
+  });
+
+  it.each([
+    ['an answer that is no object', 'Stop', 'text', /a Stop hook answered what is no object/],
+    ['a null answer', 'Stop', null, /a Stop hook answered what is no object/],
+    [
+      'a turn kept from ending',
+      'Stop',
+      { decision: 'block', reason: 'Go on.' },
+      /Stop.*"decision"/,
+    ],
+    ['a prompt blocked', 'UserPromptSubmit', { decision: 'block' }, /UserPromptSubmit.*"decision"/],
+    ['a session stopped', 'PostToolUse', { continue: false }, /PostToolUse.*"continue"/],
+    [
+      'context for the model',
+      'SessionStart',
+      { hookSpecificOutput: { additionalContext: 'x' } },
+      /SessionStart.*"hookSpecificOutput"/,
+    ],
+    [
+      'a reason beside an allow',
+      'PreToolUse',
+      beforeTheCall({ permissionDecision: 'allow', permissionDecisionReason: 'Fine.' }),
+      /PreToolUse.*"permissionDecisionReason"/,
+    ],
+    [
+      "another event's name",
+      'PreToolUse',
+      asked({ behavior: 'allow' }),
+      /PreToolUse.*"PermissionRequest"/,
+    ],
+    [
+      "another event's decision",
+      'PermissionRequest',
+      { hookSpecificOutput: { permissionDecision: 'allow' } },
+      /PermissionRequest.*"permissionDecision"/,
+    ],
+    [
+      'permissions to remember',
+      'PermissionRequest',
+      asked({ behavior: 'allow', updatedPermissions: [] }),
+      /PermissionRequest.*"updatedPermissions"/,
+    ],
+    [
+      'an allow that interrupts',
+      'PermissionRequest',
+      asked({ behavior: 'allow', interrupt: true }),
+      /PermissionRequest.*"interrupt"/,
+    ],
+    [
+      'a deny with another input',
+      'PermissionRequest',
+      asked({ behavior: 'deny', updatedInput }),
+      /PermissionRequest.*"updatedInput"/,
+    ],
+    [
+      'a behavior that is neither',
+      'PermissionRequest',
+      asked({ behavior: 'ask' }),
+      /PermissionRequest.*"ask"/,
+    ],
+    [
+      'a decision with no behavior',
+      'PermissionRequest',
+      asked({}),
+      /PermissionRequest hook answered undefined/,
+    ],
+  ])('refuses to read %s: the fake agent does not play it', (_what, event, answer, problem) => {
+    expect(() => decisionOf(event, [{}, answer])).toThrow(problem);
   });
 });

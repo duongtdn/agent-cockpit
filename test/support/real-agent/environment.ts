@@ -28,10 +28,27 @@ export const FAKE_API_KEY =
 const KEY_SUFFIX_LENGTH = 20;
 
 /**
- * Gives the whole environment the real agent starts with: enough to reach
- * its input prompt with no login and no dialog, and to call nothing but the
- * API named. Nothing of the calling process is in it. The terminal's own
- * variables (`TERM`, `SHELL`) are the session host's to give.
+ * The variables the agent's process has beside the ones a launch gives it:
+ * the session host and its tmux set them for every session, over whatever a
+ * launch says, so they are known only once the session lives. They name the
+ * terminal, its shell and the session's folder.
+ */
+export const TERMINAL_VARIABLES: readonly string[] = [
+  'TMUX',
+  'TMUX_PANE',
+  'TERM',
+  'TERM_PROGRAM',
+  'TERM_PROGRAM_VERSION',
+  'COLORTERM',
+  'SHELL',
+  'PWD',
+];
+
+/**
+ * Gives every variable a launch gives the real agent: enough to reach its
+ * input prompt with no login and no dialog, and to call nothing but the API
+ * named. Nothing of the calling process is in it. The agent's process has
+ * these and the terminal's own ({@link TERMINAL_VARIABLES}), no other.
  *
  * @param folders - The run's folders.
  * @param apiOrigin - Where the API's double listens, as an origin.
@@ -73,14 +90,16 @@ export function agentConfiguration(folders: AgentFolders): object {
 }
 
 /**
- * Tells a session host to give a session the variables named and no other: a
- * host starts from the calling process's environment, so every variable of
- * it that is not named is removed — the `CLAUDE_CODE_*`, `CLAUDECODE` and
- * `ANTHROPIC_*` ones of a suite run from an agent's terminal among them.
+ * Tells a session host to give a session the variables named and no other
+ * but the terminal's own: a host starts from the calling process's
+ * environment, so every variable of it that is not named is removed — the
+ * `CLAUDE_CODE_*`, `CLAUDECODE` and `ANTHROPIC_*` ones of a suite run from
+ * an agent's terminal among them. The terminal's own are left to the host:
+ * removing one would take it from the session, whoever set it.
  *
- * @param variables - The session's whole environment.
+ * @param variables - What the launch gives the session.
  * @param inherited - The calling process's environment.
- * @returns The changes that leave the session with `variables` alone.
+ * @returns The changes that leave the session with `variables` and {@link TERMINAL_VARIABLES}.
  */
 export function onlyTheseVariables(
   variables: Readonly<Record<string, string>>,
@@ -88,14 +107,18 @@ export function onlyTheseVariables(
 ): SessionEnvironment {
   return {
     set: variables,
-    remove: Object.keys(inherited).filter((name) => !Object.hasOwn(variables, name)),
+    remove: Object.keys(inherited).filter(
+      (name) => !Object.hasOwn(variables, name) && !TERMINAL_VARIABLES.includes(name),
+    ),
   };
 }
 
 /**
- * Gives what a session's process finds in its environment once a host has
+ * Gives what a launch leaves in a session's environment once a host has
  * applied the changes: the calling process's variables, without the removed
- * ones, with the set ones.
+ * ones, with the set ones. The calling process's values of the terminal's
+ * own ({@link TERMINAL_VARIABLES}) are not among them: the host gives the
+ * session its own instead.
  *
  * @param changes - The changes a session is started with.
  * @param inherited - The calling process's environment.
@@ -107,7 +130,9 @@ export function variablesAfter(
 ): Record<string, string> {
   const kept = Object.entries(inherited).filter(
     (variable): variable is [string, string] =>
-      variable[1] !== undefined && !changes.remove.includes(variable[0]),
+      variable[1] !== undefined &&
+      !changes.remove.includes(variable[0]) &&
+      !TERMINAL_VARIABLES.includes(variable[0]),
   );
   return { ...Object.fromEntries(kept), ...changes.set };
 }
