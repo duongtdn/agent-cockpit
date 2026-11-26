@@ -1,0 +1,39 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-bB3oXT/work
+
+
+❯ past prompt one
+
+● ok
+
+✻ Churned for 0s · done 4:47 AM
+
+❯ past prompt two
+
+● ok
+
+✻ Sautéed for 0s · done 4:47 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                    ◐ medium · /effort
+─── History 2/2 ────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ past prompt two
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

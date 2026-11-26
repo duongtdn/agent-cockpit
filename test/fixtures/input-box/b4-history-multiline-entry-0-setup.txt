@@ -1,0 +1,39 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-hg0ACV/work
+
+
+❯ past one
+  past two
+  past three
+
+● ok
+
+✻ Cogitated for 0s · done 4:48 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                 ctrl+g to edit in Vim
+─── History 1/1 ────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ past one
+  past two
+  past three
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

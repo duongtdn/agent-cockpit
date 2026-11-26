@@ -166,7 +166,12 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   denies on every Claude settings file, 96 on every file that gives MCP
   servers, 97 on the person's plugins, 98 on the configuration file under
   every name, the legacy `.config.json` among them, 99 on agents, skills
-  and hooks' scripts, in `bypassPermissions`).
+  and hooks' scripts, in `bypassPermissions`), `typing` (103–112: the
+  driver's `typePrompt` over a long or wrapped draft, an empty box after a
+  kill, a recalled history entry, an open menu, shell mode, the person's
+  vim mode, a permission dialog, 100,000 multi-byte characters, a running
+  background shell, Enters lost; through `typing-terminal.ts`, which
+  checks the box before each write as the core does).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:

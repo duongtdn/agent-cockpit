@@ -1,0 +1,39 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-3Gnvuo/work
+
+
+❯ start a background task
+
+  Ran 1 shell command
+
+● started in the background
+
+✻ Sautéed for 0s · done 4:45 AM · 1 shell still running
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                 ctrl+g to edit in Vim
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ my draft
+  second line
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell

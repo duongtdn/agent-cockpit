@@ -1,0 +1,39 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-2PP0iV/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                 ctrl+g to edit in Vim
+─── ↑ 10 more ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  draft line 11
+  draft line 12
+  draft line 13
+  draft line 14
+  draft line 15
+  draft line 16
+  draft line 17
+  draft line 18
+  draft line 19
+  draft line 20
+  draft line 21
+  draft line 22
+  draft line 23
+  draft line 24
+  draft line 25
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

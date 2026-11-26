@@ -1,0 +1,39 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-LB6kTF/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ❯ /help                       Show help and available commands
+    /theme                      Change the theme
+    /doctor                     Health-check your setup and fix issues: installation, unused extensions, duplicated or
+                                bloated memory files, slow hooks, updates, permissions
+    /rewind                     Restore earlier code, conversation, or both
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /he
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

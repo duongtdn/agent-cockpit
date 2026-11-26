@@ -1,0 +1,39 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-HuApE2/work
+
+
+❯ start a background task
+
+  Ran 1 shell command
+
+● started in the background
+
+✻ Churned for 0s · done 4:44 AM · 1 shell still running
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Wait
+  shell
+
+  Status:   running
+  Runtime:  1s
+  Command:  sleep 60
+
+  Output
+  No output yet
+
+  ← to go back · x to stop · Enter/Space to close · Esc to close

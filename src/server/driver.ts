@@ -16,6 +16,7 @@ import type { Issue } from '../shared/cockpit-error.js';
 import type { BackgroundTask, EndReason, StartupDialog, TurnError } from '../shared/session.js';
 import type { KeyRule } from '../shared/wire.js';
 import type { AgentVersion, TestedRange } from './agent-status.js';
+import type { Screen } from './session-host/session-host.js';
 
 /**
  * The path, under a session's {@link HookAddress.url}, that the listener
@@ -360,7 +361,18 @@ export type TypingOutcome =
   /** The agent took it: a hook carried it. */
   | 'taken'
   /** It did not, the box cleared and the person's draft put back: `prompt-not-taken`. */
-  | 'not-taken';
+  | 'not-taken'
+  /**
+   * The driver found no input box it could type into: a dialog, a panel,
+   * an entry the person recalled from the history, or a box that did not
+   * act as one. It typed nothing more, the person's draft put back where
+   * the box still took it; the send fails `wrong-state` with the state the
+   * session is in.
+   */
+  | 'no-input-box';
+
+/** What a terminal shows at one moment: its rows as text, and where its cursor is. */
+export type TerminalScreen = Pick<Screen, 'text' | 'cursor'>;
 
 /**
  * A live session's terminal, as a driver types a prompt into it through the
@@ -383,18 +395,20 @@ export interface TypingTerminal {
    * Presses named keys, in order, in one write.
    *
    * @param keys - Key names as the session host takes them (`Enter`,
-   * `Down`, `C-e`, `C-u`, `C-y`, `BSpace`, `Escape`).
+   * `Down`, `M-Enter`, `C-e`, `C-u`, `C-y`, `M-y`, `BSpace`).
    */
   pressKeys(keys: readonly string[]): Promise<void>;
   /**
-   * Reads what the terminal shows, as text, row by row; a person's
-   * scrolling back is left first.
+   * Reads what the terminal shows, its rows as text and where its cursor
+   * is; a person's scrolling back is left first.
    */
-  readScreen(): Promise<string>;
+  readScreen(): Promise<TerminalScreen>;
   /**
-   * Waits for the agent to take a prompt.
+   * Waits for the agent to take a prompt: a prompt taken since the driver
+   * began typing counts, even before this call.
    *
-   * @param prompt - The text it must take, exactly as the driver typed it.
+   * @param prompt - The text it must take, as the agent will carry it: what
+   * the driver typed, trailing whitespace left out.
    * @param withinMs - How long to wait, in milliseconds.
    * @returns `true` once the agent took that prompt; `false` when it took
    * none within the time.

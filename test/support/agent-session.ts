@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { setTimeout as pause } from 'node:timers/promises';
+import type { TerminalScreen } from '../../src/server/driver.ts';
 import type { SessionHost } from '../../src/server/session-host/session-host.ts';
 import { findTranscript } from './transcript-files.ts';
 
@@ -20,10 +21,14 @@ export interface AgentSession {
   readonly id: string;
   /** Types text into the terminal, as a person would. */
   type(text: string): Promise<void>;
+  /** Types text into the terminal in one write, as the driver types each of its own. */
+  typeInOneWrite(text: string): Promise<void>;
   /** Presses keys, by the session host's names (`Enter`, `Escape`). */
   press(...keys: string[]): Promise<void>;
   /** Reads what the terminal shows. */
   screen(): Promise<string>;
+  /** Reads what the terminal shows and where its cursor is. */
+  screenWithCursor(): Promise<TerminalScreen>;
   /** Reads the conversation's transcript; empty while the agent has written none. */
   transcript(): TranscriptEntry[];
   /**
@@ -70,16 +75,21 @@ export function sessionOf(
   { name, id, configFolder }: SessionPlace,
 ): AgentSession {
   let lastScreen: string | undefined;
-  const screen = async () => {
-    lastScreen = (await host.readScreen(name)).text;
-    return lastScreen;
+  const screenWithCursor = async () => {
+    const { text, cursor } = await host.readScreen(name);
+    lastScreen = text;
+    return { text, cursor };
   };
+  const screen = async () => (await screenWithCursor()).text;
   return {
     name,
     id,
     type: (text) => host.sendText(name, text, TYPING),
+    typeInOneWrite: (text) =>
+      host.sendText(name, text, { chunkLength: Math.max(1, Array.from(text).length), pauseMs: 0 }),
     press: (...keys) => host.sendKeys(name, keys),
     screen,
+    screenWithCursor,
     transcript: () => readTranscript(configFolder, id),
     processId: async () => {
       const running = await host.processOf(name);
