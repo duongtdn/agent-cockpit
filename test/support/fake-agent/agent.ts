@@ -1,18 +1,27 @@
 import { randomUUID } from 'node:crypto';
 import type { CommandLine } from './command-line.ts';
+import type { AgentConfiguration, StartUpDialogKind } from './configuration.ts';
 import { type Decision, decisionOf } from './hook-answers.ts';
 import {
   afterPrompt,
+  type BackgroundTask,
+  bySubagent,
   type HookEvent,
   messageDisplay,
   permissionRequest,
+  postCompact,
   postToolBatch,
   postToolUse,
+  preCompact,
   preToolUse,
   type Start,
+  type Subagent,
   sessionEnd,
   sessionStart,
   stop,
+  stopFailure,
+  subagentStart,
+  subagentStop,
   type ToolCall,
   type ToolInput,
   userPromptSubmit,
@@ -21,10 +30,25 @@ import type { HookRunner } from './hook-runner.ts';
 import { createInputBox } from './input-box.ts';
 import type { Key } from './keys.ts';
 import { allowsEveryCallOf, deniedPathNamedBy } from './permission-settings.ts';
-import type { AgentState, Dialog, ScreenView } from './screen.ts';
-import { type Step, type Turn, turnAt } from './script.ts';
+import type { AgentState, Dialog, ScreenView, ShownStartUpDialog } from './screen.ts';
+import { type Step, type TaskStep, type ToolStep, type Turn, turnAt } from './script.ts';
+import {
+  type DialogSubjects,
+  START_UP_DIALOGS,
+  type StartUpAnswer,
+  UNTRUSTED_EXIT_LINES,
+} from './start-up-dialogs.ts';
+import {
+  drawAgentId,
+  type LaunchedTask,
+  launchedTaskResponse,
+  launchedTaskResult,
+  type TaskFiles,
+  taskNotification,
+} from './tasks.ts';
 import { DENIED_BY_HOOK, deniedInDontAsk, type PlannedCall, planCall } from './tool-calls.ts';
 import { INTERRUPTED, INTERRUPTED_FOR_TOOL_USE, type Transcript } from './transcript.ts';
+import { type Failure, failureOf, NOT_LOGGED_IN } from './turn-failures.ts';
 
 /** What a fake agent is given by the process it runs in. */
 export interface AgentSurroundings {
@@ -48,8 +72,21 @@ export interface AgentSurroundings {
    * played.
    */
   readonly deniedPaths: readonly string[];
+  /** What the agent's configuration shows at the start, and where the answers go. */
+  readonly configuration: Pick<
+    AgentConfiguration,
+    'startUpDialogs' | 'keyRejected' | 'accept' | 'rejectKey'
+  >;
+  /** What the start-up dialogs name: the folder, the key. */
+  readonly dialogSubjects: DialogSubjects;
+  /** The API's address (`ANTHROPIC_BASE_URL`), which some failures name; none when it is not set. */
+  readonly apiBaseUrl: string | undefined;
+  /** Gives the files Claude Code keeps for a background task. */
+  taskFiles(agentId: string): TaskFiles;
   /** Waits until the test lets the session get ready; at once when nothing holds it. */
   startReleased(): Promise<void>;
+  /** Waits until the test lets background tasks work; at once when nothing holds them. */
+  tasksReleased(): Promise<void>;
   /**
    * Reads the script as it is now.
    *
@@ -94,6 +131,16 @@ const TERMINATED_STATUS = 143;
 
 /** The status Claude Code exits with when the person leaves. */
 const LEFT_STATUS = 0;
+
+/**
+ * The status the fake agent exits with when the person declines a start-up
+ * dialog. Claude Code's was not observed, and nothing here reads it: the
+ * session is gone, which is what tells.
+ */
+const DECLINED_STATUS = 1;
+
+/** The only local command the fake agent plays: the others were not observed, or not as typed. */
+const COMPACT_COMMAND = '/compact';
 
 /** Thrown inside a turn to end it as an interruption does: with no hook. */
 class Interruption extends Error {}
@@ -148,10 +195,29 @@ interface OpenDialog {
   answerInTerminal(): void;
 }
 
+/** A start-up dialog on screen, and its option selected now. */
+interface OpenStartUpDialog {
+  readonly kind: StartUpDialogKind;
+  selected: number;
+  answer(answer: StartUpAnswer): void;
+}
+
+/** A subagent running in the background, from its `Agent` call to its end. */
+interface PendingTask {
+  readonly agent: Subagent;
+  readonly step: TaskStep;
+  readonly launched: LaunchedTask;
+  readonly toolUseId: string;
+  readonly startedAt: number;
+  /** Whether it does its work now: it begins once the turn that started it ended. */
+  working: boolean;
+}
+
 /**
  * Creates a fake agent: it plays what Claude Code does in a session, as far
- * as the hooks, the keys and the screen show it — and only what was observed
- * of Claude Code. Asked for anything else (a prompt its script has no turn
+ * as the hooks, the keys and the screen show it — the start-up dialogs its
+ * configuration shows, turns, asks, failed turns, a task in the background,
+ * `/compact` — and only what was observed of Claude Code. Asked for anything else (a prompt its script has no turn
  * for, an Enter while a turn runs, a hook's answer or a tool in a mode
  * whose effect is not known, a hook that fails, a reply of several lines
  * that `MessageDisplay` hooks would be told of, a call whose suggestions or
@@ -167,6 +233,10 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   const { commandLine, hooks, transcript } = surroundings;
   const box = createInputBox();
   let state: AgentState = 'starting';
+  let startUpDialog: OpenStartUpDialog | undefined;
+  let farewell: readonly string[] | undefined;
+  let keyRejected = surroundings.configuration.keyRejected;
+  let task: PendingTask | undefined;
   let dialog: OpenDialog | undefined;
   let lastPrompt: string | undefined;
   let problem: string | undefined;
@@ -188,7 +258,15 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       lastPrompt,
       problem,
       input: box.text(),
+      startUpDialog: shownStartUpDialog(),
+      farewell,
     };
+  }
+
+  function shownStartUpDialog(): ShownStartUpDialog | undefined {
+    if (startUpDialog === undefined) return undefined;
+    const { kind, selected } = startUpDialog;
+    return { kind, selected, subjects: surroundings.dialogSubjects };
   }
 
   /** Draws the screen, unless the session ends: its last screen stays, the reason of a failure on it. */
@@ -215,6 +293,9 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   async function start(): Promise<void> {
     show();
     await surroundings.startReleased();
+    for (const kind of surroundings.configuration.startUpDialogs) {
+      if (!(await passStartUpDialog(kind))) return;
+    }
     const reported = fire(sessionStart(started())).then(
       () => true,
       (error: unknown) => {
@@ -231,8 +312,74 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     }
   }
 
+  /**
+   * Shows a start-up dialog and plays the person's answer, as Claude Code
+   * does before any hook.
+   *
+   * @returns Whether the session goes on.
+   */
+  async function passStartUpDialog(kind: StartUpDialogKind): Promise<boolean> {
+    const answer = await new Promise<StartUpAnswer>((resolve) => {
+      startUpDialog = { kind, selected: START_UP_DIALOGS[kind].selected, answer: resolve };
+      show();
+    });
+    if (answer === 'decline-and-exit') {
+      await decline(kind);
+      return false;
+    }
+    startUpDialog = undefined;
+    if (answer === 'accept') surroundings.configuration.accept(kind);
+    else {
+      surroundings.configuration.rejectKey();
+      keyRejected = true;
+    }
+    return true;
+  }
+
+  /**
+   * Leaves at a start-up dialog, which stays on the last screen. Seen of
+   * Claude Code: declining the trust fires no hook, and says why below the
+   * dialog; declining the warning of `bypassPermissions` fires `SessionEnd`.
+   */
+  async function decline(kind: StartUpDialogKind): Promise<void> {
+    if (kind === 'bypass-permissions') {
+      await end('other', DECLINED_STATUS);
+      return;
+    }
+    farewell = UNTRUSTED_EXIT_LINES;
+    show();
+    ending = true;
+    surroundings.exit(DECLINED_STATUS);
+  }
+
+  /**
+   * Plays a key on a start-up dialog: Up and Down move the selection, Enter
+   * chooses, Esc does what it was seen to do. What else a key does there,
+   * or Up on the first option and Down on the last, was not observed.
+   */
+  function pressOnStartUpDialog(open: OpenStartUpDialog, key: Key): void {
+    const { options, escape: onEscape } = START_UP_DIALOGS[open.kind];
+    const move = key.kind === 'up' ? -1 : key.kind === 'down' ? 1 : 0;
+    if (move !== 0 && options[open.selected + move] !== undefined) {
+      open.selected += move;
+      show();
+    } else if (key.kind === 'enter') {
+      open.answer((options[open.selected] as (typeof options)[number]).answer);
+    } else if (key.kind === 'escape' && onEscape !== undefined) {
+      open.answer(onEscape);
+    } else {
+      fail(
+        `the key ${key.kind} on the ${open.kind} dialog: what Claude Code does with it was not observed`,
+      );
+    }
+  }
+
   function press(key: Key): void {
     if (ending) return;
+    if (startUpDialog !== undefined) {
+      pressOnStartUpDialog(startUpDialog, key);
+      return;
+    }
     box.press(key);
     if (key.kind === 'enter') pressEnter();
     if (key.kind === 'escape') turn?.interrupt();
@@ -261,18 +408,38 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   /** Exits with the reason on the screen, which stays. */
   function quit(reason: string): void {
     problem = reason;
+    // A start-up dialog would cover the reason.
+    startUpDialog = undefined;
     surroundings.show(view());
     surroundings.exit(CANNOT_PLAY_STATUS);
   }
 
+  /**
+   * Takes what the input box submitted: a prompt, or `/compact`. Any other
+   * local command, and a prompt while a background task is pending (whose
+   * end starts a turn by itself), were not observed of a typed prompt here.
+   */
   function submit(prompt: string): void {
+    if (prompt.startsWith('/')) {
+      if (prompt === COMPACT_COMMAND) void compact();
+      else fail(`the local command ${JSON.stringify(prompt)}: only ${COMPACT_COMMAND} is played`);
+      return;
+    }
+    if (task !== undefined) {
+      fail('a prompt while a background task is pending: the fake agent plays its end first');
+      return;
+    }
+    startTurnOn(prompt);
+  }
+
+  function startTurnOn(prompt: string): void {
     const running = startTurn();
     const promptBefore = lastPrompt;
     turn = running;
     lastPrompt = prompt;
     state = 'busy';
     show();
-    void playTurn(prompt, running, () => withdraw(prompt, promptBefore));
+    void playTurn(prompt, running, () => withdraw(prompt, promptBefore)).then(startPendingTask);
   }
 
   /**
@@ -294,11 +461,16 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     try {
       transcript.recordPrompt(prompt);
       promptId = randomUUID();
-      const place = promptsTaken;
-      promptsTaken += 1;
-      const steps = turnAt(surroundings.readScript(), place);
-      await running.during(fire(userPromptSubmit(prompt), running.signal));
-      for (const next of steps) await play(next, running);
+      if (keyRejected) {
+        await running.during(fire(userPromptSubmit(prompt), running.signal));
+        await failTurn(NOT_LOGGED_IN, running);
+      } else {
+        const place = promptsTaken;
+        promptsTaken += 1;
+        const steps = turnAt(surroundings.readScript(), place);
+        await running.during(fire(userPromptSubmit(prompt), running.signal));
+        for (const next of steps) await play(next, running);
+      }
     } catch (error) {
       if (!(error instanceof Interruption)) {
         fail(messageOf(error));
@@ -334,6 +506,12 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
         return running.during(new Promise(() => {}));
       case 'exit':
         return end('prompt_input_exit', LEFT_STATUS);
+      case 'fail':
+        return failTurn(failureOf(next.status, surroundings.apiBaseUrl), running);
+      case 'task':
+        return launchTask(next, running);
+      case 'compact':
+        throw new Error(`a prompt meets the script's compaction: only ${COMPACT_COMMAND} plays it`);
     }
   }
 
@@ -341,7 +519,191 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     running.produced = true;
     displayMessage(text, running);
     transcript.recordReply(text);
-    return running.during(fire(stop(text), running.signal));
+    return running.during(fire(stop(text, backgroundTasks()), running.signal));
+  }
+
+  /** Ends a turn on an error, as Claude Code does once its retries are spent: `StopFailure`, never `Stop`. */
+  function failTurn(failure: Failure, running: RunningTurn): Promise<unknown> {
+    running.produced = true;
+    transcript.recordApiError(failure);
+    return running.during(fire(stopFailure(failure.error, failure.message), running.signal));
+  }
+
+  /** The tasks `Stop` lists: the subagent running in the background, if any. */
+  function backgroundTasks(): BackgroundTask[] {
+    if (task === undefined) return [];
+    const { agent, step } = task;
+    return [
+      {
+        id: agent.id,
+        type: 'subagent',
+        status: 'running',
+        description: step.description,
+        agent_type: agent.type,
+      },
+    ];
+  }
+
+  /**
+   * Starts a subagent in the background, as Claude Code does with every
+   * `Agent` call (seen with `run_in_background` false too): `PreToolUse`,
+   * `SubagentStart`, then the call's answer at once.
+   *
+   * @throws `Error` for a second task while one is pending, in a mode other
+   * than `default`, and for a `PreToolUse` hook that decides: none was observed.
+   */
+  async function launchTask(step: TaskStep, running: RunningTurn): Promise<void> {
+    if (task !== undefined)
+      throw new Error('a second background task: the fake agent plays one at a time');
+    if (commandLine.permissionMode !== 'default') {
+      throw new Error(
+        `a background task in the ${commandLine.permissionMode} mode: only default was observed`,
+      );
+    }
+    toolCalls += 1;
+    const input = {
+      description: step.description,
+      prompt: step.prompt,
+      subagent_type: step.agentType,
+    };
+    const call = { id: `toolu_fake_${toolCalls}`, name: 'Agent', input };
+    running.produced = true;
+    running.toolCallOpen = true;
+    transcript.recordToolCall(call);
+    const before = await running.during(fire(preToolUse(call), running.signal));
+    if (before.behavior !== 'none')
+      throw new Error('a PreToolUse hook decides on an Agent call: not observed');
+    const agent = { id: drawAgentId(), type: step.agentType };
+    const launched: LaunchedTask = {
+      agentId: agent.id,
+      description: step.description,
+      prompt: step.prompt,
+      model: commandLine.model ?? UNNAMED_MODEL,
+      outputFile: surroundings.taskFiles(agent.id).outputFile,
+    };
+    task = { agent, step, launched, toolUseId: call.id, startedAt: Date.now(), working: false };
+    await running.during(fire(subagentStart(agent), running.signal));
+    await running.during(fire(postToolUse(call, launchedTaskResponse(launched)), running.signal));
+    if (hooks.configures('PostToolBatch')) {
+      await running.during(fire(postToolBatch(call, launchedTaskResult(launched)), running.signal));
+    }
+    running.toolCallOpen = false;
+  }
+
+  /** Lets the pending task work, once the turn that started it ended and the test lets it. */
+  function startPendingTask(): void {
+    if (task === undefined || task.working || ending) return;
+    const pending = task;
+    pending.working = true;
+    void surroundings
+      .tasksReleased()
+      .then(() => runTask(pending))
+      .catch((error: unknown) => fail(messageOf(error)));
+  }
+
+  /**
+   * Plays a subagent's work: its calls, each with no ask and its hooks
+   * naming the subagent, then its end, which starts the session's own turn
+   * with a `<task-notification>` prompt. Seen of Claude Code: the subagent's
+   * hooks carry the session's last prompt id, and its `SubagentStop` still
+   * lists it as running.
+   */
+  async function runTask(pending: PendingTask): Promise<void> {
+    const { agent, step } = pending;
+    const calls = step.work.filter((work): work is ToolStep => work.do === 'tool');
+    for (const call of calls) await runSubagentCall(agent, call);
+    const reply = step.work.at(-1) as { readonly text: string };
+    const files = surroundings.taskFiles(agent.id);
+    await fire(
+      subagentStop(agent, {
+        transcriptPath: files.transcriptPath,
+        lastAssistantMessage: reply.text,
+        backgroundTasks: backgroundTasks(),
+      }),
+    );
+    task = undefined;
+    const notification = taskNotification({
+      ...pending.launched,
+      toolUseId: pending.toolUseId,
+      result: reply.text,
+      toolUses: calls.length,
+      durationMs: Date.now() - pending.startedAt,
+    });
+    if (!ending) startTurnOn(notification);
+  }
+
+  /**
+   * Plays a call of a subagent's.
+   *
+   * @throws `Error` for a call that would ask, or that a `PreToolUse` hook decides: neither was observed.
+   */
+  async function runSubagentCall(agent: Subagent, step: ToolStep): Promise<void> {
+    const planned = planCall(step);
+    const isAllowed = allowsEveryCallOf(surroundings.allowRules, planned.name);
+    if (planned.routeIn(commandLine.permissionMode, isAllowed) !== 'run') {
+      throw new Error(`a subagent's ${planned.name} call that does not run unasked: not observed`);
+    }
+    toolCalls += 1;
+    const call = { id: `toolu_fake_${toolCalls}`, name: planned.name, input: planned.input };
+    const before = await fire(bySubagent(agent, preToolUse(call)));
+    if (before.behavior !== 'none')
+      throw new Error("a PreToolUse hook decides on a subagent's call: not observed");
+    await fire(bySubagent(agent, postToolUse(call, planned.responseTo(call.input))));
+    if (hooks.configures('PostToolBatch')) {
+      await fire(bySubagent(agent, postToolBatch(call, planned.resultOf(call.input))));
+    }
+  }
+
+  /**
+   * Compacts the conversation on the person's `/compact`, seen of Claude
+   * Code: the command is a prompt of its own to the hooks (a new prompt id)
+   * with no `UserPromptSubmit`; `PreCompact`; the compaction's two helpers
+   * end (`SubagentStop`, of no type); the session starts again from the
+   * summary (`SessionStart`, `compact`); `PostCompact` gives the summary.
+   * A conversation with nothing in it is refused: Claude Code was seen to
+   * fire `PreCompact` alone or nothing, by when the command was typed.
+   */
+  async function compact(): Promise<void> {
+    if (promptsTaken === 0) {
+      fail(
+        `${COMPACT_COMMAND} on a conversation with nothing in it: what Claude Code fires then depends on when it is typed`,
+      );
+      return;
+    }
+    state = 'busy';
+    lastPrompt = COMPACT_COMMAND;
+    show();
+    try {
+      promptId = randomUUID();
+      await compactConversation();
+    } catch (error) {
+      fail(messageOf(error));
+      return;
+    }
+    state = 'idle';
+    show();
+  }
+
+  async function compactConversation(): Promise<void> {
+    const [step] = turnAt(surroundings.readScript(), promptsTaken);
+    if (step?.do !== 'compact') {
+      throw new Error(`${COMPACT_COMMAND} meets a turn of the script that does not compact`);
+    }
+    promptsTaken += 1;
+    transcript.recordPrompt(COMPACT_COMMAND);
+    await fire(preCompact());
+    for (const helper of [drawAgentId(), drawAgentId()]) {
+      const agent = { id: helper, type: '' };
+      await fire(
+        subagentStop(agent, {
+          transcriptPath: surroundings.taskFiles(helper).transcriptPath,
+          lastAssistantMessage: step.summary,
+          backgroundTasks: backgroundTasks(),
+        }),
+      );
+    }
+    await fire(sessionStart({ source: 'compact', model: commandLine.model ?? UNNAMED_MODEL }));
+    await fire(postCompact(step.summary));
   }
 
   /**

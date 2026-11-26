@@ -24,6 +24,20 @@ describe("the fake agent's script", () => {
         { do: 'reply', text: 'Done.' },
       ],
       [{ do: 'stay-busy' }],
+      [
+        {
+          do: 'task',
+          description: 'Count files',
+          prompt: 'Count the files.',
+          agentType: 'general-purpose',
+          work: [
+            { do: 'tool', name: 'Bash', input: { command: 'ls' } },
+            { do: 'reply', text: 'Two.' },
+          ],
+        },
+        { do: 'fail', status: 529 },
+      ],
+      [{ do: 'compact', summary: 'The summary.' }],
       [{ do: 'exit' }],
     ];
 
@@ -61,7 +75,29 @@ describe("the fake agent's script", () => {
     [
       'a turn that does not end',
       '[[{"do":"tool","name":"Bash","input":{}}]]',
-      'turn 1 must end with a reply, stay-busy or exit',
+      'turn 1 must end with a reply, stay-busy, exit, fail or compact',
+    ],
+    ['a failure without its status', '[[{"do":"fail"}]]', 'turn 1, step 1'],
+    ['a compaction without its summary', '[[{"do":"compact"}]]', 'turn 1, step 1'],
+    [
+      'a compaction with another step in its turn',
+      '[[{"do":"tool","name":"Bash","input":{}},{"do":"compact","summary":"s"}]]',
+      'turn 1 compacts: a compaction is a turn of its own',
+    ],
+    [
+      'a task whose work does not end with a reply',
+      '[[{"do":"task","description":"d","prompt":"p","agentType":"t","work":[{"do":"tool","name":"Bash","input":{}}]},{"do":"exit"}]]',
+      'turn 1, step 1',
+    ],
+    [
+      'a task whose work asks a question',
+      '[[{"do":"task","description":"d","prompt":"p","agentType":"t","work":[{"do":"question","questions":[]},{"do":"reply","text":"r"}]},{"do":"exit"}]]',
+      'turn 1, step 1',
+    ],
+    [
+      'a task without its type',
+      '[[{"do":"task","description":"d","prompt":"p","work":[{"do":"reply","text":"r"}]},{"do":"exit"}]]',
+      'turn 1, step 1',
     ],
     [
       'a step after the end of its turn',

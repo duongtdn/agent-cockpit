@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
+import { dirname, join } from 'node:path';
 import { findTranscript } from '../transcript-files.ts';
 import { CANNOT_PLAY_STATUS, createFakeAgent, type FakeAgent } from './agent.ts';
 import { type CommandLine, parseCommandLine } from './command-line.ts';
+import { type AgentConfiguration, keySuffixOf, readConfiguration } from './configuration.ts';
 import { createHookRunner } from './hook-runner.ts';
 import { type HookSettings, parseHookSettings } from './hook-settings.ts';
 import { createKeyDecoder, type Key } from './keys.ts';
@@ -9,12 +12,15 @@ import { type PlayedPermissions, parsePermissions } from './permission-settings.
 import { renderScreen, type ScreenView } from './screen.ts';
 import { readScript } from './script.ts';
 import { startReleased } from './start-gate.ts';
+import { type TaskFiles, tasksReleased } from './tasks.ts';
 import {
   countPrompts,
   openTranscript,
+  projectFolderName,
   secondsSinceLastResponse,
   transcriptPathFor,
 } from './transcript.ts';
+import { fakeAgentVersion, versionOutput } from './version.ts';
 
 /**
  * How long an ESC waits for what follows before it is the Escape key: longer
@@ -80,7 +86,42 @@ function settingsOf(commandLine: CommandLine): PlayedSettings {
 }
 
 function show(view: ScreenView): void {
-  process.stdout.write(CLEAR_SCREEN + renderScreen(view).join('\r\n'));
+  process.stdout.write(CLEAR_SCREEN + renderScreen(view, process.stdout.columns).join('\r\n'));
+}
+
+/** Reads what the configuration shows at the start; what it cannot play ends the process at once. */
+function configurationOf(commandLine: CommandLine, cwd: string): AgentConfiguration {
+  try {
+    return readConfiguration({
+      configFolder: configFolder(),
+      cwd,
+      permissionMode: commandLine.permissionMode,
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
+  } catch (error) {
+    refuseToPlay(error);
+  }
+}
+
+/** The files Claude Code keeps for a background task, by its id: under the temporary folder and the conversation's. */
+function taskFilesOf(sessionId: string, cwd: string, transcriptPath: string) {
+  return (agentId: string): TaskFiles => ({
+    outputFile: join(
+      tmpdir(),
+      `claude-${userInfo().uid}`,
+      projectFolderName(cwd),
+      sessionId,
+      'tasks',
+      `${agentId}.output`,
+    ),
+    transcriptPath: join(dirname(transcriptPath), sessionId, 'subagents', `agent-${agentId}.jsonl`),
+  });
+}
+
+/** Says the version, as `claude --version` does, and exits. */
+function sayVersion(): never {
+  process.stdout.write(versionOutput(fakeAgentVersion(process.env)));
+  process.exit(0);
 }
 
 /** Gives the agent the keys of its terminal, each byte as it is typed. */
@@ -97,10 +138,12 @@ function takeKeys(agent: FakeAgent): void {
   });
 }
 
+if (process.argv.slice(2).join(' ') === '--version') sayVersion();
 const commandLine = readCommandLine();
 const cwd = process.cwd();
 const transcriptPath = transcriptPathOf(commandLine, cwd);
 const settings = settingsOf(commandLine);
+const configuration = configurationOf(commandLine, cwd);
 const session = {
   sessionId: commandLine.sessionId,
   cwd,
@@ -109,14 +152,20 @@ const session = {
 };
 const agent = createFakeAgent({
   commandLine,
-  hooks: createHookRunner(settings.hooks, session),
+  // Seen of Claude Code: the person's settings turning hooks off leave no hook at all.
+  hooks: createHookRunner(configuration.hooksOff ? {} : settings.hooks, session),
   transcript: openTranscript(transcriptPath, commandLine.sessionId),
   promptsTaken: countPrompts(transcriptPath),
   secondsSinceLastResponse: secondsSinceLastResponse(transcriptPath, new Date()),
   workFolder: cwd,
   allowRules: settings.allowRules,
   deniedPaths: settings.deniedPaths,
+  configuration,
+  dialogSubjects: { folder: cwd, keySuffix: keySuffixOf(process.env.ANTHROPIC_API_KEY) },
+  apiBaseUrl: process.env.ANTHROPIC_BASE_URL,
+  taskFiles: taskFilesOf(commandLine.sessionId, cwd, transcriptPath),
   startReleased: () => startReleased(cwd),
+  tasksReleased: () => tasksReleased(cwd),
   readScript: () => readScript(cwd),
   show,
   exit: (status) => process.exit(status),

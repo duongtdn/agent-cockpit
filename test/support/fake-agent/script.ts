@@ -41,18 +41,60 @@ export interface QuestionStep {
   readonly questions: readonly Question[];
 }
 
-/** One thing the agent does in a turn. `stay-busy` works until interrupted; `exit` ends the session. */
+/**
+ * End the turn on an error of the API, as the agent does once its retries
+ * are spent: the API answers the status (with the scripted API's own
+ * message for it).
+ */
+export interface FailStep {
+  readonly do: 'fail';
+  /** The HTTP status the API answers. */
+  readonly status: number;
+}
+
+/** Compact the conversation, on the person's `/compact`: the turn of that command, alone in it. */
+export interface CompactStep {
+  readonly do: 'compact';
+  /** The summary the model writes, which the conversation goes on from. */
+  readonly summary: string;
+}
+
+/**
+ * Start a subagent in the background with the `Agent` tool, and go on with
+ * the turn. Once the turn ended (and the test let tasks run), the subagent
+ * does its work, and its end starts the session's next turn by itself: a
+ * `<task-notification>` prompt, which the script's next turn answers.
+ */
+export interface TaskStep {
+  readonly do: 'task';
+  /** The task's short description, as the `Agent` call gives it. */
+  readonly description: string;
+  /** The subagent's prompt. */
+  readonly prompt: string;
+  /** The subagent's type, such as `general-purpose`. */
+  readonly agentType: string;
+  /** What the subagent does: tool calls that need no ask, then the reply it ends with. */
+  readonly work: readonly (ToolStep | ReplyStep)[];
+}
+
+/**
+ * One thing the agent does in a turn. `stay-busy` works until interrupted;
+ * `exit` ends the session; `fail` ends the turn on an error.
+ */
 export type Step =
   | ReplyStep
   | ToolStep
   | QuestionStep
+  | FailStep
+  | CompactStep
+  | TaskStep
   | { readonly do: 'stay-busy' }
   | { readonly do: 'exit' };
 
 /** What the agent does with one prompt: steps, the last of which ends the turn. */
 export type Turn = readonly Step[];
 
-const ENDING_STEPS: readonly string[] = ['reply', 'stay-busy', 'exit'];
+const ENDING_STEPS: readonly string[] = ['reply', 'stay-busy', 'exit', 'fail', 'compact'];
 
 /**
  * Reads a script: a JSON list of turns, each a list of steps.
@@ -61,7 +103,8 @@ const ENDING_STEPS: readonly string[] = ['reply', 'stay-busy', 'exit'];
  * @returns The turns, in the order of the prompts they answer.
  * @throws `SyntaxError` for what is no JSON; `Error`, naming the turn and the
  * step, for a step the fake agent cannot play, an empty turn, a turn that
- * does not end with `reply`, `stay-busy` or `exit`, and a step after one of those.
+ * does not end with `reply`, `stay-busy`, `exit`, `fail` or `compact`, a step
+ * after one of those, and a `compact` with another step in its turn.
  */
 export function parseScript(text: string): Turn[] {
   const turns: unknown = JSON.parse(text);
@@ -77,8 +120,12 @@ function readTurn(turn: unknown, name: string): Turn {
   });
   const steps = turn as Step[];
   const end = steps.findIndex((step) => ENDING_STEPS.includes(step.do));
-  if (end === -1) throw new Error(`${name} must end with a reply, stay-busy or exit`);
+  if (end === -1)
+    throw new Error(`${name} must end with a reply, stay-busy, exit, fail or compact`);
   if (end < steps.length - 1) throw new Error(`${name} goes on after step ${end + 1}`);
+  if (steps.length > 1 && steps.some((step) => step.do === 'compact')) {
+    throw new Error(`${name} compacts: a compaction is a turn of its own`);
+  }
   return steps;
 }
 
@@ -95,12 +142,34 @@ function isStep(step: unknown): step is Step {
       );
     case 'question':
       return Array.isArray(candidate.questions);
+    case 'fail':
+      return Number.isInteger(candidate.status);
+    case 'compact':
+      return typeof candidate.summary === 'string';
+    case 'task':
+      return isTask(candidate);
     case 'stay-busy':
     case 'exit':
       return true;
     default:
       return false;
   }
+}
+
+/** A task's work is tool calls, then the reply it ends with. */
+function isTask(candidate: Record<string, unknown>): boolean {
+  const { description, prompt, agentType, work } = candidate;
+  if (![description, prompt, agentType].every((field) => typeof field === 'string')) return false;
+  if (!Array.isArray(work) || work.length === 0) return false;
+  const steps = work as unknown[];
+  const last = steps.at(-1) as Record<string, unknown>;
+  return (
+    last?.do === 'reply' &&
+    isStep(last) &&
+    steps
+      .slice(0, -1)
+      .every((step) => (step as Record<string, unknown>)?.do === 'tool' && isStep(step))
+  );
 }
 
 function isObject(value: unknown): boolean {

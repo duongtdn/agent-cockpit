@@ -44,10 +44,29 @@ describe("the keys the fake agent's terminal receives", () => {
     ]);
   });
 
-  it('reads the keys it has no use for as such: arrows, Ctrl+E, a function key, Meta', () => {
-    const keys = decode(`${ESC}[B`, '\x05', `${ESC}OP`, `${ESC}x`, `${ESC}[1;5`, 'C', 'a');
+  it('reads Up and Down, as a terminal sends them in either cursor mode', () => {
+    expect(decode(`${ESC}[A`, `${ESC}[B`, `${ESC}OA`, `${ESC}O`, 'B')).toEqual([
+      { kind: 'up' },
+      { kind: 'down' },
+      { kind: 'up' },
+      { kind: 'down' },
+    ]);
+  });
+
+  it('reads the keys it has no use for as such: Right, Ctrl+Up, Ctrl+E, a function key, Meta', () => {
+    const keys = decode(
+      `${ESC}[C`,
+      `${ESC}[1;5A`,
+      '\x05',
+      `${ESC}OP`,
+      `${ESC}x`,
+      `${ESC}[1;5`,
+      'C',
+      'a',
+    );
 
     expect(keys).toEqual([
+      { kind: 'other' },
       { kind: 'other' },
       { kind: 'other' },
       { kind: 'other' },

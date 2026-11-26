@@ -2,17 +2,30 @@ import { describe, expect, it } from 'vitest';
 import { decisionOf } from '../support/fake-agent/hook-answers.ts';
 import {
   afterPrompt,
+  bySubagent,
   messageDisplay,
   payloadOf,
   permissionRequest,
+  postCompact,
   postToolBatch,
   postToolUse,
+  preCompact,
   preToolUse,
   sessionEnd,
   sessionStart,
   stop,
+  stopFailure,
+  subagentStart,
+  subagentStop,
   userPromptSubmit,
 } from '../support/fake-agent/hook-events.ts';
+
+const subagent = { id: 'a0123456789abcdef', type: 'general-purpose' };
+const subagentEnd = {
+  transcriptPath: '/agent.jsonl',
+  lastAssistantMessage: 'Done.',
+  backgroundTasks: [],
+};
 
 const session = {
   sessionId: '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11',
@@ -36,6 +49,10 @@ describe("the payloads of the fake agent's hooks", () => {
   it.each([
     ['SessionStart', sessionStart({ source: 'startup', model: 'haiku' })],
     ['SessionEnd', sessionEnd('other')],
+    ['StopFailure', stopFailure('server_error', 'API Error')],
+    ['PreCompact', preCompact()],
+    ['PostCompact', postCompact('The summary.')],
+    ['SubagentStart', subagentStart(subagent)],
   ])('%s carries no mode', (_event, hookEvent) => {
     expect(payloadOf(session, hookEvent)).not.toHaveProperty('permission_mode');
   });
@@ -47,8 +64,13 @@ describe("the payloads of the fake agent's hooks", () => {
       postToolUse(call, {}),
       postToolBatch(call, ''),
       stop('Done.'),
+      stopFailure('rate_limit', 'API Error'),
+      subagentStop(subagent, subagentEnd),
     ];
     const without = [
+      preCompact(),
+      postCompact('The summary.'),
+      subagentStart(subagent),
       sessionStart({ source: 'startup', model: 'haiku' }),
       userPromptSubmit('hello'),
       messageDisplay({ turnId: 'turn-1', messageId: 'message-1', text: 'Done.' }),
@@ -61,6 +83,36 @@ describe("the payloads of the fake agent's hooks", () => {
     for (const hookEvent of without) {
       expect(payloadOf(session, hookEvent)).not.toHaveProperty('effort');
     }
+  });
+
+  it('name a subagent in its start, its end and the hooks of its calls', () => {
+    const named = { agent_id: subagent.id, agent_type: 'general-purpose' };
+
+    expect(subagentStart(subagent).fields).toEqual(named);
+    expect(bySubagent(subagent, preToolUse(call)).fields).toMatchObject({
+      ...named,
+      tool_name: 'Bash',
+    });
+    expect(subagentStop(subagent, subagentEnd).fields).toEqual({
+      ...named,
+      stop_hook_active: false,
+      agent_transcript_path: '/agent.jsonl',
+      last_assistant_message: 'Done.',
+      background_tasks: [],
+      session_crons: [],
+    });
+  });
+
+  it('tell a compaction asked for by the person, and the start from its summary', () => {
+    expect(preCompact().fields).toEqual({ trigger: 'manual', custom_instructions: null });
+    expect(postCompact('The summary.').fields).toEqual({
+      trigger: 'manual',
+      compact_summary: 'The summary.',
+    });
+    expect(sessionStart({ source: 'compact', model: 'haiku' }).fields).toEqual({
+      source: 'compact',
+      model: 'haiku',
+    });
   });
 
   it('carry the id of the last prompt once one was taken', () => {

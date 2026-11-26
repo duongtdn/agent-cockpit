@@ -7,6 +7,8 @@ export type Key =
   | { readonly kind: 'backspace' }
   | { readonly kind: 'kill-line' }
   | { readonly kind: 'yank' }
+  | { readonly kind: 'up' }
+  | { readonly kind: 'down' }
   | { readonly kind: 'other' };
 
 /** Reads keys from what a terminal sends, over as many writes as they take. */
@@ -48,6 +50,7 @@ type Progress = 'none' | 'after-esc' | 'in-csi' | 'in-ss3';
  */
 export function createKeyDecoder(): KeyDecoder {
   let progress: Progress = 'none';
+  let csiParameters = '';
 
   function decode(chunk: string): Key[] {
     const keys: Key[] = [];
@@ -67,7 +70,7 @@ export function createKeyDecoder(): KeyDecoder {
       case 'in-csi':
         return readInCsi(character);
       case 'in-ss3':
-        return { kind: 'other' };
+        return arrowKey(character);
       default:
         return readPlain(character);
     }
@@ -87,14 +90,18 @@ export function createKeyDecoder(): KeyDecoder {
       progress = 'after-esc';
       return { kind: 'escape' };
     }
-    if (character === '[') progress = 'in-csi';
-    else if (character === 'O') progress = 'in-ss3';
+    if (character === '[') {
+      progress = 'in-csi';
+      csiParameters = '';
+    } else if (character === 'O') progress = 'in-ss3';
     return progress === 'none' ? { kind: 'other' } : undefined;
   }
 
-  /** A control sequence ends with a character from `@` to `~`. */
+  /** A control sequence ends with a character from `@` to `~`; the arrows with no parameter, at once. */
   function readInCsi(character: string): Key | undefined {
-    if (character >= '@' && character <= '~') return { kind: 'other' };
+    if (character >= '@' && character <= '~')
+      return csiParameters === '' ? arrowKey(character) : { kind: 'other' };
+    csiParameters += character;
     progress = 'in-csi';
     return undefined;
   }
@@ -106,6 +113,13 @@ export function createKeyDecoder(): KeyDecoder {
   }
 
   return { decode, awaitsMore: () => progress === 'after-esc', settle };
+}
+
+/** The arrow keys a terminal sends as `ESC [ A` or `ESC O A` (and `B`); any other ends as `other`. */
+function arrowKey(final: string): Key {
+  if (final === 'A') return { kind: 'up' };
+  if (final === 'B') return { kind: 'down' };
+  return { kind: 'other' };
 }
 
 function textKey(text: string): Key {

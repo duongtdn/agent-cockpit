@@ -22,6 +22,8 @@ export interface Transcript {
   recordToolCall(call: ToolCall): void;
   /** Records that the turn was interrupted. */
   recordInterruption(marker: InterruptionMarker): void;
+  /** Records the error of the API a turn failed on, as the agent's last message: what it shows. */
+  recordApiError(failure: { readonly error: string; readonly message: string }): void;
 }
 
 /**
@@ -33,8 +35,17 @@ export interface Transcript {
  * @returns The file's path: in the project folder named after `cwd`.
  */
 export function transcriptPathFor(configFolder: string, cwd: string, sessionId: string): string {
-  const project = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-  return join(configFolder, PROJECTS_FOLDER, project, `${sessionId}.jsonl`);
+  return join(configFolder, PROJECTS_FOLDER, projectFolderName(cwd), `${sessionId}.jsonl`);
+}
+
+/**
+ * Names the folder Claude Code keeps a project's files in, after the folder
+ * the conversation runs in: every character but a letter or a digit a dash.
+ *
+ * @param cwd - The folder the conversation runs in.
+ */
+export function projectFolderName(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 /** An entry of a transcript, as the fake agent writes them. */
@@ -84,11 +95,12 @@ export function secondsSinceLastResponse(path: string, now: Date): number | unde
  * @param sessionId - The conversation's id, which each entry carries.
  */
 export function openTranscript(path: string, sessionId: string): Transcript {
-  function record(type: 'user' | 'assistant', content: unknown): void {
+  function record(type: 'user' | 'assistant', content: unknown, marks: object = {}): void {
     const entry = {
       type,
       sessionId,
       timestamp: new Date().toISOString(),
+      ...marks,
       message: { role: type, content },
     };
     mkdirSync(dirname(path), { recursive: true });
@@ -101,5 +113,8 @@ export function openTranscript(path: string, sessionId: string): Transcript {
     recordToolCall: ({ id, name, input }) =>
       record('assistant', [{ type: 'tool_use', id, name, input }]),
     recordInterruption: (marker) => record('user', [{ type: 'text', text: marker }]),
+    // Seen of Claude Code: an assistant entry marked as the API's error, the kind of error beside it.
+    recordApiError: ({ error, message }) =>
+      record('assistant', [{ type: 'text', text: message }], { isApiErrorMessage: true, error }),
   };
 }

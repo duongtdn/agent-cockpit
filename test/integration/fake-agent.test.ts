@@ -16,12 +16,14 @@ import {
   INTERRUPTED_FOR_TOOL_USE,
   transcriptPathFor,
 } from '../support/fake-agent/transcript.ts';
+import { versionOutput } from '../support/fake-agent/version.ts';
 import {
   type HookReceiver,
   RECEIVER_AUTHORIZATION,
   type ReceivedHook,
   startHookReceiver,
 } from '../support/hooks/hook-receiver.ts';
+import { agentConfiguration, FAKE_API_KEY } from '../support/real-agent/environment.ts';
 
 const appName = `fake-agent-test-${process.pid}-${Date.now()}`;
 const pacing = { chunkLength: 200, pauseMs: 1 };
@@ -94,6 +96,12 @@ interface Launch {
   readonly without?: readonly string[];
   /** The `permissions` of the settings; none by default. */
   readonly permissions?: object;
+  /**
+   * A configuration folder of the session's own, with this `.claude.json`
+   * (and the recipe's API key in the environment) and these settings of the
+   * person's; the file's shared one, with neither, by default.
+   */
+  readonly configuration?: { readonly state?: object; readonly personsSettings?: object };
 }
 
 /** Makes the folder of a new session, with its script, and its settings file. */
@@ -166,6 +174,7 @@ async function launch(options: Launch = {}): Promise<Session> {
   );
   const id = options.resume?.id ?? randomUUID();
   if (options.heldStart) holdStart(folder);
+  const configured = options.configuration && configurationFolder(name, options.configuration);
 
   const agent = fakeAgentCommand();
   await host.start({
@@ -182,10 +191,28 @@ async function launch(options: Launch = {}): Promise<Session> {
       options.mode ?? 'default',
       ...(options.prompt === undefined ? [] : ['--', options.prompt]),
     ],
-    environment: { set: { CLAUDE_CONFIG_DIR: configFolder }, remove: options.without ?? [] },
+    environment: {
+      set: configured
+        ? { CLAUDE_CONFIG_DIR: configured, ANTHROPIC_API_KEY: FAKE_API_KEY }
+        : { CLAUDE_CONFIG_DIR: configFolder },
+      remove: options.without ?? [],
+    },
     size: { columns: 100, rows: 30 },
   });
   return { name, id, folder };
+}
+
+/** Makes a configuration folder of a session's own. */
+function configurationFolder(
+  name: string,
+  { state, personsSettings }: NonNullable<Launch['configuration']>,
+): string {
+  const folder = join(root, `${name}-config`);
+  mkdirSync(folder);
+  if (state) writeFileSync(join(folder, '.claude.json'), JSON.stringify(state));
+  if (personsSettings)
+    writeFileSync(join(folder, 'settings.json'), JSON.stringify(personsSettings));
+  return folder;
 }
 
 /** Launches a session and waits until it takes input. */
@@ -325,11 +352,11 @@ describe('the fake agent: taking a prompt', () => {
 
     await type(session, 'early');
     await host.sendText(session.name, '!', pacing);
-    await expectScreen(session, 'state: starting', '> early!');
+    await expectScreen(session, 'state: starting', '❯ early!');
     expect(receiver.events()).toEqual([]);
     releaseStart(session.folder);
     await receiver.next('SessionStart');
-    await expectScreen(session, 'state: idle', '> early!');
+    await expectScreen(session, 'state: idle', '─\n❯ early!\n─');
     expect(receiver.events()).toEqual(['SessionStart']);
     await host.sendKeys(session.name, ['Enter']);
 
@@ -399,7 +426,7 @@ describe('the fake agent: taking a prompt', () => {
 
   it('shows on its screen its state and the last prompt', async () => {
     const session = await launchReady({ script: [[{ do: 'stay-busy' }]] });
-    await expectScreen(session, `session: ${session.id}`, 'state: idle', 'prompt: none\n>');
+    await expectScreen(session, `session: ${session.id}`, 'state: idle', 'prompt: none\n─');
 
     await type(session, 'work on it');
 
@@ -604,7 +631,9 @@ describe('the fake agent: a tool that needs permission', () => {
   it.each(['acceptEdits', 'plan', 'auto', 'bypassPermissions'])(
     'runs a touch with no ask in the %s mode',
     async (mode) => {
-      await launch({ script, prompt: 'touch it', mode });
+      // The warning of bypassPermissions accepted once, as a person does.
+      const personsSettings = { skipDangerousModePermissionPrompt: true };
+      await launch({ script, prompt: 'touch it', mode, configuration: { personsSettings } });
 
       await receiver.next('Stop');
 
@@ -757,7 +786,7 @@ describe('the fake agent: an interruption', () => {
 
     await host.sendKeys(session.name, ['Escape']);
 
-    await expectScreen(session, 'state: idle', '\n>\n');
+    await expectScreen(session, 'state: idle', '─\n❯');
     expect(transcriptOf(ran)).toContain(`"${INTERRUPTED}"`);
     await type(session, 'again');
     const end = await receiver.next('Stop');
@@ -782,7 +811,7 @@ describe('the fake agent: an interruption', () => {
 
     await host.sendKeys(session.name, ['Escape']);
 
-    await expectScreen(session, 'state: idle', 'prompt: none', '> think about it');
+    await expectScreen(session, 'state: idle', 'prompt: none', '❯ think about it');
     expect(transcriptOf(taken)).not.toContain('interrupted');
     expect(receiver.events()).toEqual(['SessionStart', 'UserPromptSubmit']);
     await host.sendKeys(session.name, ['Enter']);
@@ -905,5 +934,98 @@ describe('the fake agent: an exit', () => {
 
     await expectGone(session);
     expect(receiver.events()).toEqual(['SessionStart']);
+  });
+});
+
+describe('the fake agent: its start', () => {
+  const runVersion = async (env: Record<string, string | undefined>) => {
+    const agent = fakeAgentCommand();
+    const child = spawn(agent.command, [...agent.args, '--version'], { env });
+    let output = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+      output += chunk;
+    });
+    const [status] = await once(child, 'close');
+    return { status, output };
+  };
+
+  it("says the pinned agent's version on --version, as Claude Code does, and starts nothing", async () => {
+    const said = await runVersion({ PATH: process.env.PATH });
+
+    expect(said.status).toBe(0);
+    expect(said.output).toMatch(/^\d+\.\d+\.\d+ \(Claude Code\)\n$/);
+    expect(receiver.events()).toEqual([]);
+  });
+
+  it('says the version a test sets', async () => {
+    const said = await runVersion({ PATH: process.env.PATH, FAKE_AGENT_VERSION: '99.0.0' });
+
+    expect(said.output).toBe(versionOutput('99.0.0'));
+  });
+
+  const untrusted = { state: agentConfiguration({ workFolder: '/somewhere/else' }) };
+
+  it('stops at the trust dialog of a folder its configuration does not trust, with no hook (behavior 37)', async () => {
+    const session = await launch({ script: oneReply, prompt: 'hello', configuration: untrusted });
+
+    await expectScreen(session, 'Accessing workspace:', session.folder, '❯ No, exit');
+    expect(receiver.events()).toEqual([]);
+  });
+
+  it('starts once the person trusts the folder, then takes the launch prompt (behavior 68)', async () => {
+    const session = await launch({ script: oneReply, prompt: 'hello', configuration: untrusted });
+    await expectScreen(session, 'Accessing workspace:');
+
+    await host.sendKeys(session.name, ['Down']);
+    await expectScreen(session, '❯ Yes, I trust this folder');
+    await host.sendKeys(session.name, ['Enter']);
+
+    await receiver.next('Stop');
+    expect(receiver.events()).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'MessageDisplay',
+      'Stop',
+    ]);
+  });
+
+  it.each(['Enter', 'Escape'])(
+    'leaves at the trust dialog on %s, with no hook (behavior 68)',
+    async (key) => {
+      const session = await launch({ script: oneReply, prompt: 'hello', configuration: untrusted });
+      await expectScreen(session, 'Accessing workspace:');
+
+      await host.sendKeys(session.name, [key]);
+
+      await expectGone(session);
+      expect(receiver.events()).toEqual([]);
+    },
+  );
+
+  it('leaves at the warning of bypassPermissions on Enter, with SessionEnd', async () => {
+    const session = await launch({
+      script: oneReply,
+      prompt: 'hello',
+      mode: 'bypassPermissions',
+      configuration: {},
+    });
+    await expectScreen(session, 'WARNING: Claude Code running in Bypass Permissions mode');
+
+    await host.sendKeys(session.name, ['Enter']);
+
+    await expectGone(session);
+    expect(receiver.events()).toEqual(['SessionEnd', 'SessionEnd']);
+  });
+
+  it("fires no hook at all when the person's settings turn hooks off, and looks ready", async () => {
+    const session = await launch({
+      script: oneReply,
+      configuration: { personsSettings: { disableAllHooks: true } },
+    });
+
+    await expectScreen(session, 'state: idle', '─\n❯');
+    await type(session, 'hello');
+    await expectScreen(session, 'prompt: "hello"', 'state: idle');
+    expect(receiver.events()).toEqual([]);
   });
 });

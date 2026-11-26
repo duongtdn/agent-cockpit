@@ -43,10 +43,10 @@ function toolEvent(
   return event(name, { tool_name: call.name, ...fields });
 }
 
-/** How a session came to take input: started on a model, or resumed. */
+/** How a session came to take input: started on a model, resumed, or going on after a compaction. */
 export type Start =
   | {
-      readonly source: 'startup';
+      readonly source: 'startup' | 'compact';
       /** The model's name. Claude Code gives the full name of the model it resolved. */
       readonly model: string;
     }
@@ -58,11 +58,11 @@ export type Start =
 
 /**
  * The session takes input. Seen of Claude Code: a new session names its
- * model; a resumed one says what going on costs when the conversation holds
+ * model, and so does one that goes on after a compaction; a resumed one says what going on costs when the conversation holds
  * an answer of the agent's, and nothing more when it holds none.
  */
 export function sessionStart(start: Start): HookEvent {
-  if (start.source === 'startup') return event('SessionStart', { ...start });
+  if (start.source !== 'resume') return event('SessionStart', { ...start });
   if (start.secondsSinceLastResponse === undefined) {
     return event('SessionStart', { source: start.source });
   }
@@ -120,9 +120,10 @@ export function postToolUse(call: ToolCall, response: unknown): HookEvent {
  * The fake agent's model calls one tool a message.
  *
  * @param call - The call, with the input the model gave it.
- * @param result - What the model is told of it: the tool's result, or why it did not run.
+ * @param result - What the model is told of it: the tool's result (a text,
+ * or a list of content blocks), or why it did not run.
  */
-export function postToolBatch(call: ToolCall, result: string): HookEvent {
+export function postToolBatch(call: ToolCall, result: unknown): HookEvent {
   return event('PostToolBatch', {
     tool_calls: [
       {
@@ -135,17 +136,103 @@ export function postToolBatch(call: ToolCall, result: string): HookEvent {
   });
 }
 
+/** A subagent the session runs, as its hooks name it. */
+export interface Subagent {
+  /** The id the agent drew for it. */
+  readonly id: string;
+  /** Its type, as the `Agent` call named it; empty for the agent's own helpers. */
+  readonly type: string;
+}
+
+/** A task running in the background, as `Stop` lists it. */
+export interface BackgroundTask {
+  readonly id: string;
+  readonly type: 'subagent';
+  readonly status: 'running';
+  readonly description: string;
+  readonly agent_type: string;
+}
+
 /**
  * The turn ended with this last message of the agent's: for the first
- * time, with nothing left running in the background and nothing scheduled.
+ * time, with nothing scheduled.
+ *
+ * @param lastAssistantMessage - The turn's last text.
+ * @param backgroundTasks - The tasks still running; none by default.
  */
-export function stop(lastAssistantMessage: string): HookEvent {
+export function stop(
+  lastAssistantMessage: string,
+  backgroundTasks: readonly BackgroundTask[] = [],
+): HookEvent {
   return event('Stop', {
     stop_hook_active: false,
     last_assistant_message: lastAssistantMessage,
-    background_tasks: [],
+    background_tasks: backgroundTasks,
     session_crons: [],
   });
+}
+
+/** The kinds of error Claude Code names a failed turn by, as `StopFailure` gives them. */
+export type TurnFailure = 'server_error' | 'rate_limit' | 'authentication_failed';
+
+/**
+ * The turn failed on an error of the API, after the retries; no `Stop` comes.
+ *
+ * @param error - The kind of error.
+ * @param message - The text the agent shows for it, which is the turn's last.
+ */
+export function stopFailure(error: TurnFailure, message: string): HookEvent {
+  return event('StopFailure', { error, last_assistant_message: message });
+}
+
+/** A compaction the person asked for (`/compact`, no instructions) begins. */
+export function preCompact(): HookEvent {
+  return event('PreCompact', { trigger: 'manual', custom_instructions: null });
+}
+
+/** A compaction the person asked for ended, with the summary the conversation goes on from. */
+export function postCompact(summary: string): HookEvent {
+  return event('PostCompact', { trigger: 'manual', compact_summary: summary });
+}
+
+/** A subagent starts. */
+export function subagentStart(agent: Subagent): HookEvent {
+  return event('SubagentStart', { agent_id: agent.id, agent_type: agent.type });
+}
+
+/** What a subagent's end says beside the subagent. */
+export interface SubagentEnd {
+  /** Where the subagent's conversation is written. */
+  readonly transcriptPath: string;
+  /** Its last text. */
+  readonly lastAssistantMessage: string;
+  /** The session's tasks still running, as `Stop` lists them. */
+  readonly backgroundTasks: readonly BackgroundTask[];
+}
+
+/** A subagent ended. */
+export function subagentStop(agent: Subagent, end: SubagentEnd): HookEvent {
+  return event('SubagentStop', {
+    agent_id: agent.id,
+    agent_type: agent.type,
+    stop_hook_active: false,
+    agent_transcript_path: end.transcriptPath,
+    last_assistant_message: end.lastAssistantMessage,
+    background_tasks: end.backgroundTasks,
+    session_crons: [],
+  });
+}
+
+/**
+ * Says of an event that a subagent's work fired it, as the hooks of its
+ * tool calls are told.
+ *
+ * @param agent - The subagent.
+ * @param hookEvent - The event.
+ * @returns The event, with the subagent's id and type among its fields.
+ */
+export function bySubagent(agent: Subagent, hookEvent: HookEvent): HookEvent {
+  return event(hookEvent.name, { agent_id: agent.id, agent_type: agent.type, ...hookEvent.fields });
 }
 
 /** A message of the agent's, as its turn and its text name it. */
@@ -191,7 +278,15 @@ export function afterPrompt(promptId: string, hookEvent: HookEvent): HookEvent {
 }
 
 /** The events whose payload, seen of Claude Code, carries no permission mode. */
-const EVENTS_WITHOUT_THE_MODE: readonly string[] = ['SessionStart', 'SessionEnd', 'MessageDisplay'];
+const EVENTS_WITHOUT_THE_MODE: readonly string[] = [
+  'SessionStart',
+  'SessionEnd',
+  'MessageDisplay',
+  'StopFailure',
+  'PreCompact',
+  'PostCompact',
+  'SubagentStart',
+];
 
 /** The events whose payload, seen of Claude Code, carries the effort the model works with. */
 const EVENTS_WITH_THE_EFFORT: readonly string[] = [
@@ -200,6 +295,8 @@ const EVENTS_WITH_THE_EFFORT: readonly string[] = [
   'PostToolUse',
   'PostToolBatch',
   'Stop',
+  'StopFailure',
+  'SubagentStop',
 ];
 
 /** The effort seen of a session that was launched with none of its own. */

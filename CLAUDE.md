@@ -154,14 +154,18 @@ of its `--settings` file, takes keys and writes a transcript, playing the
 script a test writes in the session's folder. It plays only what was observed
 of Claude Code; asked for anything else it shows why and exits with status
 70 — extend it from evidence, never from a guess. It is TypeScript that Node
-runs as it is, so the integration tests need Node 22.18 or later.
+runs as it is, so the integration tests need Node 22.18 or later. It reads
+its configuration folder as Claude Code does: the start-up dialogs of a
+`.claude.json` (none when the folder has no such file) and the person's
+`settings.json` (the warning of `bypassPermissions` accepted, hooks off);
+`--version` says the pinned agent's version, or `FAKE_AGENT_VERSION`'s.
 
 The fake agent is held to the real one by
 `test/contract/fake-agent-parity.test.ts`: each scenario is played once on
 each, through tmux and a receiver of every hook event, and what the hooks
 said must agree — their order, the kind of hook, every key of every payload,
 and every value but the few that `test/support/parity/hook-comparison.ts`
-lists as different by nature. To add a scenario, add an `agreeOn(title, …)`
+lists as different by nature (named or masked inside a text too). To add a scenario, add an `agreeOn(title, …)`
 there: its `script` (the fake agent's; the API's answers follow from it) and
 its `play`, which drives either agent and awaits every hook it expects. A
 difference is closed in the fake agent, which plays what the real one did or
