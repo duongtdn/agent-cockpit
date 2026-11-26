@@ -70,12 +70,26 @@ describe('package.json', () => {
     expect(manifest.peerDependenciesMeta).toEqual({ fastify: { optional: true } });
   });
 
-  it.each(['build', 'typecheck', 'lint', 'test', 'test:integration', 'test:contract', 'check'])(
-    'has the script %s',
-    (script) => {
-      expect(manifest.scripts[script]).toEqual(expect.any(String));
-    },
-  );
+  it.each([
+    'build',
+    'typecheck',
+    'lint',
+    'test',
+    'test:integration',
+    'test:coverage',
+    'test:contract',
+    'check',
+  ])('has the script %s', (script) => {
+    expect(manifest.scripts[script]).toEqual(expect.any(String));
+  });
+
+  it('measures coverage over the unit and the integration tests together', () => {
+    // Only real tmux exercises the code that speaks to it, so the coverage
+    // gate counts both suites, in one run.
+    expect(manifest.scripts['test:coverage']).toBe(
+      'vitest run --project unit --project integration --coverage',
+    );
+  });
 });
 
 describe('the check script and CI', () => {
@@ -88,14 +102,7 @@ describe('the check script and CI', () => {
     .filter((script) => script !== 'install');
 
   it('check typechecks, lints, tests, builds and packs', () => {
-    expect(scriptsOfCheck).toEqual([
-      'typecheck',
-      'lint',
-      'test',
-      'test:integration',
-      'build',
-      'test:pack',
-    ]);
+    expect(scriptsOfCheck).toEqual(['typecheck', 'lint', 'test:coverage', 'build', 'test:pack']);
   });
 
   it('CI runs the steps of check, in its order', () => {

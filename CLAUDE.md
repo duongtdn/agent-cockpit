@@ -40,8 +40,12 @@ built-ins: `server/`, `fastify/`, `claude-code/` and `channel-server/` only.
 - `pnpm check` — typecheck, lint, unit, integration and contract tests,
   build, `npm pack --dry-run`: what CI runs. Green before every commit that
   ends a piece of work.
-- `pnpm test`, `pnpm test:integration`, `pnpm test:contract`,
-  `pnpm test:e2e`, `pnpm test:live` (the real model; by hand only).
+- `pnpm test:coverage` — the unit and the integration tests in one run, with
+  the coverage gate (90% of `src/`): only real tmux exercises the code that
+  speaks to it, so the gate counts both.
+- `pnpm test` (unit, quick), `pnpm test:integration` (real tmux),
+  `pnpm test:contract`, `pnpm test:e2e`, `pnpm test:live` (the real model;
+  by hand only).
 - `pnpm build`, `pnpm typecheck`, `pnpm lint` (Biome, which also formats).
 
 ## How code is written here
