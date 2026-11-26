@@ -31,7 +31,8 @@ Nothing is published yet.
   regular file of the user's (never a symbolic link), else `invalid-options`;
   a token's file others could read gives way to a new token. Every folder
   above it must be the user's or root's, writable by others only with the
-  sticky bit, by its group only so or when it is the user's private group,
+  sticky bit, by its group only so or when it is the user's private group (its
+  only member in `/etc/group`, nobody else's primary group in `/etc/passwd`),
   else `invalid-options` with nothing created; the missing ones are created
   `0755` whatever the umask. On WSL2, a state folder on a Windows drive is
   refused.

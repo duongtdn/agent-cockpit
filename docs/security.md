@@ -71,9 +71,11 @@ request also carries the app's token, or is refused with `no-token`
   link judged by its own owner and then by the path it leads to, each must
   be the user's or root's; writable by others only with the sticky bit (as
   `/tmp`); writable by its group only with the sticky bit, or when the group
-  is the user's private one (the user's primary group, named after the
-  user, with no other member in `/etc/group`; a group `/etc/group` does not
-  list, as from LDAP, is refused). Otherwise another user could rename the
+  is the user's private one (the user's primary group, listed once in
+  `/etc/group`, named after the user, with no other member there and no
+  other user's primary group in `/etc/passwd`; a group `/etc/group` does
+  not list, as from LDAP, is refused). A symbolic link that leads nowhere,
+  or loops, is refused the same way. Otherwise another user could rename the
   state folder away and put a folder of theirs in its place, with a
   session's settings whose hooks run commands as the person; the start is
   refused (`invalid-options`) and nothing is created. The missing folders

@@ -19,6 +19,9 @@ const modeOf = (path: string) => statSync(path).mode & 0o777;
 /** Paths the file system says another user owns: who runs the tests may own every folder, root included. */
 const foreign = vi.hoisted(() => new Set<string>());
 
+/** Paths the file system says are missing when first looked at, as if another process created them just after. */
+const appearing = vi.hoisted(() => new Set<string>());
+
 /** The uid the faked owner has: neither root nor, surely, the user who runs the tests. */
 const STRANGER = 4242;
 
@@ -30,7 +33,12 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       : found;
   return {
     ...fs,
-    lstat: async (path: string) => owned(path, await fs.lstat(path)),
+    lstat: async (path: string) => {
+      if (appearing.delete(String(path))) {
+        throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+      }
+      return owned(path, await fs.lstat(path));
+    },
     stat: async (path: string) => owned(path, await fs.stat(path)),
   };
 });
@@ -83,6 +91,7 @@ describe('openStateFolder', () => {
 
   afterEach(() => {
     foreign.clear();
+    appearing.clear();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -148,9 +157,26 @@ describe('openStateFolder', () => {
   describe('the folders above it', () => {
     /** An `/etc/group` of the test's own. */
     function groupFile(...lines: string[]): string {
-      const file = join(root, 'group');
+      return systemFile('group', lines);
+    }
+
+    /** An `/etc/passwd` of the test's own. */
+    function passwdFile(...lines: string[]): string {
+      return systemFile('passwd', lines);
+    }
+
+    function systemFile(name: string, lines: readonly string[]): string {
+      const file = join(root, name);
       writeFileSync(file, lines.map((line) => `${line}\n`).join(''));
       return file;
+    }
+
+    /** The system's files where the user's group is private: its only member, nobody else's primary group. */
+    function privateGroup(groupLine = `${me}:x:${myGroup}:`) {
+      return {
+        groupFile: groupFile('other:x:1:', groupLine),
+        passwdFile: passwdFile(`${me}:x:${process.getuid?.()}:${myGroup}::/home/${me}:/bin/sh`),
+      };
     }
 
     const me = userInfo().username;
@@ -207,30 +233,115 @@ describe('openStateFolder', () => {
       expect(modeOf(join(parent, 'my-app'))).toBe(0o700);
     });
 
-    it('takes a parent its group can write when the group is the user’s private one', async () => {
-      const parent = groupWritable('mine');
-      const groups = groupFile('other:x:1:', `${me}:x:${myGroup}:`);
-      await openStateFolder(join(parent, 'my-app'), { groupFile: groups });
-      expect(modeOf(join(parent, 'my-app'))).toBe(0o700);
-    });
+    it.each([
+      ['as listed', `${me}:x:${myGroup}:`],
+      ['the user its only member, with CRLF and a trailing comma', `${me}:x:${myGroup}:${me},\r`],
+    ])(
+      'takes a parent its group can write when the group is the user’s private one (%s)',
+      async (_, line) => {
+        const parent = groupWritable('mine');
+        await openStateFolder(join(parent, 'my-app'), privateGroup(line));
+        expect(modeOf(join(parent, 'my-app'))).toBe(0o700);
+      },
+    );
 
     it.each([
       ['lists another member', () => `${me}:x:${myGroup}:${me},someone-else`],
       ['is named otherwise', () => `staff:x:${myGroup}:`],
     ])('refuses a parent its group can write when the group %s', async (_, line) => {
       const parent = groupWritable('shared');
-      const groups = groupFile(line());
-      await expect(openStateFolder(join(parent, 'my-app'), { groupFile: groups })).rejects.toThrow(
+      await expect(openStateFolder(join(parent, 'my-app'), privateGroup(line()))).rejects.toThrow(
         expect.objectContaining({ name: 'UntrustedStateError', path: parent }),
       );
     });
 
+    it('refuses a parent its group can write when the group is another user’s primary group', async () => {
+      const parent = groupWritable('shared');
+      const files = {
+        ...privateGroup(),
+        passwdFile: passwdFile(
+          `${me}:x:${process.getuid?.()}:${myGroup}::/home/${me}:/bin/sh`,
+          `bob:x:4243:${myGroup}::/home/bob:/bin/sh`,
+        ),
+      };
+      await expect(openStateFolder(join(parent, 'my-app'), files)).rejects.toThrow(
+        expect.objectContaining({ path: parent, message: expect.stringContaining('bob') }),
+      );
+    });
+
+    it('refuses a parent its group can write when the group file lists its gid twice', async () => {
+      const parent = groupWritable('shared');
+      const files = {
+        ...privateGroup(),
+        groupFile: groupFile(`staff:x:${myGroup}:bob`, `${me}:x:${myGroup}:`),
+      };
+      await expect(openStateFolder(join(parent, 'my-app'), files)).rejects.toThrow(
+        expect.objectContaining({
+          path: parent,
+          message: expect.stringContaining('more than once'),
+        }),
+      );
+    });
+
+    it('refuses a parent its group can write when the group is not the user’s primary one, saying so', async () => {
+      const parent = groupWritable('shared');
+      vi.spyOn(process, 'getgid').mockReturnValue(myGroup + 1);
+      try {
+        await expect(openStateFolder(join(parent, 'my-app'), privateGroup())).rejects.toThrow(
+          expect.objectContaining({
+            path: parent,
+            message: expect.stringContaining("not the user's primary group"),
+          }),
+        );
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
     it('refuses a parent its group can write when the group is not in the group file, saying why', async () => {
       const parent = groupWritable('shared');
-      const groups = groupFile('other:x:1:');
-      await expect(openStateFolder(join(parent, 'my-app'), { groupFile: groups })).rejects.toThrow(
-        expect.objectContaining({ path: parent, message: expect.stringContaining(groups) }),
+      const files = { ...privateGroup(), groupFile: groupFile('other:x:1:') };
+      await expect(openStateFolder(join(parent, 'my-app'), files)).rejects.toThrow(
+        expect.objectContaining({
+          path: parent,
+          message: expect.stringContaining(files.groupFile),
+        }),
       );
+    });
+
+    it.each([
+      ['leads nowhere', () => symlinkSync(join(root, 'missing'), join(root, 'link'))],
+      [
+        'loops',
+        () => {
+          symlinkSync(join(root, 'loop'), join(root, 'link'));
+          symlinkSync(join(root, 'link'), join(root, 'loop'));
+        },
+      ],
+    ])('refuses a symbolic link above it that %s, naming it', async (_, make) => {
+      make();
+      const link = join(root, 'link');
+      await expect(openStateFolder(join(link, 'my-app'))).rejects.toThrow(
+        expect.objectContaining({ name: 'UntrustedStateError', path: link }),
+      );
+    });
+
+    it('judges a parent that appears between its check and its creation', async () => {
+      const parent = join(root, 'appeared');
+      mkdirSync(parent);
+      chmodSync(parent, 0o757);
+      appearing.add(parent);
+      await expect(openStateFolder(join(parent, 'my-app'))).rejects.toThrow(
+        expect.objectContaining({ name: 'UntrustedStateError', path: parent }),
+      );
+    });
+
+    it('takes a parent that appears between its check and its creation, when it is safe', async () => {
+      const parent = join(root, 'appeared');
+      mkdirSync(parent, { mode: 0o755 });
+      appearing.add(parent);
+      await openStateFolder(join(parent, 'my-app'));
+      expect(modeOf(join(parent, 'my-app'))).toBe(0o700);
     });
 
     it('refuses a parent of another user, though no one else can write it', async () => {
