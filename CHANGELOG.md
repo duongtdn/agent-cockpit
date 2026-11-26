@@ -31,7 +31,10 @@ Nothing is published yet.
   regular file of the user's (never a symbolic link), else `invalid-options`;
   a token's file others could read gives way to a new token. Every folder
   above it must be the user's or root's, writable by others only with the
-  sticky bit, else `invalid-options`.
+  sticky bit, by its group only so or when it is the user's private group,
+  else `invalid-options` with nothing created; the missing ones are created
+  `0755` whatever the umask. On WSL2, a state folder on a Windows drive is
+  refused.
 - The app's lock: a Linux abstract unix socket named from an id in the state
   folder. A second process of the app waits 5 seconds, then rejects with
   `cockpit-locked`, whose `holder` is the holding process's id or

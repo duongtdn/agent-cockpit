@@ -461,10 +461,10 @@ describe('creating and closing the cockpit', () => {
       });
     });
 
-    it('refuses a folder the app named under a parent its group can write, on `stateDirectory`', async () => {
-      const parent = join(root, `group-${made}`);
+    it('refuses a folder the app named under a parent others can write, on `stateDirectory`', async () => {
+      const parent = join(root, `shared-parent-${made}`);
       mkdirSync(parent);
-      chmodSync(parent, 0o775);
+      chmodSync(parent, 0o757);
       await expect(createCockpit(optionsIn(join(parent, 'state')))).rejects.toMatchObject({
         code: 'invalid-options',
         issues: [{ path: ['stateDirectory'], message: expect.stringContaining(parent) }],

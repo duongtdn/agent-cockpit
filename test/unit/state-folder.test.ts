@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -7,13 +8,32 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UntrustedStateError } from '../../src/server/state/own-files.ts';
 import { openStateFolder, stateFolderPath } from '../../src/server/state/state-folder.ts';
 
 const modeOf = (path: string) => statSync(path).mode & 0o777;
+
+/** Paths the file system says another user owns: who runs the tests may own every folder, root included. */
+const foreign = vi.hoisted(() => new Set<string>());
+
+/** The uid the faked owner has: neither root nor, surely, the user who runs the tests. */
+const STRANGER = 4242;
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs/promises')>();
+  const owned = <T extends object>(path: unknown, found: T): T =>
+    foreign.has(String(path))
+      ? Object.assign(Object.create(Object.getPrototypeOf(found)), found, { uid: STRANGER })
+      : found;
+  return {
+    ...fs,
+    lstat: async (path: string) => owned(path, await fs.lstat(path)),
+    stat: async (path: string) => owned(path, await fs.stat(path)),
+  };
+});
 
 describe('stateFolderPath', () => {
   it('puts the app’s folder under $XDG_STATE_HOME/agent-cockpit', () => {
@@ -62,17 +82,30 @@ describe('openStateFolder', () => {
   });
 
   afterEach(() => {
+    foreign.clear();
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('creates the folder readable by the app’s user alone, its missing parents as any folder', async () => {
+  it('creates the folder readable by the app’s user alone, its missing parents readable by all', async () => {
     const path = join(root, 'a/b/my-app');
     const folder = await openStateFolder(path);
     expect(folder.path).toBe(path);
     expect(modeOf(path)).toBe(0o700);
-    const plain = join(root, 'plain');
-    mkdirSync(plain);
-    expect(modeOf(join(root, 'a/b'))).toBe(modeOf(plain));
+    expect(modeOf(join(root, 'a'))).toBe(0o755);
+    expect(modeOf(join(root, 'a/b'))).toBe(0o755);
+  });
+
+  it.each([0o002, 0o077])('creates the same folders under the umask %o', async (mask) => {
+    const before = process.umask(mask);
+    try {
+      const path = join(root, 'a/b/my-app');
+      await openStateFolder(path);
+      expect(modeOf(join(root, 'a'))).toBe(0o755);
+      expect(modeOf(join(root, 'a/b'))).toBe(0o755);
+      expect(modeOf(path)).toBe(0o700);
+    } finally {
+      process.umask(before);
+    }
   });
 
   it('narrows a folder of the user’s that others could reach: it is the cockpit’s own', async () => {
@@ -100,33 +133,51 @@ describe('openStateFolder', () => {
   });
 
   it('refuses a folder of another user, and says whose', async () => {
-    // The temporary folder itself, whose parent is root's (the system's
-    // temporary folder): seen as another user's, it alone is refused.
-    const path = root;
-    const owner = statSync(path).uid;
-    vi.spyOn(process, 'getuid').mockReturnValue(owner + 1);
-    try {
-      await expect(openStateFolder(path)).rejects.toThrow(
-        expect.objectContaining({
-          name: 'UntrustedStateError',
-          path,
-          message: expect.stringContaining(`another user (uid ${owner})`),
-        }),
-      );
-    } finally {
-      vi.restoreAllMocks();
-    }
+    const path = join(root, 'my-app');
+    mkdirSync(path, { mode: 0o700 });
+    foreign.add(path);
+    await expect(openStateFolder(path)).rejects.toThrow(
+      expect.objectContaining({
+        name: 'UntrustedStateError',
+        path,
+        message: expect.stringContaining(`another user (uid ${STRANGER})`),
+      }),
+    );
   });
 
   describe('the folders above it', () => {
-    it('refuses a parent its group or others can write: they could swap the folder for theirs', async () => {
-      const parent = join(root, 'shared');
+    /** An `/etc/group` of the test's own. */
+    function groupFile(...lines: string[]): string {
+      const file = join(root, 'group');
+      writeFileSync(file, lines.map((line) => `${line}\n`).join(''));
+      return file;
+    }
+
+    const me = userInfo().username;
+    const myGroup = process.getgid?.() ?? -1;
+
+    function groupWritable(name: string): string {
+      const parent = join(root, name);
       mkdirSync(parent);
       chmodSync(parent, 0o775);
-      const path = join(parent, 'my-app');
-      await expect(openStateFolder(path)).rejects.toThrow(
+      return parent;
+    }
+
+    it('refuses a parent others can write: they could swap the folder for theirs', async () => {
+      const parent = join(root, 'shared');
+      mkdirSync(parent);
+      chmodSync(parent, 0o757);
+      await expect(openStateFolder(join(parent, 'my-app'))).rejects.toThrow(
         expect.objectContaining({ name: 'UntrustedStateError', path: parent }),
       );
+    });
+
+    it('creates nothing before it refuses: the missing folders stay missing', async () => {
+      const parent = join(root, 'shared');
+      mkdirSync(parent);
+      chmodSync(parent, 0o757);
+      await expect(openStateFolder(join(parent, 'x/my-app'))).rejects.toThrow(UntrustedStateError);
+      expect(existsSync(join(parent, 'x'))).toBe(false);
     });
 
     it('refuses a parent others can write found through a symbolic link', async () => {
@@ -137,6 +188,17 @@ describe('openStateFolder', () => {
       await expect(openStateFolder(join(root, 'link/my-app'))).rejects.toThrow(UntrustedStateError);
     });
 
+    it('refuses a symbolic link above it that another user owns, wherever it leads', async () => {
+      const target = join(root, 'target');
+      mkdirSync(target, { mode: 0o755 });
+      const link = join(root, 'link');
+      symlinkSync(target, link);
+      foreign.add(link);
+      await expect(openStateFolder(join(link, 'my-app'))).rejects.toThrow(
+        expect.objectContaining({ name: 'UntrustedStateError', path: link }),
+      );
+    });
+
     it('takes a parent anyone can write that has the sticky bit, as /tmp', async () => {
       const parent = join(root, 'sticky');
       mkdirSync(parent);
@@ -145,24 +207,45 @@ describe('openStateFolder', () => {
       expect(modeOf(join(parent, 'my-app'))).toBe(0o700);
     });
 
+    it('takes a parent its group can write when the group is the user’s private one', async () => {
+      const parent = groupWritable('mine');
+      const groups = groupFile('other:x:1:', `${me}:x:${myGroup}:`);
+      await openStateFolder(join(parent, 'my-app'), { groupFile: groups });
+      expect(modeOf(join(parent, 'my-app'))).toBe(0o700);
+    });
+
+    it.each([
+      ['lists another member', () => `${me}:x:${myGroup}:${me},someone-else`],
+      ['is named otherwise', () => `staff:x:${myGroup}:`],
+    ])('refuses a parent its group can write when the group %s', async (_, line) => {
+      const parent = groupWritable('shared');
+      const groups = groupFile(line());
+      await expect(openStateFolder(join(parent, 'my-app'), { groupFile: groups })).rejects.toThrow(
+        expect.objectContaining({ name: 'UntrustedStateError', path: parent }),
+      );
+    });
+
+    it('refuses a parent its group can write when the group is not in the group file, saying why', async () => {
+      const parent = groupWritable('shared');
+      const groups = groupFile('other:x:1:');
+      await expect(openStateFolder(join(parent, 'my-app'), { groupFile: groups })).rejects.toThrow(
+        expect.objectContaining({ path: parent, message: expect.stringContaining(groups) }),
+      );
+    });
+
     it('refuses a parent of another user, though no one else can write it', async () => {
       const parent = join(root, 'theirs');
       mkdirSync(parent, { mode: 0o755 });
       const path = join(parent, 'my-app');
       mkdirSync(path, { mode: 0o700 });
-      vi.spyOn(process, 'getuid').mockReturnValue(statSync(root).uid + 1);
-      try {
-        await expect(openStateFolder(path)).rejects.toThrow(
-          expect.objectContaining({
-            name: 'UntrustedStateError',
-            // The first folder from the root down that is neither the user's nor root's.
-            path: root,
-            message: expect.stringContaining('another user'),
-          }),
-        );
-      } finally {
-        vi.restoreAllMocks();
-      }
+      foreign.add(parent);
+      await expect(openStateFolder(path)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'UntrustedStateError',
+          path: parent,
+          message: expect.stringContaining(`another user (uid ${STRANGER})`),
+        }),
+      );
     });
   });
 

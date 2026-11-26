@@ -67,12 +67,20 @@ request also carries the app's token, or is refused with `no-token`
   token's file others had rights on is replaced by a new token, since the
   old one may have been read; the other files are narrowed to the user.
 - The folders above the state folder are checked too, as OpenSSH's
-  `StrictModes` does: from the root down, through the path as given and the
-  one its symbolic links lead to, each must be the user's or root's, and
-  writable by its group or others only with the sticky bit (as `/tmp`).
-  Otherwise another user could rename the state folder away and put a
-  folder of theirs in its place, with a session's settings whose hooks run
-  commands as the person; the start is refused (`invalid-options`).
+  `StrictModes` does, before any is created: from the root down, a symbolic
+  link judged by its own owner and then by the path it leads to, each must
+  be the user's or root's; writable by others only with the sticky bit (as
+  `/tmp`); writable by its group only with the sticky bit, or when the group
+  is the user's private one (the user's primary group, named after the
+  user, with no other member in `/etc/group`; a group `/etc/group` does not
+  list, as from LDAP, is refused). Otherwise another user could rename the
+  state folder away and put a folder of theirs in its place, with a
+  session's settings whose hooks run commands as the person; the start is
+  refused (`invalid-options`) and nothing is created. The missing folders
+  above it are then created with rights `0755`, whatever the umask.
+- On WSL2, a folder of the Windows drives (`/mnt/c/…`) shows rights `0777`
+  without the sticky bit, so a state folder there is refused: keep it on
+  the Linux file system (the default, under `~/.local/state`, is).
 - The lock's name is made from an id in the state folder. A start never
   replaces that id (a second process doing so while the first holds the
   lock would run two cockpits), so an id others could read is narrowed but

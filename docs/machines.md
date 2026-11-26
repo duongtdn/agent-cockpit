@@ -70,6 +70,12 @@ lock its own, so two distributions do not block each other. The holder is
 found from the kernel (`/proc/net/unix` and the processes' descriptors),
 never from what the holder says.
 
+On WSL2, keep the state folder on the Linux file system (the default, under
+`~/.local/state`, is). A folder of the Windows drives (`/mnt/c/…`) shows
+rights `0777` without the sticky bit, which would let any user replace it,
+so the cockpit refuses a state folder there with `invalid-options` (see
+`security.md`).
+
 ## Installing on Linux
 
 The cockpit depends on `node-pty`, a native module that ships prebuilt

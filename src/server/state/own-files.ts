@@ -1,22 +1,12 @@
 import type { Stats } from 'node:fs';
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, readFile, realpath, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { chmod, lstat, mkdir, readFile } from 'node:fs/promises';
 
 /** Rights of a folder of the cockpit's: its user's alone. */
 const PRIVATE_FOLDER = 0o700;
 
 /** Rights of a file of the cockpit's: its user's alone. */
 const PRIVATE_FILE = 0o600;
-
-/** The write rights of a group and of others. */
-const OTHERS_WRITE = 0o022;
-
-/** The sticky bit: in such a folder only an entry's owner may rename or remove it. */
-const STICKY = 0o1000;
-
-/** The user every system folder belongs to. */
-const ROOT_UID = 0;
 
 /** The rights of a group and of others: any of them makes a file or folder reachable by another user. */
 const OTHERS_RIGHTS = 0o077;
@@ -69,43 +59,6 @@ export async function openOwnFolder(path: string): Promise<void> {
   const found = await lstat(path);
   refuseUnlessOwnFolder(path, found);
   if (found.mode & OTHERS_RIGHTS) await chmod(path, PRIVATE_FOLDER);
-}
-
-/**
- * Checks the folders a folder of the cockpit's hangs from, as OpenSSH's
- * StrictModes does: from the root down, through the path as given and the
- * path its symbolic links lead to, each must be the user's or root's, and
- * writable by its group or others only with the sticky bit. Another user
- * able to rename entries in one of them could swap the cockpit's folder for
- * a folder of theirs.
- *
- * @param folder - The folder above the cockpit's own: its parent, existing.
- * @throws {@link UntrustedStateError} naming the first folder that fails;
- * the file system's error when one cannot be read.
- */
-export async function refuseUnsafeParents(folder: string): Promise<void> {
-  const chain = new Set([...fromRootDown(folder), ...fromRootDown(await realpath(folder))]);
-  for (const each of chain) {
-    const found = await stat(each);
-    if (found.uid !== process.getuid?.() && found.uid !== ROOT_UID) {
-      throw new UntrustedStateError(
-        each,
-        `belongs to another user (uid ${found.uid}), above the cockpit's folder.`,
-      );
-    }
-    if (found.mode & OTHERS_WRITE && !(found.mode & STICKY)) {
-      throw new UntrustedStateError(
-        each,
-        "can be written by its group or others, without the sticky bit: another user could put a folder of theirs in place of the cockpit's.",
-      );
-    }
-  }
-}
-
-/** A folder and every folder above it, the root first. */
-function fromRootDown(folder: string): string[] {
-  const parent = dirname(folder);
-  return parent === folder ? [folder] : [...fromRootDown(parent), folder];
 }
 
 /**

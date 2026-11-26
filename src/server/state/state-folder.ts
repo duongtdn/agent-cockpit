@@ -1,9 +1,9 @@
-import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { appFileName } from '../app-name.js';
 import type { SessionFolders } from '../sessions/sessions.js';
-import { openOwnFolder, refuseUnsafeParents, type UntrustedStateError } from './own-files.js';
+import { openOwnFolder, type UntrustedStateError } from './own-files.js';
+import { openParentFolders, type ParentFolderOptions } from './parent-folders.js';
 
 /** The folder under the user's state root that holds every app's state folder. */
 const COCKPIT_FOLDER = 'agent-cockpit';
@@ -50,25 +50,26 @@ function stateRoot(environment: Readonly<Record<string, string | undefined>>): s
 
 /**
  * Opens an app's state folder, the cockpit's own: creates it readable by
- * the app's user alone, its missing parents as any folder; one that exists
- * must be a folder of the user's — never a symbolic link — and is narrowed
- * to the user alone, as are its sessions' folders. Another user able to
- * write in it could plant the files the cockpit reads, the app's token
- * among them. Every folder above it must be the user's or root's, and
- * writable by others only with the sticky bit, else another user could put
- * a folder of theirs in its place.
+ * the app's user alone; one that exists must be a folder of the user's —
+ * never a symbolic link — and is narrowed to the user alone, as are its
+ * sessions' folders. Another user able to write in it could plant the files
+ * the cockpit reads, the app's token among them. The folders above it are
+ * opened first, as {@link openParentFolders} says: checked, then the
+ * missing ones created.
  *
  * @param path - The folder, from {@link stateFolderPath}.
+ * @param options - How the folders above it are judged: see {@link ParentFolderOptions}.
  * @returns The open folder.
  * @throws {@link UntrustedStateError} when the folder, or its sessions'
  * folder, is a symbolic link, a file or another user's, or a folder above
- * it is unsafe; the file system's
- * error when it cannot be created — a parent that is a file, or a folder of
- * another user.
+ * it could be changed by another user; the file system's error when it
+ * cannot be created.
  */
-export async function openStateFolder(path: string): Promise<StateFolder> {
-  await mkdir(dirname(path), { recursive: true });
-  await refuseUnsafeParents(dirname(path));
+export async function openStateFolder(
+  path: string,
+  options: ParentFolderOptions = {},
+): Promise<StateFolder> {
+  await openParentFolders(dirname(path), options);
   await openOwnFolder(path);
   const sessions = join(path, SESSIONS_FOLDER);
   await openOwnFolder(sessions);
