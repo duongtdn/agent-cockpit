@@ -53,6 +53,7 @@ export function courseAfter(
       return compactingFrom === undefined ? course : { session };
     case 'turn-ended':
     case 'turn-failed':
+    case 'interrupted':
       return turnOver(course, event, now);
     case 'compaction-began':
       return session.state === 'idle'
@@ -74,22 +75,21 @@ function busySince(session: Session, now: string): Session {
 }
 
 /**
- * The end of a turn, an answer or a failure: `idle`, with the turn's last
- * message or its error, which replace whatever the last `idle` carried. On
+ * The end of a turn — an answer, a failure or an interruption: `idle`,
+ * with the turn's last message or its error, which replace whatever the last `idle` carried. On
  * an `idle` session there is no turn to end.
  */
 function turnOver(
   course: SessionCourse,
-  event: Extract<DriverEvent, { type: 'turn-ended' | 'turn-failed' }>,
+  event: Extract<DriverEvent, { type: 'turn-ended' | 'turn-failed' | 'interrupted' }>,
   now: string,
 ): SessionCourse {
   const { key, state } = course.session;
   if (state === 'idle') return course;
   const idle: IdleSession = { key, state: 'idle', since: now };
   if (event.type === 'turn-failed') return { session: { ...idle, error: event.error } };
-  return {
-    session: event.lastMessage === undefined ? idle : { ...idle, lastMessage: event.lastMessage },
-  };
+  if (event.type === 'interrupted' || event.lastMessage === undefined) return { session: idle };
+  return { session: { ...idle, lastMessage: event.lastMessage } };
 }
 
 /**

@@ -262,10 +262,15 @@ with it.
 
 The agent running for a unit of work, in its own tmux session, and its
 state: `starting` (the agent is launching), `busy` (it works on a turn),
-`idle` (it waits for a prompt; `lastMessage` is the last turn's answer),
+`idle` (it waits for a prompt; `lastMessage` is the last turn's answer,
+`error` why it failed when it ended on an error of the model's API, and
+`backgroundTasks` the tasks the agent still runs in the background),
 `waiting` (it waits for a person) and `ended` (no agent runs; `reason` says
 why, `canResume` whether its conversation is still kept). Each state carries
-`since`, when it began. `cockpit.sessions.follow` and the client's
+`since`, when it began. A turn the person interrupts in the terminal ends
+`idle`; a background task's work never makes the session `busy`, but the
+turn the agent starts itself when a task finishes does; a compaction begun
+while `idle` is `busy`, then the same `idle` again, its `since` kept. `cockpit.sessions.follow` and the client's
 `sessions.follow` give the whole list at once, then at every change. The
 cockpit does not yet tell `waiting`.
 

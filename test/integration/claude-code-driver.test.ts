@@ -180,4 +180,26 @@ describe('the Claude Code driver, with the fake agent in tmux', () => {
     expect(await driver.canResume(launch)).toBe(true);
     expect(await driver.canResume({ ...launch, conversationId: randomUUID() })).toBe(false);
   });
+
+  it('reports a turn the person interrupts in the terminal, which the transcript alone records', async () => {
+    const driver = claudeCode({ permissions: { allow: ['Bash'] } });
+    const touch = { do: 'tool', name: 'Bash', input: { command: 'touch a.txt' } } as const;
+    const { name, launch, listener } = await launchThroughDriver(
+      driver,
+      [[touch, { do: 'stay-busy' }]],
+      'Touch a.txt, then think',
+    );
+    const told: DriverEvent[] = [];
+    const stop = driver.follow(launch, (events) => told.push(...events));
+    try {
+      await eventually(() => expect(listener.events).toHaveLength(4));
+
+      await host.sendKeys(name, ['Escape']);
+
+      await eventually(() => expect(told).toEqual([{ type: 'interrupted' }]));
+      expect(listener.events.at(-1)).toEqual({ type: 'working' });
+    } finally {
+      stop();
+    }
+  });
 });

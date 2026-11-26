@@ -960,6 +960,73 @@ describe("a session's states, from the driver's events", () => {
   });
 });
 
+describe('what the driver tells of a session outside its hooks', () => {
+  it('is followed from its start on the host, for the conversation launched', async () => {
+    const hold = host.holdNextStart();
+    const { result } = await launched();
+    expect(driver.follows).toEqual([]);
+
+    hold.open();
+    await settle();
+
+    expect(driver.follows.map((following) => following.conversation)).toEqual([
+      { conversationId: driver.launches[0]?.conversationId, directory: DIRECTORY },
+    ]);
+    hook('/prompt-taken');
+    await result;
+  });
+
+  it('moves its state as a hook does: an interruption in the terminal makes it `idle`', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+    vi.advanceTimersByTime(3000);
+
+    driver.follows[0]?.report([{ type: 'interrupted' }]);
+
+    expect(sessionOf()).toEqual({
+      key: KEY,
+      state: 'idle',
+      since: new Date(T0.getTime() + 3000).toISOString(),
+    });
+  });
+
+  it('stops being followed once it ended, and what comes later changes nothing', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    driver.follows[0]?.report([{ type: 'interrupted' }]);
+
+    expect(driver.follows[0]?.stopped).toBe(true);
+    expect(sessionOf()?.state).toBe('ended');
+  });
+
+  it('stops being followed when the core is closed', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+
+    sessions.close();
+
+    expect(driver.follows[0]?.stopped).toBe(true);
+  });
+
+  it('is never followed when its launch fails, nor when the core closed during the start', async () => {
+    host.failNextStart(new SessionHostError('host-failed', 'tmux failed.'));
+    await launched();
+    const hold = host.holdNextStart();
+    await launched('other');
+    sessions.close();
+    hold.open();
+    await settle();
+
+    expect(driver.follows).toEqual([]);
+  });
+});
+
 describe('the end of a session', () => {
   async function live(): Promise<void> {
     const { result } = await launched();

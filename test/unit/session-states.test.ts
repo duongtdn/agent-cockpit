@@ -102,6 +102,20 @@ describe('a session after an event of its agent', () => {
     ],
     ['a failed turn', busy, overloaded, true, { ...failed, since: NOW }],
     [
+      'an interruption',
+      busy,
+      { type: 'interrupted' },
+      true,
+      { key: KEY, state: 'idle', since: NOW },
+    ],
+    [
+      'an interruption while waiting',
+      waiting,
+      { type: 'interrupted' },
+      true,
+      { key: KEY, state: 'idle', since: NOW },
+    ],
+    [
       'a failed turn while waiting',
       waiting,
       { type: 'turn-failed', error: { kind: 'rate-limit', message: 'Slow down.' } },
@@ -154,6 +168,7 @@ describe('a session after an event of its agent', () => {
     ['a tool while busy', busy, { type: 'working' }],
     ['the end of a turn while idle', idle, { type: 'turn-ended', lastMessage: 'Other.' }],
     ['a failed turn while idle', idle, overloaded],
+    ['an interruption while idle', idle, { type: 'interrupted' }],
     ['a compaction begun while busy', busy, { type: 'compaction-began' }],
     ['a compaction begun while waiting', waiting, { type: 'compaction-began' }],
     ['a compaction begun while starting', starting, { type: 'compaction-began' }],
@@ -232,6 +247,7 @@ describe('a compaction', () => {
     ['a tool', { type: 'working' }, { key: KEY, state: 'busy', since: NOW }],
     ['the end of a turn', { type: 'turn-ended' }, { key: KEY, state: 'idle', since: NOW }],
     ['a failed turn', overloaded, { ...failed, since: NOW }],
+    ['an interruption', { type: 'interrupted' }, { key: KEY, state: 'idle', since: NOW }],
   ])('is forgotten once a turn shows: %s', (_, event, session) => {
     const course = afterEvents({ session: idle }, [{ type: 'compaction-began' }, event]);
 

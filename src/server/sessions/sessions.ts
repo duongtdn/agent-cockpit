@@ -295,6 +295,8 @@ interface Entry {
   promptBound?: NodeJS.Timeout;
   /** Reads the screen while a panel the prompt opened waits for a key. */
   panel?: ScreenWatch;
+  /** Stops following what the agent tells outside its hooks. */
+  stopFollowing?: () => void;
 }
 
 class SessionRegistry implements Sessions {
@@ -327,9 +329,13 @@ class SessionRegistry implements Sessions {
 
   receive({ key, path, body }: HookRequest): void {
     const entry = this.#entries.get(key);
-    if (entry?.phase !== 'launching' && entry?.phase !== 'live') return;
-    const { events } = this.#options.driver.readHook({ key, path, body });
-    if (events.length === 0) return;
+    if (!isListened(entry)) return;
+    this.#told(entry, this.#options.driver.readHook({ key, path, body }).events);
+  }
+
+  /** Follows the session's state from what its agent told, a hook's events or others. */
+  #told(entry: Entry, events: readonly DriverEvent[]): void {
+    if (!isListened(entry) || events.length === 0) return;
     const at = now();
     // One hook is one change: its followers never see a session half told.
     let course: SessionCourse = courseOf(entry);
@@ -379,6 +385,7 @@ class SessionRegistry implements Sessions {
     this.#watch.close();
     for (const entry of this.#entries.values()) {
       stopReadingTheScreen(entry);
+      entry.stopFollowing?.();
       entry.departure.reject(new SessionsClosedError(entry.key));
     }
   }
@@ -460,6 +467,10 @@ class SessionRegistry implements Sessions {
     // Closed while the host started it: the session goes on, unwatched.
     if (this.#closed) return;
     this.#watch.watch(entry.key);
+    entry.stopFollowing = driver.follow(
+      { conversationId: entry.conversationId, directory: entry.directory },
+      (events) => this.#told(entry, events),
+    );
     if (!entry.heard) this.#watchStartUp(entry);
   }
 
@@ -625,6 +636,7 @@ class SessionRegistry implements Sessions {
     if (entry?.phase !== 'live' && entry?.phase !== 'killing') return;
     entry.phase = 'going';
     stopReadingTheScreen(entry);
+    entry.stopFollowing?.();
     this.#watch.unwatch(key);
     this.#options.hooks.revoke(key);
     const canResume = await this.#options.driver
@@ -673,6 +685,11 @@ function stopReadingTheScreen(entry: Entry): void {
   entry.startUp?.stop();
   entry.panel?.stop();
   clearTimeout(entry.promptBound);
+}
+
+/** Whether what a session's agent tells is listened to: from its launch until the cockpit ends it. */
+function isListened(entry: Entry | undefined): entry is Entry {
+  return entry?.phase === 'launching' || entry?.phase === 'live';
 }
 
 function courseOf(entry: Entry): SessionCourse {

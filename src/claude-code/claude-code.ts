@@ -35,6 +35,7 @@ import {
 import { readScreen } from './screen-reading.js';
 import { settingsDocument } from './settings-document.js';
 import { TESTED_RANGE } from './tested-range.js';
+import { followTranscript } from './transcript-watch.js';
 
 /** The session's settings, which carry the token in the HTTP hooks' header. */
 const SETTINGS_FILE = 'settings.json';
@@ -152,6 +153,9 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
     readScreen,
     launch: (launch) => launchSession(launch, checked),
     readHook,
+    follow: ({ conversationId }, report) =>
+      followTranscript({ configFolder: agentConfigFolder(process.env), conversationId }, report)
+        .stop,
     canResume: ({ conversationId }) =>
       keepsConversation(agentConfigFolder(process.env), conversationId),
   };

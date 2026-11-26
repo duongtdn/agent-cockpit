@@ -203,6 +203,13 @@ export type DriverEvent =
       readonly lastMessage?: string;
     }
   | {
+      /**
+       * A person interrupted the turn in the terminal, which no hook
+       * reports: `idle`, with no last message.
+       */
+      readonly type: 'interrupted';
+    }
+  | {
       /** The turn ended on an error of the model's API, after the agent's own retries: `idle`. */
       readonly type: 'turn-failed';
       /** Why it failed. */
@@ -343,6 +350,15 @@ export interface Driver {
    * @returns What it tells the core.
    */
   readHook(request: HookRequest): HookOutcome;
+  /**
+   * Follows what the agent of a live session tells outside its hooks, such
+   * as an interruption only its transcript records, from now on.
+   *
+   * @param conversation - The session's conversation, as it was launched.
+   * @param report - Receives what it tells, as a hook's events are read.
+   * @returns A function that stops following: nothing is reported after it.
+   */
+  follow(conversation: Conversation, report: (events: readonly DriverEvent[]) => void): () => void;
   /**
    * Tells whether the agent still keeps a conversation, so that an ended
    * session can say whether it may resume.

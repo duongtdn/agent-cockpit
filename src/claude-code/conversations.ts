@@ -15,10 +15,7 @@ export function agentConfigFolder(environment: NodeJS.ProcessEnv): string {
 }
 
 /**
- * Tells whether Claude Code keeps a conversation: its transcript exists. It
- * keeps one in a folder per project, named after the folder the
- * conversation first ran in, and `--resume` finds it from any folder; so
- * is it looked for in every project's.
+ * Tells whether Claude Code keeps a conversation: its transcript exists.
  *
  * @param configFolder - The agent's configuration folder.
  * @param conversationId - The conversation's id.
@@ -29,14 +26,30 @@ export async function keepsConversation(
   configFolder: string,
   conversationId: string,
 ): Promise<boolean> {
+  return (await findTranscript(configFolder, conversationId)) !== undefined;
+}
+
+/**
+ * Finds a conversation's transcript. Claude Code keeps it in a folder per
+ * project, named after the folder the conversation first ran in, and
+ * `--resume` finds it from any folder; so is it looked for in every
+ * project's.
+ *
+ * @param configFolder - The agent's configuration folder.
+ * @param conversationId - The conversation's id.
+ * @returns The transcript's path; `undefined` while the agent has written none.
+ */
+export async function findTranscript(
+  configFolder: string,
+  conversationId: string,
+): Promise<string | undefined> {
   const projects = join(configFolder, 'projects');
   const folders = await readdir(projects, { withFileTypes: true }).catch(nothingWhenAbsent);
-  const found = await Promise.all(
-    folders
-      .filter((folder) => folder.isDirectory())
-      .map((folder) => exists(join(projects, folder.name, `${conversationId}.jsonl`))),
-  );
-  return found.includes(true);
+  const candidates = folders
+    .filter((folder) => folder.isDirectory())
+    .map((folder) => join(projects, folder.name, `${conversationId}.jsonl`));
+  const found = await Promise.all(candidates.map(exists));
+  return candidates[found.indexOf(true)];
 }
 
 function nothingWhenAbsent(error: NodeJS.ErrnoException): never[] {

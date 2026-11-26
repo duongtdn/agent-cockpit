@@ -142,7 +142,16 @@ Nothing is published yet.
   `ClaudeCodeSandbox` and `ClaudeCodeOptions.sandbox`.
 - The types `TurnError` and `BackgroundTask`, from `.` and `./client`; an
   `idle` session's `error` and `backgroundTasks`, an `ended` one's
-  `dialog` (none set yet).
+  `dialog` (not set yet).
+- Sessions follow more of Claude Code: a turn that fails on an API error is
+  `idle` with its `error` (`server`, overloads included; `rate-limit`;
+  `other`) until a later turn; `idle` lists the `backgroundTasks` still
+  running, each gone when it finishes, and a task's own work never moves
+  the state; a compaction begun while `idle` is `busy`, then the same
+  `idle`, its `since` kept, and changes nothing inside a turn; a turn the
+  person interrupts in the terminal ends `idle`. The driver's settings
+  carry the hooks `StopFailure`, `PreCompact`, `PostCompact`,
+  `SubagentStart` and `SubagentStop`.
 - The error code `sandbox-unavailable` (`cause`, 503).
 
 ### Not yet: refused or missing in this version

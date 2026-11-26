@@ -269,10 +269,21 @@ export interface StubDriver extends Driver {
   readonly launches: Launch[];
   /** Every conversation it was asked about, in order. */
   readonly resumeQuestions: Conversation[];
+  /** Every conversation it follows, in order: what it reports, and whether it was stopped. */
+  readonly follows: Following[];
   /** What `canResume` answers: a value, or an error it rejects with. */
   resumable: boolean | Error;
   /** Makes the next launch fail with the error. */
   failNextLaunch(error: unknown): void;
+}
+
+/** A conversation a stub driver follows: the test reports for it. */
+export interface Following {
+  readonly conversation: Conversation;
+  /** Reports events of the agent's, as the driver would from outside its hooks. */
+  readonly report: (events: readonly DriverEvent[]) => void;
+  /** Whether the core stopped following it. */
+  readonly stopped: boolean;
 }
 
 export const STUB_COMMAND: LaunchCommand = {
@@ -284,10 +295,12 @@ export const STUB_COMMAND: LaunchCommand = {
 export function createStubDriver(): StubDriver {
   const launches: Launch[] = [];
   const resumeQuestions: Conversation[] = [];
+  const follows: Following[] = [];
   let nextLaunchError: unknown;
   return {
     launches,
     resumeQuestions,
+    follows,
     resumable: true,
     terminalKeys: [],
     silentStartCause: 'The stub agent sent no hook.',
@@ -305,6 +318,13 @@ export function createStubDriver(): StubDriver {
     },
     readHook(request: HookRequest) {
       return { events: STUB_EVENTS[request.path] ?? [] };
+    },
+    follow(conversation, report) {
+      const following = { conversation, report, stopped: false };
+      follows.push(following);
+      return () => {
+        following.stopped = true;
+      };
     },
     async canResume(conversation) {
       resumeQuestions.push(conversation);
