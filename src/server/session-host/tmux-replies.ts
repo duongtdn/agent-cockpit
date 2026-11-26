@@ -14,7 +14,8 @@ export type TmuxFailureKind = 'no-server' | 'no-session' | 'duplicate-session' |
 /**
  * tmux has no exit status per kind of failure: its message tells. A server
  * that exits while a command reaches it (its last session just ended) is no
- * server either. A socket that cannot be reached for another reason — a path
+ * server either, and one that still runs with no session left answers that
+ * no target lives. A socket that cannot be reached for another reason — a path
  * too long, a folder that is someone else's — is no answer about sessions:
  * it is the host's failure.
  */
@@ -22,6 +23,8 @@ const FAILURES: readonly (readonly [RegExp, TmuxFailureKind])[] = [
   [/^(no server running on |server exited unexpectedly)/, 'no-server'],
   [/^error connecting to .* \((No such file or directory|Connection refused)\)$/m, 'no-server'],
   [/^can't find (session|window|pane)/, 'no-session'],
+  // What a server with no session left answers a target, its last one just ended (seen on 3.2a).
+  [/^no current target$/m, 'no-session'],
   [/^duplicate session: /, 'duplicate-session'],
 ];
 

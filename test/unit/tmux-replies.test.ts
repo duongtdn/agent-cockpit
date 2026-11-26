@@ -20,6 +20,8 @@ describe('what tmux says when it fails', () => {
     ["can't find session: chapter-1\n", 'no-session'],
     ["can't find window: 0\n", 'no-session'],
     ["can't find pane: 0\n", 'no-session'],
+    // A server with no session left (its last one just ended, the server not yet gone).
+    ['no current target\n', 'no-session'],
     ['duplicate session: chapter-1\n', 'duplicate-session'],
     ['command too long\n', 'other'],
     ['', 'other'],
