@@ -2,19 +2,21 @@
 
 Where the cockpit runs, and with which versions.
 
-**Status:** the cockpit is not built yet. The requirements below are what it
-is being built for; each release will state the platforms and versions it was
-tested on.
+**Status:** nothing is released yet. The requirements below are what this
+version checks and is tested on; each release will state the platforms and
+versions it was tested on.
 
 ## Supported platforms
 
 Linux, WSL2 included. Windows is supported through WSL2 only. macOS is not
-supported yet.
+supported yet. `createCockpit` checks the platform and rejects on any other
+with `unsupported-machine` (`what: 'platform'`).
 
 ## tmux and Node versions
 
 - tmux 3.2a or later.
-- Node 22 or later.
+- Node 22 or later. The package's `engines` field says so; `createCockpit`
+  does not check it.
 
 The tmux version is read from `tmux -V`. A release counts from 3.2a on (3.2
 itself is too old); a release candidate (`3.3-rc`) or a development build
@@ -25,8 +27,8 @@ the error is `unsupported-machine` with `what: 'tmux'`.
 
 ## The cockpit's own tmux server
 
-The part of the cockpit that runs tmux is built; no public call reaches it
-yet. What it does on the machine:
+`createCockpit` checks tmux's version; a run starts a session on it. What it
+does on the machine:
 
 - Sessions live on a tmux server of the app's own, on a socket named
   `agent-cockpit-` and the app's name, apart from the person's tmux server
@@ -50,6 +52,24 @@ ncurses. Where `infocmp` or that description is missing, sessions still run,
 on `screen-256color`, which lacks a few abilities such as italics. Nothing
 has to be installed for it.
 
+## The app's lock
+
+One cockpit runs sessions per app, user and machine. `createCockpit` takes
+the app's lock; a second process of the same app waits 5 seconds for the
+first to exit (as when a watcher restarts the server), then rejects with
+`cockpit-locked`, whose `holder` is the process id of the process that holds
+it, or `'another-user'` when no process of the user's holds it.
+
+The lock is a Linux abstract unix socket, `agent-cockpit-<uid>-<id>`, where
+`<id>` is a random id kept in the app's state folder. The system frees it the
+moment its holder exits, however it exits, so a crash never leaves a stale
+lock, and there is no file to remove. It is Linux-only, which is one reason
+macOS is not supported yet. On WSL2, every distribution shares the names of
+abstract sockets: the id kept in the state folder makes each state folder's
+lock its own, so two distributions do not block each other. The holder is
+found from the kernel (`/proc/net/unix` and the processes' descriptors),
+never from what the holder says.
+
 ## Installing on Linux
 
 The cockpit depends on `node-pty`, a native module that ships prebuilt
@@ -67,10 +87,11 @@ npm runs the script by default.
 
 ## The agent's tested range
 
-The range of agent versions each driver was tested on. Not set yet: no driver
-is built.
+The range of agent versions each driver was tested on. Not set yet: the
+driver does not check the agent's version so far. Its tests run Claude Code
+2.1.332.
 
 ## Outside the tested range
 
 What happens when the agent is newer or older than the tested range. Not
-written yet: no driver is built.
+written yet: the driver's version check is not built.

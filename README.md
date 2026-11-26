@@ -8,8 +8,11 @@ steers its sessions, and gives the app a framework-free client and, when the app
 wants one, a live terminal mounted in its page. It ships no web UI of its own.
 It works through drivers; Claude Code is the first.
 
-**Status:** not built yet. Nothing is published to npm so far. The package has
-its six entry points and its typed errors, and nothing else.
+**Status:** a first path works, end to end: an app creates and mounts a
+cockpit, runs a job on a key with no session, follows the sessions live, and
+mounts a session's terminal in its page. Most operations are still to come
+(resume, send, asks, the channel, activity), and the cockpit only serves the
+loopback. Nothing is published to npm so far.
 
 This project is not affiliated with or endorsed by Anthropic. "Claude Code"
 names the agent the first driver drives.
@@ -40,7 +43,8 @@ has the details.
 
 ## A first working page
 
-Not written up yet. Until it is,
+[docs/guide.md](docs/guide.md#getting-started) shows the server (Fastify, or
+a plain `node:http` server), the page and the link.
 [examples/jobs-console](examples/jobs-console/DEMO.md) is one, whole: a
 Fastify app that mounts the cockpit, offers a job and prints its link, and a
 page in plain JavaScript that runs the job, follows the sessions and mounts

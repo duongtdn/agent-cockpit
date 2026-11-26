@@ -22,7 +22,18 @@ Nothing is published yet.
   the sessions, gives the page's link with the token in its fragment
   (`link`), serves the browser on the mounted handler (`handle`,
   `upgrade`: running a job, listing and following the sessions, and each
-  session's terminal over a WebSocket), and `close()`s.
+  session's terminal over a WebSocket), and `close()`s, the sessions going
+  on in tmux. The state folder (`$XDG_STATE_HOME/agent-cockpit/<name>` by
+  default) and the app's token are readable by the app's user alone; the
+  token and the agent-facing port stay the same from one start to the next.
+- The app's lock: a Linux abstract unix socket named from an id in the state
+  folder. A second process of the app waits 5 seconds, then rejects with
+  `cockpit-locked`, whose `holder` is the holding process's id or
+  `'another-user'`.
+- The handler is mounted: it is given the requests under the app's prefix,
+  the prefix removed from the URL. A path under the mount it does not know
+  is answered 404, and an upgrade to one is refused; a `CockpitError` is
+  answered with an HTTP status of its code and the error as JSON.
 - The handler's request checks, for every request and upgrade: refused
   (`refused`) from beyond the loopback, through a forwarding header, to a
   local address other than `127.0.0.1` or `::1`, or with a `Host` or
@@ -30,12 +41,23 @@ Nothing is published yet.
   the app's token.
 - `cockpitFastify(cockpit)` from `./fastify`: mounts the cockpit under the
   prefix it is registered with, its WebSocket upgrades included.
-- `CockpitError` and `isCockpitError`, from `.` and `./client`, with the types
-  `CockpitErrorCode`, `CockpitErrorFields` and `Issue`: one error class, a
+- `CockpitError` and `isCockpitError`, from `.`, `./client` and
+  `./terminal`, with the types `CockpitErrorCode`, `CockpitErrorFields` and
+  `Issue`: one error class, a
   kebab-case `code`, and the fields of each code. `JSON.stringify` keeps an
   error's `name`, `code`, `message` and fields.
 - The types `SessionState`, `Pending` and `StartupDialog`, from `.` and
   `./client`: what the errors' fields are made of.
+- `createCockpitClient({ baseUrl })` from `./client`, with the types
+  `CockpitClient`, `CockpitClientOptions`, `RunResult`, `Session` and
+  `EndReason`: takes the app's token from the link's fragment, removes it
+  from the address bar and keeps it in the origin's local storage, and sends
+  it in a header and a WebSocket subprotocol, never in a URL. `run(jobId,
+  args)` rejects with the server's `CockpitError`, or `unreachable`;
+  `sessions.follow(handler)` reconnects by itself after a drop (0.5 s,
+  doubling up to 10 s); `on('error', handler)` tells why a stream could not
+  connect (`no-token`, `refused`, `unreachable`). `invalid-options` for a
+  `baseUrl` that is not a path or an HTTP URL.
 - `claudeCode({ permissionMode?, permissions? })` from `./claude-code`, with
   the types `ClaudeCodeOptions`, `PermissionMode` and `PermissionRules`: the
   Claude Code driver, which launches `claude` with settings of its own in the
@@ -47,4 +69,28 @@ Nothing is published yet.
   fitted to it, attached over a WebSocket with the app's token, reconnecting
   after a drop, `ended` once the session is gone; the driver's key rules;
   copy through OSC 52 and Ctrl+C on the terminal's own selection; status
-  events, `focus()` and `dispose()`.
+  events, `focus()` and `dispose()`, with the types `MountedTerminal`,
+  `MountTerminalOptions` and `TerminalStatus`. Any program in a session can
+  write the person's clipboard through OSC 52; none can read it.
+
+### Not yet: refused or missing in this version
+
+- `createCockpit` refuses every option but `name`, `directory`, `driver`,
+  `jobs`, `stateDirectory` and `agentPort`, and every job field but `id`,
+  `title`, `description`, `args`, `key` and `prompt`, with
+  `invalid-options`.
+- A run on a key that has a session, whatever its state, is refused with
+  `wrong-state`: there is no resume, send, open, interrupt, end or remove.
+- A run whose agent reports nothing within 30 seconds is ended and refused
+  with `unobservable`; start-up dialogs (trusting a folder, logging in) are
+  not read, so a session held behind one ends this way.
+- An agent that cannot be run is not reported as `agent-not-found`: the run
+  resolves with `state: 'ended'`. The agent's version is not checked.
+- A key whose tmux session an earlier process of the app left cannot be run:
+  the run rejects with an error that is not a `CockpitError` (500 on the
+  wire, `unreachable` in the client). Such sessions are not listed, and a
+  restarted server lists none of the earlier ones.
+- The cockpit serves the loopback only; nothing opens it beyond.
+- The agent's tools are not kept away from the cockpit's state folder.
+- `createCockpit` checks the platform and tmux, not Node's version.
+- The client has no `sessions.list()`; no events are built.
