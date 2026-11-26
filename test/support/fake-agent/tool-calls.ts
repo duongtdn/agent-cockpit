@@ -12,7 +12,12 @@ export interface PlannedCall {
   readonly input: ToolInput;
   /** The dialog the terminal shows when the call asks. */
   readonly dialog: 'permission' | 'question';
-  /** Tells what a permission mode does with the call. */
+  /**
+   * Tells what a permission mode does with the call.
+   *
+   * @throws `Error` naming the tool and the mode when nothing observed of
+   * Claude Code tells: the fake agent plays no guess.
+   */
   routeIn(mode: string): Route;
   /** Tells whether an allowed input lets the call run: a question needs its answers. */
   isSettledBy(input: ToolInput): boolean;
@@ -37,7 +42,7 @@ function planTool(step: ToolStep): PlannedCall {
     name: step.name,
     input: step.input,
     dialog: 'permission',
-    routeIn: (mode) => (mode === 'default' ? 'ask' : mode === 'dontAsk' ? 'deny' : 'run'),
+    routeIn: (mode) => routeOfTool(step, mode),
     isSettledBy: () => true,
     inputFromTerminal: () => step.input,
     responseTo: () => step.response ?? {},
@@ -47,14 +52,60 @@ function planTool(step: ToolStep): PlannedCall {
 function planQuestion(step: QuestionStep): PlannedCall {
   const input = { questions: step.questions };
   return {
-    name: 'AskUserQuestion',
+    name: QUESTION_TOOL,
     input,
     dialog: 'question',
-    routeIn: (mode) => (mode === 'dontAsk' ? 'deny' : 'ask'),
+    routeIn: (mode) => routeOfQuestion(mode),
     isSettledBy: (allowed) => allowed.answers !== undefined,
     inputFromTerminal: () => ({ ...input, answers: firstOptions(step) }),
     responseTo: (answered) => ({ answers: answered.answers }),
   };
+}
+
+/** The tool a question is a call of. */
+const QUESTION_TOOL = 'AskUserQuestion';
+
+/** The modes in which a `touch` was seen to run with no ask. */
+const MODES_THAT_RUN_A_TOUCH: readonly string[] = [
+  'acceptEdits',
+  'plan',
+  'auto',
+  'bypassPermissions',
+];
+
+/** Every mode but `dontAsk`: a question is asked in each. */
+const MODES_BESIDE_DONT_ASK: readonly string[] = ['default', ...MODES_THAT_RUN_A_TOUCH];
+
+/** A shell command that only touches files named plainly: the one command whose fate is known in every mode. */
+const A_TOUCH = /^touch( [\w./-]+)+$/;
+
+/**
+ * Tells what a mode does with a call that needs permission: it asks in
+ * `default` and is denied in `dontAsk`, whatever the tool. In the other
+ * modes the tools differ, and only a `touch` was seen: it runs.
+ */
+function routeOfTool(step: ToolStep, mode: string): Route {
+  if (mode === 'default') return 'ask';
+  if (mode === 'dontAsk') return 'deny';
+  if (MODES_THAT_RUN_A_TOUCH.includes(mode) && isATouch(step)) return 'run';
+  throw noKnownRoute(step.name, mode);
+}
+
+function routeOfQuestion(mode: string): Route {
+  if (MODES_BESIDE_DONT_ASK.includes(mode)) return 'ask';
+  if (mode === 'dontAsk') return 'deny';
+  throw noKnownRoute(QUESTION_TOOL, mode);
+}
+
+function noKnownRoute(toolName: string, mode: string): Error {
+  return new Error(
+    `nothing tells what Claude Code does with a call of ${toolName} in the ${mode} mode`,
+  );
+}
+
+function isATouch(step: ToolStep): boolean {
+  const { command } = step.input;
+  return step.name === 'Bash' && typeof command === 'string' && A_TOUCH.test(command);
 }
 
 /** The answers of a person who presses Enter on each question: its first option. */

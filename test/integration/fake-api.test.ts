@@ -400,11 +400,11 @@ describe('what the script did not foresee', () => {
 
     const response = await post(api, conversation('surprise'));
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({
       type: 'error',
       error: {
-        type: 'invalid_request_error',
+        type: 'permission_error',
         message: expect.stringContaining('no answer scripted'),
       },
     });
@@ -421,6 +421,21 @@ describe('what the script did not foresee', () => {
     );
     expect(check).toThrow(/last user message: "surprise"/);
     expect(check).not.toThrow(/sk-ant-secret-key/);
+  });
+
+  it('tells of the first such request as it arrives, with the error of the final check', async () => {
+    const api = await start();
+    const unexpected = api.unexpectedRequest();
+    api.script(turn('ok'));
+    await post(api, conversation('foreseen'));
+
+    await post(api, conversation('surprise'));
+    await post(api, conversation('another'));
+
+    const error = await unexpected;
+    expect(error.message).toMatch(/Conversation requests with no scripted answer \(1\)/);
+    expect(error.message).toMatch(/conversation request 2 .*last user message: "surprise"/);
+    expect(await api.unexpectedRequest()).toBe(error);
   });
 
   it('passes the final check when every conversation request had its answer', async () => {

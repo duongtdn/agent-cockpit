@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { findTranscript } from '../transcript-files.ts';
 import { createFakeAgent, type FakeAgent } from './agent.ts';
 import { type CommandLine, parseCommandLine } from './command-line.ts';
 import { createHookRunner } from './hook-runner.ts';
@@ -7,7 +8,7 @@ import { createKeyDecoder, type Key } from './keys.ts';
 import { renderScreen, type ScreenView } from './screen.ts';
 import { readScript } from './script.ts';
 import { startReleased } from './start-gate.ts';
-import { countPrompts, findTranscript, openTranscript, transcriptPathFor } from './transcript.ts';
+import { countPrompts, openTranscript, transcriptPathFor } from './transcript.ts';
 
 /**
  * How long an ESC waits for what follows before it is the Escape key: longer

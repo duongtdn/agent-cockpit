@@ -47,9 +47,6 @@ export type Step =
 /** What the agent does with one prompt: steps, the last of which ends the turn. */
 export type Turn = readonly Step[];
 
-/** The turn of a prompt the script does not reach. */
-const UNSCRIPTED_TURN: Turn = [{ do: 'reply', text: 'Done.' }];
-
 const ENDING_STEPS: readonly string[] = ['reply', 'stay-busy', 'exit'];
 
 /**
@@ -106,10 +103,17 @@ function isObject(value: unknown): boolean {
  *
  * @param turns - The script.
  * @param index - The prompt's place in the conversation, from zero.
- * @returns Its turn; a plain reply for a prompt beyond the script.
+ * @returns Its turn.
+ * @throws `Error` for a prompt beyond the script: what the agent would
+ * answer is the test's to say, never the fake agent's to invent.
  */
 export function turnAt(turns: readonly Turn[], index: number): Turn {
-  return turns[index] ?? UNSCRIPTED_TURN;
+  const turn = turns[index];
+  if (turn === undefined) {
+    const held = `${turns.length} ${turns.length === 1 ? 'turn' : 'turns'}`;
+    throw new Error(`the script has no turn for prompt ${index + 1}: it holds ${held}`);
+  }
+  return turn;
 }
 
 /**

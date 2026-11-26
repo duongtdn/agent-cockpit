@@ -4,12 +4,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   countPrompts,
-  findTranscript,
   INTERRUPTED,
   INTERRUPTED_FOR_TOOL_USE,
   openTranscript,
   transcriptPathFor,
 } from '../support/fake-agent/transcript.ts';
+import { findTranscript } from '../support/transcript-files.ts';
 
 const ID = '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11';
 let configFolder: string;
@@ -67,18 +67,17 @@ describe("the fake agent's transcript", () => {
     expect(INTERRUPTED_FOR_TOOL_USE).toBe('[Request interrupted by user for tool use]');
   });
 
-  it('is found again by its session, from any folder (behavior 3)', () => {
+  it('is where a conversation is found again by its session (behavior 3)', () => {
     const path = transcriptPathFor(configFolder, '/work/unit', ID);
     openTranscript(path, ID).recordPrompt('hello');
 
     expect(findTranscript(configFolder, ID)).toBe(path);
   });
 
-  it('is not found for a session that recorded nothing', () => {
+  it('appears with its first entry only', () => {
     openTranscript(transcriptPathFor(configFolder, '/work/unit', ID), ID);
 
     expect(findTranscript(configFolder, ID)).toBeUndefined();
-    expect(findTranscript(join(configFolder, 'absent'), ID)).toBeUndefined();
   });
 
   it('counts the prompts of the conversation, not its interruptions', () => {

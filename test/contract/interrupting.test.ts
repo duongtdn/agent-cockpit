@@ -1,15 +1,11 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { eventually } from '../support/eventually.ts';
 // The markers the fake agent plays are the ones the real agent is held to here.
 import { INTERRUPTED, INTERRUPTED_FOR_TOOL_USE } from '../support/fake-agent/transcript.ts';
 import { heldTurn, toolUse, turn } from '../support/fake-api/index.ts';
 import type { AgentSession } from '../support/real-agent/runner.ts';
-import { type ContractAgent, endSession, startContractAgent, userTexts } from './harness.ts';
-
-/** "At once", for a marker: a wide margin over the few tens of milliseconds the agent takes. */
-const AT_ONCE_MS = 2000;
+import { type ContractAgent, startContractAgent, userTexts } from './harness.ts';
 
 /** The file a running tool call leaves, for the test to know the tool runs. */
 const TOOL_STARTED = 'tool-started';
@@ -20,56 +16,73 @@ const TOOL_STARTED = 'tool-started';
  */
 const RUNS_UNTIL_INTERRUPTED = `touch ${TOOL_STARTED}; timeout 30 tail -f /dev/null`;
 
+/** The prompt given once a turn was interrupted, and the scripted answer that ends its turn. */
+const NEXT_PROMPT = 'go on';
+const NEXT_ANSWER = turn('Going on.');
+
 /**
- * Presses Esc in a session that is busy, and checks what follows: the marker
- * in the transcript at once, and no hook from then to the session's end but
- * the end's own.
+ * Presses Esc in a session that is busy with a prompt, and checks what
+ * follows. "At once" is held without a clock: the marker must be in the
+ * transcript while nothing else is done to the session, so the interruption
+ * alone records it — the agent writes its transcript a moment behind its
+ * hooks and requests, so none of them marks the instant. The next prompt is
+ * then the barrier: a hook of the interrupted turn would come before its own.
  */
 async function expectInterruption(
   agent: ContractAgent,
   session: AgentSession,
-  marker: string,
+  interrupted: { readonly prompt: string; readonly marker: string },
 ): Promise<void> {
   const hooksBefore = agent.hooks.events();
-  const pressedAt = Date.now();
+  const hooksSince = () => agent.hooks.events().slice(hooksBefore.length);
 
   await session.press('Escape');
 
-  const recorded = await eventually(() => {
-    const found = userTexts(session).find((text) => text.text === marker);
-    if (found === undefined) throw new Error(`The transcript holds no "${marker}" yet.`);
-    return found;
-  });
-  expect(recorded.recordedAt - pressedAt).toBeLessThan(AT_ONCE_MS);
-  // Once the agent's process is gone, every hook it would have sent has arrived.
-  await endSession(session, 'SIGTERM');
-  expect(agent.hooks.events().filter((event) => event !== 'SessionEnd')).toEqual(hooksBefore);
+  await agent.eventually(() => expect(userTexts(session)).toContain(interrupted.marker));
+  await session.type(NEXT_PROMPT);
+  await session.press('Enter');
+  const next = await agent.hook('UserPromptSubmit');
+  expect(next.payload.prompt).toBe(NEXT_PROMPT);
+  expect(hooksSince()).toEqual(['UserPromptSubmit']);
+  const stop = await agent.hook('Stop');
+  expect(stop.payload.last_assistant_message).toBe('Going on.');
+  expect(hooksSince()).toEqual(['UserPromptSubmit', 'Stop']);
+  await agent.eventually(() =>
+    expect(userTexts(session)).toEqual([interrupted.prompt, interrupted.marker, NEXT_PROMPT]),
+  );
 }
 
 /** Interrupts a turn while the model's answer is awaited, after a tool call so that the turn has produced something. */
 async function interruptWhileGenerating(): Promise<void> {
   const agent = await startContractAgent();
-  agent.api.script(turn('Checking.', toolUse('Bash', { command: 'true' })), heldTurn());
+  agent.api.script(
+    turn('Checking.', toolUse('Bash', { command: 'true' })),
+    heldTurn(),
+    NEXT_ANSWER,
+  );
   const session = await agent.startNew({ prompt: 'check, then think' });
-  await agent.api.heldRequest();
+  await agent.hook('UserPromptSubmit');
+  const held = await agent.api.heldRequest();
 
-  await expectInterruption(agent, session, INTERRUPTED);
+  await expectInterruption(agent, session, { prompt: 'check, then think', marker: INTERRUPTED });
 
-  expect(agent.hooks.events()).not.toContain('Stop');
+  expect(await held.ended).toBe('client-gone');
 }
 
 async function interruptWhileAToolRuns(): Promise<void> {
   const agent = await startContractAgent();
-  agent.api.script(turn('Waiting.', toolUse('Bash', { command: RUNS_UNTIL_INTERRUPTED })));
+  agent.api.script(
+    turn('Waiting.', toolUse('Bash', { command: RUNS_UNTIL_INTERRUPTED })),
+    NEXT_ANSWER,
+  );
   const session = await agent.startNew({ prompt: 'wait' });
+  await agent.hook('UserPromptSubmit');
   await agent.hook('PreToolUse');
-  await eventually(() => expect(existsSync(join(agent.workFolder, TOOL_STARTED))).toBe(true));
+  await agent.eventually(() => expect(existsSync(join(agent.workFolder, TOOL_STARTED))).toBe(true));
 
-  await expectInterruption(agent, session, INTERRUPTED_FOR_TOOL_USE);
+  await expectInterruption(agent, session, { prompt: 'wait', marker: INTERRUPTED_FOR_TOOL_USE });
 
-  const events = agent.hooks.events();
-  expect(events).not.toContain('PostToolUse');
-  expect(events).not.toContain('Stop');
+  expect(agent.hooks.events()).not.toContain('PostToolUse');
 }
 
 it('6 — Esc while the agent generates or runs a tool fires no hook; the transcript records an interruption marker at once', async () => {

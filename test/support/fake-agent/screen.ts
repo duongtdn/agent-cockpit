@@ -17,7 +17,7 @@ export interface ScreenView {
   readonly dialog: Dialog | undefined;
   /** The last prompt taken, if any. */
   readonly lastPrompt: string | undefined;
-  /** Why the last prompt could not be played, if it could not. */
+  /** Why the agent fails, when it was asked to play what it cannot: its last screen says so. */
   readonly problem: string | undefined;
   /** The text in the input box. */
   readonly input: string;

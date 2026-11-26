@@ -10,7 +10,12 @@ export interface AgentFolders {
   readonly configFolder: string;
   /** The folder sessions work in, trusted in the configuration. */
   readonly workFolder: string;
+  /** The agent's `TMPDIR`: what it and the commands it runs keep for the time of a session. */
+  readonly temporaryFolder: string;
 }
+
+/** How the temporary root of a run begins its name, in the machine's temporary folder. */
+export const ROOT_NAME_PREFIX = 'cockpit-real-agent-';
 
 /**
  * The API key the agent is given. It opens nothing: the only API a run
@@ -29,19 +34,18 @@ const KEY_SUFFIX_LENGTH = 20;
  * variables (`TERM`, `SHELL`) are the session host's to give.
  *
  * @param folders - The run's folders.
- * @param apiBaseUrl - Where the API's double listens.
+ * @param apiOrigin - Where the API's double listens, as an origin.
  * @returns The variables, by name.
  */
-export function agentEnvironment(
-  folders: AgentFolders,
-  apiBaseUrl: string,
-): Record<string, string> {
+export function agentEnvironment(folders: AgentFolders, apiOrigin: string): Record<string, string> {
   return {
     PATH: '/usr/local/bin:/usr/bin:/bin',
     HOME: folders.home,
     CLAUDE_CONFIG_DIR: folders.configFolder,
+    // Without it the agent keeps a folder a session in the machine's temporary folder, and leaves it there.
+    TMPDIR: folders.temporaryFolder,
     LANG: 'C.UTF-8',
-    ANTHROPIC_BASE_URL: apiBaseUrl,
+    ANTHROPIC_BASE_URL: apiOrigin,
     ANTHROPIC_API_KEY: FAKE_API_KEY,
     // Without these two the agent calls Anthropic's hosts and GitHub, whatever its base URL.
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -86,4 +90,24 @@ export function onlyTheseVariables(
     set: variables,
     remove: Object.keys(inherited).filter((name) => !Object.hasOwn(variables, name)),
   };
+}
+
+/**
+ * Gives what a session's process finds in its environment once a host has
+ * applied the changes: the calling process's variables, without the removed
+ * ones, with the set ones.
+ *
+ * @param changes - The changes a session is started with.
+ * @param inherited - The calling process's environment.
+ * @returns The session's variables, by name.
+ */
+export function variablesAfter(
+  changes: SessionEnvironment,
+  inherited: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const kept = Object.entries(inherited).filter(
+    (variable): variable is [string, string] =>
+      variable[1] !== undefined && !changes.remove.includes(variable[0]),
+  );
+  return { ...Object.fromEntries(kept), ...changes.set };
 }

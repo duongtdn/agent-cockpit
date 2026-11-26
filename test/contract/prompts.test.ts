@@ -1,5 +1,4 @@
 import { expect, it } from 'vitest';
-import { eventually } from '../support/eventually.ts';
 import { turn } from '../support/fake-api/index.ts';
 import { inputBoxText, startContractAgent } from './harness.ts';
 
@@ -13,9 +12,11 @@ it('4 — Keys typed before SessionStart lose their Enter; keys typed after it a
   const hooksWhenTyped = agent.hooks.events();
   await agent.hook('SessionStart');
 
-  // The text is in the input box and stays there: its Enter submitted nothing.
-  await eventually(async () =>
-    expect(inputBoxText(await session.screen())).toBe('typed too early'),
+  // The barrier: a key typed after the start is drawn once every earlier key was read. The
+  // early text is still in the box before it, so the early Enter submitted nothing.
+  await session.type('!');
+  await agent.eventually(async () =>
+    expect(inputBoxText(await session.screen())).toBe('typed too early!'),
   );
   expect(hooksWhenTyped).toEqual([]);
   expect(agent.hooks.events()).toEqual(['SessionStart']);
@@ -28,7 +29,7 @@ it('4 — Keys typed before SessionStart lose their Enter; keys typed after it a
   const late = await agent.hook('UserPromptSubmit');
   await agent.hook('Stop');
 
-  expect(early.payload.prompt).toBe('typed too early');
+  expect(early.payload.prompt).toBe('typed too early!');
   expect(late.payload.prompt).toBe('typed after the start');
   expect(agent.hooks.events().filter((event) => event === 'UserPromptSubmit')).toHaveLength(2);
 });

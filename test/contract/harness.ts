@@ -31,10 +31,26 @@ export interface ContractAgent {
   /**
    * Waits for the next hook of an event that no earlier call was given.
    *
-   * @throws Error when none comes in time, saying which hooks came and what the sessions show.
+   * @throws Error when none comes in time, saying which hooks came and what
+   * the sessions show; at once, naming the request, when the agent sent a
+   * conversation request the test scripted no answer for.
    */
   hook(event: string): Promise<ReceivedHook>;
+  /**
+   * Waits until a check passes, for what no event announces: what a session
+   * shows, what it has written.
+   *
+   * @param check - Throws until what is awaited is true.
+   * @returns What the check returned when it passed.
+   * @throws The check's last error when it never passes in time; at once,
+   * naming the request, when the agent sent a conversation request the test
+   * scripted no answer for.
+   */
+  eventually<T>(check: () => T | Promise<T>): Promise<T>;
 }
+
+/** Registers what runs when the test finishes, passed or failed. */
+export type WhenFinished = (finish: () => Promise<void>) => void;
 
 /** Far longer than the agent takes (a start is under a second), short enough to fail with the reason. */
 const HOOK_TIMEOUT_MS = 15_000;
@@ -49,18 +65,27 @@ const PERMISSIONS = { allow: ['Bash'] };
 /**
  * Starts the real agent's surroundings for the running test, and ends them
  * when the test finishes, passed or failed: the sessions, their tmux server,
- * the temporary folders, the receiver and the API's double.
+ * the temporary folders, the receiver and the API's double. The test then
+ * fails if the agent sent a conversation request it scripted no answer for,
+ * or if a session left something outside its temporary root.
  *
+ * @param whenFinished - Registers the test's end; the running test's by default.
  * @returns The agent, with nothing launched yet.
  */
-export async function startContractAgent(): Promise<ContractAgent> {
+export async function startContractAgent(
+  whenFinished: WhenFinished = onTestFinished,
+): Promise<ContractAgent> {
   // Closed last started first: the sessions end while their hooks still have somewhere to go.
   const closers: (() => Promise<void>)[] = [];
-  onTestFinished(async () => {
+  const finalChecks: (() => void)[] = [];
+  whenFinished(async () => {
     for (const close of closers.reverse()) await close();
+    // After the closing: a check that fails leaves nothing running.
+    for (const check of finalChecks) check();
   });
   const api = await startFakeApi();
   closers.push(() => api.close());
+  finalChecks.push(() => api.assertNothingUnexpected());
   const hooks = await startHookReceiver();
   closers.push(() => hooks.close());
   const runner = await startRealAgentRunner({
@@ -68,6 +93,7 @@ export async function startContractAgent(): Promise<ContractAgent> {
     settings: { ...hooks.settings(), permissions: PERMISSIONS },
   });
   closers.push(() => runner.close());
+  finalChecks.push(() => expect(runner.leftOutsideRoot()).toEqual([]));
   const sessions: AgentSession[] = [];
   const remembered = async (launching: Promise<AgentSession>) => {
     const session = await launching;
@@ -81,11 +107,13 @@ export async function startContractAgent(): Promise<ContractAgent> {
     workFolder: runner.workFolder,
     startNew: (options) => remembered(runner.startNew(options)),
     resume: (sessionId, options) => remembered(runner.resume(sessionId, options)),
-    hook: (event) => nextHook(hooks, event, sessions),
+    hook: (event) => nextHook(api, hooks, event, sessions),
+    eventually: (check) => eventually(check, () => api.assertNothingUnexpected()),
   };
 }
 
 async function nextHook(
+  api: FakeApi,
   hooks: HookReceiver,
   event: string,
   sessions: readonly AgentSession[],
@@ -94,8 +122,11 @@ async function nextHook(
   const late = new Promise<'late'>((resolve) => {
     timer = setTimeout(() => resolve('late'), HOOK_TIMEOUT_MS);
   });
-  const hook = await Promise.race([hooks.next(event), late]);
-  clearTimeout(timer);
+  // The session of an unscripted request stops there: the hook would never come.
+  const hook = await Promise.race([hooks.next(event), late, api.unexpectedRequest()]).finally(() =>
+    clearTimeout(timer),
+  );
+  if (hook instanceof Error) throw hook;
   if (hook !== 'late') return hook;
   const screens = await Promise.all(sessions.map((session) => session.screen().catch(() => '')));
   throw new Error(
@@ -139,28 +170,18 @@ export function conversationTexts(request: LoggedRequest): string[] {
   return (request.body?.messages ?? []).flatMap((message) => textsOf(message.content));
 }
 
-/** A text the transcript records as the user's, and when. */
-export interface RecordedText {
-  readonly text: string;
-  /** When the agent recorded it, in milliseconds since the epoch. */
-  readonly recordedAt: number;
-}
-
 /**
  * Gives the texts a session's transcript records as the user's: the prompts
  * and the markers the agent writes in the user's name.
  *
  * @param session - The session whose transcript is read, as it is now.
+ * @returns The texts, in the order of the transcript.
  */
-export function userTexts(session: AgentSession): RecordedText[] {
+export function userTexts(session: AgentSession): string[] {
   return session
     .transcript()
     .filter((entry) => entry.type === 'user')
-    .flatMap((entry) => {
-      const { content } = entry.message as { content: unknown };
-      const recordedAt = Date.parse(entry.timestamp as string);
-      return textsOf(content).map((text) => ({ text, recordedAt }));
-    });
+    .flatMap((entry) => textsOf((entry.message as { content: unknown }).content));
 }
 
 /**

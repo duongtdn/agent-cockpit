@@ -57,8 +57,5 @@ it('3 — --resume <uuid> keeps the session id and the conversation', async () =
   const said = ['the earlier prompt', 'The earlier answer.', 'the later prompt'];
   const texts = conversationTexts(await agent.api.conversationRequest(2));
   expect(texts.filter((text) => said.includes(text))).toEqual(said);
-  expect(userTexts(resumed).map((recorded) => recorded.text)).toEqual([
-    'the earlier prompt',
-    'the later prompt',
-  ]);
+  expect(userTexts(resumed)).toEqual(['the earlier prompt', 'the later prompt']);
 });

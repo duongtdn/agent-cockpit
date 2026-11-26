@@ -30,6 +30,9 @@ interface SpecificOutput {
  *
  * @param outputs - Each hook's answer, as parsed JSON; anything else is no decision.
  * @returns The first decision among them, or `none`.
+ * @throws `Error` for a `PreToolUse` hook's decision other than `allow` (a
+ * `deny`, an `ask`): nothing observed of Claude Code tells what it does
+ * with one, and reading it as no decision would be a guess.
  */
 export function decisionOf(outputs: readonly unknown[]): Decision {
   for (const output of outputs) {
@@ -47,6 +50,12 @@ function specificOutputOf(output: unknown): SpecificOutput {
 function decisionIn(specific: SpecificOutput): Decision {
   if (specific.permissionDecision === 'allow') {
     return { behavior: 'allow', updatedInput: specific.updatedInput };
+  }
+  if (specific.permissionDecision !== undefined) {
+    const answered = JSON.stringify(specific.permissionDecision);
+    throw new Error(
+      `a PreToolUse hook answered ${answered}: nothing tells what Claude Code does with it`,
+    );
   }
   if (specific.decision?.behavior === 'allow') {
     return { behavior: 'allow', updatedInput: specific.decision.updatedInput };

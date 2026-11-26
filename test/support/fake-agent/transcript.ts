@@ -1,5 +1,6 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { PROJECTS_FOLDER } from '../transcript-files.ts';
 
 /** What the transcript records when a turn is interrupted while the agent writes. */
 export const INTERRUPTED = '[Request interrupted by user]';
@@ -20,8 +21,6 @@ export interface Transcript {
   recordInterruption(marker: InterruptionMarker): void;
 }
 
-const PROJECTS_FOLDER = 'projects';
-
 /**
  * Names the transcript of a conversation.
  *
@@ -33,19 +32,6 @@ const PROJECTS_FOLDER = 'projects';
 export function transcriptPathFor(configFolder: string, cwd: string, sessionId: string): string {
   const project = cwd.replace(/[^a-zA-Z0-9]/g, '-');
   return join(configFolder, PROJECTS_FOLDER, project, `${sessionId}.jsonl`);
-}
-
-/**
- * Finds the transcript of a conversation, whatever folder it ran in.
- *
- * @returns The file's path, or `undefined` when the conversation recorded nothing.
- */
-export function findTranscript(configFolder: string, sessionId: string): string | undefined {
-  const projects = join(configFolder, PROJECTS_FOLDER);
-  if (!existsSync(projects)) return undefined;
-  return readdirSync(projects)
-    .map((project) => join(projects, project, `${sessionId}.jsonl`))
-    .find((path) => existsSync(path));
 }
 
 /**

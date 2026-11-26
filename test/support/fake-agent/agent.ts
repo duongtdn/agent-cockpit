@@ -43,6 +43,13 @@ export interface AgentSurroundings {
   exit(status: number): void;
 }
 
+/**
+ * The status a fake agent exits with when it is asked to play what it has
+ * no evidence for: an error of the test's, which no session of Claude Code
+ * ends with.
+ */
+export const CANNOT_PLAY_STATUS = 70;
+
 /** The agent's side of a session: it reports through hooks and takes keys. */
 export interface FakeAgent {
   /**
@@ -108,7 +115,12 @@ interface OpenDialog {
 
 /**
  * Creates a fake agent: it plays what Claude Code does in a session, as far
- * as the hooks, the keys and the screen show it.
+ * as the hooks, the keys and the screen show it — and only what was observed
+ * of Claude Code. Asked for anything else (a prompt its script has no turn
+ * for, an Enter while a turn runs, a hook's decision or a tool in a mode
+ * whose effect is not known), it shows the problem on its screen and exits
+ * with {@link CANNOT_PLAY_STATUS}, with no hook: a guess would let a test
+ * pass on a behavior Claude Code may not have.
  *
  * @param surroundings - Its command line, its hooks, its transcript, its script and its terminal.
  * @returns The agent, not yet started.
@@ -125,8 +137,8 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   let toolCalls = 0;
   let ending = false;
 
-  function show(): void {
-    surroundings.show({
+  function view(): ScreenView {
+    return {
       sessionId: commandLine.sessionId,
       permissionMode: commandLine.permissionMode,
       state,
@@ -134,7 +146,12 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       lastPrompt,
       problem,
       input: box.text(),
-    });
+    };
+  }
+
+  /** Draws the screen, unless the session ends: its last screen stays, the reason of a failure on it. */
+  function show(): void {
+    if (!ending) surroundings.show(view());
   }
 
   async function start(): Promise<void> {
@@ -152,23 +169,38 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   }
 
   function press(key: Key): void {
+    if (ending) return;
     box.press(key);
     if (key.kind === 'enter') pressEnter();
     if (key.kind === 'escape') turn?.interrupt();
     show();
   }
 
-  /** Enter answers a dialog, or submits the input box of an idle session; at any other time it is lost. */
+  /**
+   * Enter answers a dialog, or submits the input box of an idle session. A
+   * session that starts loses it. What Claude Code does with one while a
+   * turn runs was not observed.
+   */
   function pressEnter(): void {
     if (dialog) dialog.answerInTerminal();
+    else if (state === 'busy')
+      fail('Enter was pressed while a turn runs: nothing tells what Claude Code does with it');
     else if (state === 'idle' && box.text() !== '') submit(box.take());
+  }
+
+  /** Ends the process as a program that cannot go on does, the reason on its screen. */
+  function fail(reason: string): void {
+    if (ending) return;
+    ending = true;
+    problem = reason;
+    surroundings.show(view());
+    surroundings.exit(CANNOT_PLAY_STATUS);
   }
 
   function submit(prompt: string): void {
     const running = startTurn();
     turn = running;
     lastPrompt = prompt;
-    problem = undefined;
     state = 'busy';
     show();
     void playTurn(prompt, running);
@@ -183,8 +215,11 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       await running.during(hooks.fire(userPromptSubmit(prompt), running.signal));
       for (const step of steps) await play(step, running);
     } catch (error) {
-      if (error instanceof Interruption) recordInterruption(running);
-      else problem = error instanceof Error ? error.message : String(error);
+      if (!(error instanceof Interruption)) {
+        fail(error instanceof Error ? error.message : String(error));
+        return;
+      }
+      recordInterruption(running);
     }
     dialog = undefined;
     turn = undefined;

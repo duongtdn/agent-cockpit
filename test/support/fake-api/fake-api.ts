@@ -74,6 +74,14 @@ export type FakeApi = {
    */
   assertNothingUnexpected(): void;
   /**
+   * Awaits the first conversation request with no answer scripted, for a
+   * wait to end on it instead of on its timeout.
+   *
+   * @returns The error of {@link FakeApi.assertNothingUnexpected}, once such
+   *   a request has arrived; it stays pending for as long as none has.
+   */
+  unexpectedRequest(): Promise<Error>;
+  /**
    * Checks that the conversation went as far as the script.
    *
    * @throws Error when scripted answers were never asked for, naming each.
@@ -96,8 +104,12 @@ const SIDE_ANSWER = turn('ok');
 const COUNTED_TOKENS = { input_tokens: 10 };
 /** What a message names when the request named no model. */
 const UNNAMED_MODEL = 'fake-model';
-/** A status the agent does not retry, so that an unscripted request fails the session at once. */
-const UNSCRIPTED_STATUS = 400;
+/**
+ * What an unscripted request is answered with. The agent asks once more
+ * after most errors, a 400 among them (six times); a 403 it takes as final,
+ * and it keeps the error's message on its screen.
+ */
+const UNSCRIPTED_ERROR = { status: 403, errorType: 'permission_error' };
 
 /**
  * Starts a double of Anthropic's Messages API on a loopback port of its own.
@@ -112,6 +124,10 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
   const conversationRequests = new Arrivals<LoggedRequest>();
   const heldRequests = new Arrivals<HeldRequest>();
   const unscripted: string[] = [];
+  let tellOfUnscripted: (error: Error) => void = () => {};
+  const firstUnscripted = new Promise<Error>((resolve) => {
+    tellOfUnscripted = resolve;
+  });
   let conversationCount = 0;
   let messageCount = 0;
   let closed: Promise<void> | undefined;
@@ -176,8 +192,9 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
   function refuseUnscripted(exchange: Exchange): void {
     const description = describeConversationRequest(exchange.request, conversationCount);
     unscripted.push(description);
-    sendError(exchange.response, UNSCRIPTED_STATUS, {
-      errorType: 'invalid_request_error',
+    tellOfUnscripted(unscriptedError(unscripted));
+    sendError(exchange.response, UNSCRIPTED_ERROR.status, {
+      errorType: UNSCRIPTED_ERROR.errorType,
       message: `Fake API: no answer scripted for ${description}`,
     });
   }
@@ -243,10 +260,14 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
     requests: () => [...log],
     conversationRequest: (number) => conversationRequests.nth(number),
     heldRequest: (number = 1) => heldRequests.nth(number),
-    assertNothingUnexpected: () =>
-      failIfAny('Conversation requests with no scripted answer', unscripted),
-    assertScriptUsedUp: () =>
-      failIfAny('Scripted answers never asked for', script.map(describeAnswer)),
+    assertNothingUnexpected: () => {
+      if (unscripted.length > 0) throw unscriptedError(unscripted);
+    },
+    unexpectedRequest: () => firstUnscripted,
+    assertScriptUsedUp: () => {
+      const unused = script.map(describeAnswer);
+      if (unused.length > 0) throw listed('Scripted answers never asked for', unused);
+    },
     close: () => {
       closed ??= new Promise((resolve) => {
         server.close(() => resolve());
@@ -293,7 +314,10 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
 }
 
-function failIfAny(heading: string, lines: readonly string[]): void {
-  if (lines.length === 0) return;
-  throw new Error(`${heading} (${lines.length}):\n${lines.map((line) => `  ${line}`).join('\n')}`);
+function unscriptedError(requests: readonly string[]): Error {
+  return listed('Conversation requests with no scripted answer', requests);
+}
+
+function listed(heading: string, lines: readonly string[]): Error {
+  return new Error(`${heading} (${lines.length}):\n${lines.map((line) => `  ${line}`).join('\n')}`);
 }

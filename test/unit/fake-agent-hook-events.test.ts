@@ -99,6 +99,17 @@ describe('what the hooks answered, as the fake agent reads it', () => {
     expect(decisionOf([output])).toEqual({ behavior: 'allow', updatedInput });
   });
 
+  it.each(['deny', 'ask', 'defer', 7])(
+    "refuses to read a PreToolUse hook's %j: nothing tells what Claude Code does with it",
+    (permissionDecision) => {
+      const output = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision } };
+
+      expect(() => decisionOf([{}, output])).toThrow(
+        `a PreToolUse hook answered ${JSON.stringify(permissionDecision)}`,
+      );
+    },
+  );
+
   it("reads a PermissionRequest hook's allow, with or without an input (behavior 9)", () => {
     const allow = (decision: object) => ({
       hookSpecificOutput: { hookEventName: 'PermissionRequest', decision },

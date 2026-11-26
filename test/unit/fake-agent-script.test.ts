@@ -37,8 +37,11 @@ describe("the fake agent's script", () => {
     expect(turnAt(turns, 1)).toEqual([{ do: 'reply', text: 'Two.' }]);
   });
 
-  it('answers a prompt beyond the script with a plain reply', () => {
-    expect(turnAt([], 0)).toEqual([{ do: 'reply', text: 'Done.' }]);
+  it('has no turn for a prompt beyond it, and says so', () => {
+    expect(() => turnAt([], 0)).toThrow('the script has no turn for prompt 1: it holds 0 turns');
+    expect(() => turnAt([[{ do: 'exit' }]], 2)).toThrow(
+      'the script has no turn for prompt 3: it holds 1 turn',
+    );
   });
 
   it.each([
@@ -68,22 +71,47 @@ describe('a call the script asks for, as the fake agent plays it', () => {
   const tool = planCall({ do: 'tool', name: 'Bash', input: { command: 'touch a.txt' } });
   const question = planCall({ do: 'question', questions });
 
-  it('a tool asks for permission in the default mode, is denied in dontAsk, runs in the others', () => {
-    expect(tool.routeIn('default')).toBe('ask');
-    expect(tool.routeIn('dontAsk')).toBe('deny');
-    expect(['acceptEdits', 'auto', 'bypassPermissions', 'plan'].map(tool.routeIn)).toEqual([
-      'run',
-      'run',
-      'run',
-      'run',
-    ]);
+  const otherModes = ['acceptEdits', 'auto', 'bypassPermissions', 'plan'];
+
+  it('a tool asks for permission in the default mode and is denied in dontAsk', () => {
+    const write = planCall({ do: 'tool', name: 'Write', input: { file_path: 'a.txt' } });
+
+    expect([tool, write].map((call) => call.routeIn('default'))).toEqual(['ask', 'ask']);
+    expect([tool, write].map((call) => call.routeIn('dontAsk'))).toEqual(['deny', 'deny']);
+  });
+
+  it('a touch runs unasked in the other modes', () => {
+    expect(otherModes.map(tool.routeIn)).toEqual(['run', 'run', 'run', 'run']);
+  });
+
+  it.each([
+    ['another tool', { name: 'Write', input: { file_path: 'a.txt' } }],
+    ['another command', { name: 'Bash', input: { command: 'rm a.txt' } }],
+    ['a command that only begins like a touch', { name: 'Bash', input: { command: 'touchy a' } }],
+    ['a touch followed by another command', { name: 'Bash', input: { command: 'touch a; rm b' } }],
+    ['a command that is no text', { name: 'Bash', input: { command: 7 } }],
+  ])('%s has no known route in the other modes', (_what, step) => {
+    const call = planCall({ do: 'tool', ...step });
+
+    for (const mode of otherModes) {
+      expect(() => call.routeIn(mode)).toThrow(`${step.name} in the ${mode} mode`);
+    }
   });
 
   it('a question is asked in every mode but dontAsk, which denies it', () => {
-    expect(
-      ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'].map(question.routeIn),
-    ).toEqual(['ask', 'ask', 'ask', 'ask', 'ask']);
+    expect(['default', ...otherModes].map(question.routeIn)).toEqual([
+      'ask',
+      'ask',
+      'ask',
+      'ask',
+      'ask',
+    ]);
     expect(question.routeIn('dontAsk')).toBe('deny');
+  });
+
+  it('no call has a route in a mode that is not one of Claude Code', () => {
+    expect(() => tool.routeIn('yolo')).toThrow('Bash in the yolo mode');
+    expect(() => question.routeIn('yolo')).toThrow('AskUserQuestion in the yolo mode');
   });
 
   it('a question is the AskUserQuestion tool with its questions as input', () => {

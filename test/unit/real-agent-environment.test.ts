@@ -4,6 +4,7 @@ import {
   agentEnvironment,
   FAKE_API_KEY,
   onlyTheseVariables,
+  variablesAfter,
 } from '../support/real-agent/environment.ts';
 
 const folders = {
@@ -11,6 +12,7 @@ const folders = {
   home: '/tmp/r/home',
   configFolder: '/tmp/r/config',
   workFolder: '/tmp/r/work',
+  temporaryFolder: '/tmp/r/tmp',
 };
 
 describe("the real agent's environment", () => {
@@ -19,6 +21,7 @@ describe("the real agent's environment", () => {
       PATH: '/usr/local/bin:/usr/bin:/bin',
       HOME: '/tmp/r/home',
       CLAUDE_CONFIG_DIR: '/tmp/r/config',
+      TMPDIR: '/tmp/r/tmp',
       LANG: 'C.UTF-8',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:4010',
       ANTHROPIC_API_KEY: FAKE_API_KEY,
@@ -53,6 +56,28 @@ describe("the real agent's environment", () => {
       'EDITOR',
       'UNSET',
     ]);
+  });
+});
+
+describe('what a session finds in its environment', () => {
+  it('is what the process has, without what is removed, with what is set', () => {
+    const inherited = {
+      PATH: '/somewhere/bin',
+      HTTPS_PROXY: 'http://proxy',
+      EDITOR: 'vi',
+      UNSET: undefined,
+    };
+
+    expect(
+      variablesAfter({ set: { PATH: '/usr/bin', LANG: 'C.UTF-8' }, remove: ['EDITOR'] }, inherited),
+    ).toEqual({ PATH: '/usr/bin', LANG: 'C.UTF-8', HTTPS_PROXY: 'http://proxy' });
+  });
+
+  it('is the variables named alone, after onlyTheseVariables', () => {
+    const inherited = { PATH: '/somewhere/bin', HTTPS_PROXY: 'http://proxy' };
+    const variables = { PATH: '/usr/bin' };
+
+    expect(variablesAfter(onlyTheseVariables(variables, inherited), inherited)).toEqual(variables);
   });
 });
 

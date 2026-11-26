@@ -34,6 +34,8 @@ const fruit: Question = {
   ],
   multiSelect: false,
 };
+/** The script of a session that is given one prompt and answers it. */
+const oneReply: Turn[] = [[{ do: 'reply', text: 'Done.' }]];
 const askFruit = { do: 'question', questions: [fruit] } as const;
 const fruitAnswered = { questions: [fruit], answers: { 'Which fruit?': 'Lime' } };
 
@@ -161,7 +163,7 @@ function deny(more: object = {}) {
 
 describe('the fake agent: its start and its hooks', () => {
   it('fires SessionStart as a command hook, never as an HTTP hook, with the id of --session-id (behavior 1)', async () => {
-    const session = await launch({ prompt: 'hello' });
+    const session = await launch({ script: oneReply, prompt: 'hello' });
 
     const start = await receiver.next('SessionStart');
     await receiver.next('Stop');
@@ -179,7 +181,7 @@ describe('the fake agent: its start and its hooks', () => {
   });
 
   it('posts its HTTP hooks with the headers the settings give them (behavior 14)', async () => {
-    await launch({ prompt: 'hello', mode: 'acceptEdits' });
+    await launch({ script: oneReply, prompt: 'hello', mode: 'acceptEdits' });
 
     const taken = await receiver.next('UserPromptSubmit');
 
@@ -224,7 +226,7 @@ describe('the fake agent: its start and its hooks', () => {
 
 describe('the fake agent: taking a prompt', () => {
   it('submits the prompt that follows -- with no keys (behaviors 2, 5)', async () => {
-    const session = await launch({ prompt: 'hello from the command line' });
+    const session = await launch({ script: oneReply, prompt: 'hello from the command line' });
 
     const taken = await receiver.next('UserPromptSubmit');
 
@@ -236,7 +238,7 @@ describe('the fake agent: taking a prompt', () => {
   });
 
   it('submits a line typed after SessionStart and ended with Enter (behaviors 4, 5)', async () => {
-    const session = await launchReady();
+    const session = await launchReady({ script: oneReply });
 
     await type(session, 'hello from the keyboard');
 
@@ -245,7 +247,7 @@ describe('the fake agent: taking a prompt', () => {
   });
 
   it('loses the Enter of keys typed before SessionStart; a later Enter submits them (behavior 4)', async () => {
-    const session = await launch({ heldStart: true });
+    const session = await launch({ script: oneReply, heldStart: true });
 
     await type(session, 'early');
     await host.sendText(session.name, '!', pacing);
@@ -281,14 +283,69 @@ describe('the fake agent: taking a prompt', () => {
 
     await expectScreen(session, 'state: busy', 'prompt: "work on it"');
   });
+});
 
-  it('shows a script it cannot play, and takes no prompt with it', async () => {
+describe('the fake agent: what it cannot play', () => {
+  /** A session that fails ends without a word to the hooks: it is the test's fault, not a session's end. */
+  async function expectFailed(session: Session, hooksSoFar: readonly string[]): Promise<void> {
+    await expectGone(session);
+    expect(receiver.events()).toEqual(hooksSoFar);
+  }
+
+  it('ends, failing, on a script it cannot read, and takes no prompt with it', async () => {
     const session = await launchReady({ script: [[]] });
 
     await type(session, 'hello');
 
-    await expectScreen(session, 'state: idle', 'problem: turn 1 has no step');
-    expect(receiver.events()).toEqual(['SessionStart']);
+    await expectFailed(session, ['SessionStart']);
+  });
+
+  it('ends, failing, on a prompt its script has no turn for: it invents no answer', async () => {
+    const session = await launch({ script: oneReply, prompt: 'scripted' });
+    await receiver.next('Stop');
+
+    await type(session, 'not scripted');
+
+    await expectFailed(session, ['SessionStart', 'UserPromptSubmit', 'Stop']);
+  });
+
+  it('ends, failing, on an Enter while a turn runs', async () => {
+    const session = await launch({ script: [[{ do: 'stay-busy' }]], prompt: 'work' });
+    await receiver.next('UserPromptSubmit');
+    await expectScreen(session, 'state: busy');
+
+    await type(session, 'and this too');
+
+    await expectFailed(session, ['SessionStart', 'UserPromptSubmit']);
+  });
+
+  it('ends, failing, when a PreToolUse hook denies a call', async () => {
+    receiver.hold('PreToolUse');
+    const session = await launch({
+      script: [[touch, { do: 'reply', text: 'Touched.' }]],
+      prompt: 'touch it',
+    });
+
+    (await receiver.next('PreToolUse')).answer({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' },
+    });
+
+    await expectFailed(session, ['SessionStart', 'UserPromptSubmit', 'PreToolUse']);
+  });
+
+  it('ends, failing, on a tool nothing tells the fate of in the mode of the session', async () => {
+    const write = {
+      do: 'tool',
+      name: 'Write',
+      input: { file_path: 'a.txt', content: '' },
+    } as const;
+    const session = await launch({
+      script: [[write, { do: 'reply', text: 'Written.' }]],
+      prompt: 'write it',
+      mode: 'acceptEdits',
+    });
+
+    await expectFailed(session, ['SessionStart', 'UserPromptSubmit', 'PreToolUse']);
   });
 });
 
@@ -349,19 +406,22 @@ describe('the fake agent: a tool that needs permission', () => {
     await receiver.next('PostToolUse');
   });
 
-  it('runs the tool with no ask in a mode that asks for none', async () => {
-    await launch({ script, prompt: 'touch it', mode: 'acceptEdits' });
+  it.each(['acceptEdits', 'plan', 'auto', 'bypassPermissions'])(
+    'runs a touch with no ask in the %s mode',
+    async (mode) => {
+      await launch({ script, prompt: 'touch it', mode });
 
-    await receiver.next('Stop');
+      await receiver.next('Stop');
 
-    expect(receiver.events()).toEqual([
-      'SessionStart',
-      'UserPromptSubmit',
-      'PreToolUse',
-      'PostToolUse',
-      'Stop',
-    ]);
-  });
+      expect(receiver.events()).toEqual([
+        'SessionStart',
+        'UserPromptSubmit',
+        'PreToolUse',
+        'PostToolUse',
+        'Stop',
+      ]);
+    },
+  );
 });
 
 describe('the fake agent: a question', () => {
@@ -433,6 +493,18 @@ describe('the fake agent: a question', () => {
     expect(after.payload).toMatchObject({
       tool_response: { answers: { 'Which fruit?': 'Mango' } },
     });
+  });
+
+  it('denies a tool at once, with no ask, in dontAsk', async () => {
+    await launch({
+      script: [[touch, { do: 'reply', text: 'Not touched.' }]],
+      prompt: 'touch it',
+      mode: 'dontAsk',
+    });
+
+    await receiver.next('Stop');
+
+    expect(receiver.events()).toEqual(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop']);
   });
 
   it('is denied at once in dontAsk when PreToolUse does not answer it (behavior 47)', async () => {
@@ -518,7 +590,7 @@ describe('the fake agent: an interruption', () => {
   });
 
   it('does nothing on Esc when no turn runs', async () => {
-    const session = await launchReady();
+    const session = await launchReady({ script: oneReply });
 
     await host.sendKeys(session.name, ['Escape']);
     await type(session, 'hello');
