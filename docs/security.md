@@ -198,11 +198,12 @@ local request also carries the app's token, or is refused with `no-token`.
   without the new token, is told `no-token`. The person opens the new link,
   which `link` now gives; a page of the same origin that retries then finds
   the new token in the origin's storage. A request or a WebSocket handshake
-  whose admission overlapped a renewal is refused with 503, which is
-  retryable: it is made again as a new request (the client's streams and
-  terminals reconnect by themselves), checked against the token now in
-  force, and `authorize` is asked once for each request, never twice for
-  one. A remote page admitted by `authorize` reconnects as before, unless
+  whose admission overlapped a renewal is refused with 503 and a body
+  that asks for it again, never with an error: it is made again as a new
+  request (the client makes a request again once, a second later; its
+  streams and terminals reconnect by themselves, reporting nothing),
+  checked against the token now in force, and `authorize` is asked once
+  for each request, never twice for one. A remote page admitted by `authorize` reconnects as before, unless
   its `authorize` relied on the token. Renewing is the only act that cuts
   every open socket: an app's sign-out, or a sign-in that expires, ends no
   follow or terminal WebSocket already open, since `authorize` is asked

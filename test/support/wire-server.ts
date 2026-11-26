@@ -55,10 +55,20 @@ export interface WireServer {
   /** Sets the answer to every later HTTP request on a path. */
   answer(path: string, answer: Answer): void;
   /**
+   * Answers the next HTTP request on a path so, once; the ones after as
+   * {@link WireServer.answer} set. Given several times, each is given once, in turn.
+   */
+  answerNext(path: string, answer: Answer): void;
+  /**
    * Refuses every later WebSocket handshake with this answer, as the request
    * checks would; `undefined` accepts them again.
    */
   refuseSockets(answer: Answer | undefined): void;
+  /**
+   * Tells a listener of each later HTTP request below the mount, once
+   * recorded and before it is answered.
+   */
+  onRequest(listener: (request: ReceivedRequest) => void): void;
   /** Resolves with the next WebSocket the server accepts. */
   nextSocket(): Promise<AcceptedSocket>;
   /** Ends every connection and stops listening. */
@@ -82,6 +92,8 @@ export async function startWireServer(
 ): Promise<WireServer> {
   const requests: ReceivedRequest[] = [];
   const answers = new Map<string, Answer>();
+  const nextAnswers = new Map<string, Answer[]>();
+  const requestListeners: ((request: ReceivedRequest) => void)[] = [];
   const accepted: AcceptedSocket[] = [];
   const waiting: ((socket: AcceptedSocket) => void)[] = [];
   let socketRefusal: Answer | undefined;
@@ -98,14 +110,21 @@ export async function startWireServer(
     }
     const body = await readBody(request);
     const path = pathBelowMount(request);
-    requests.push({
+    const received: ReceivedRequest = {
       method: request.method ?? '',
       path,
       token: header(request, TOKEN_HEADER),
       contentType: header(request, 'content-type'),
       body,
-    });
-    send(response, answers.get(path) ?? json(404, { message: 'Nothing here.' }));
+    };
+    requests.push(received);
+    for (const listener of requestListeners) listener(received);
+    send(
+      response,
+      nextAnswers.get(path)?.shift() ??
+        answers.get(path) ??
+        json(404, { message: 'Nothing here.' }),
+    );
   });
 
   server.on('upgrade', (request: IncomingMessage, socket: Socket, head: Buffer) => {
@@ -141,8 +160,14 @@ export async function startWireServer(
     baseUrl: `http://127.0.0.1:${port}${MOUNT}`,
     requests,
     answer: (path, answer) => answers.set(path, answer),
+    answerNext: (path, answer) => {
+      nextAnswers.set(path, [...(nextAnswers.get(path) ?? []), answer]);
+    },
     refuseSockets: (answer) => {
       socketRefusal = answer;
+    },
+    onRequest: (listener) => {
+      requestListeners.push(listener);
     },
     nextSocket: () => {
       const socket = accepted.shift();

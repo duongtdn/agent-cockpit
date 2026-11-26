@@ -174,6 +174,33 @@ export interface ErrorResponse {
   readonly error: CockpitErrorJson;
 }
 
+/**
+ * The body of the answer to a request or a WebSocket handshake that the
+ * server did not serve and asks to be made again: one whose admission
+ * overlapped a renewal of the app's token, so was checked against a token
+ * that may be revoked. Its status is 503, its `Retry-After`
+ * {@link RETRY_AFTER_SECONDS}. It is no error of the cockpit's: the client
+ * makes such a request again once, after that wait (nothing of it was
+ * served, so a run is not run twice), and a stream counts such a refused
+ * handshake as a drop, which reconnects unreported.
+ */
+export interface RetryResponse {
+  /** Always `true`. */
+  readonly retry: true;
+}
+
+/** How long a request answered with a {@link RetryResponse} waits before it is made again, in seconds. */
+export const RETRY_AFTER_SECONDS = 1;
+
+/**
+ * Tells whether an answer's JSON is a {@link RetryResponse}.
+ *
+ * @param body - The answer's body, parsed.
+ */
+export function isRetryResponse(body: unknown): body is RetryResponse {
+  return typeof body === 'object' && body !== null && (body as RetryResponse).retry === true;
+}
+
 /** What the server sends on {@link FOLLOW_SESSIONS_PATH}, as a text message. */
 export interface SessionsMessage {
   /** Its kind. */

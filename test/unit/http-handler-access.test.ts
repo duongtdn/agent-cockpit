@@ -542,8 +542,16 @@ function gate<T>(): { readonly promise: Promise<T>; open(value: T): void } {
   return { promise, open };
 }
 
-/** The retryable answer to a request whose admission overlapped a renewal of the token. */
-const RETRY_LATER = { status: 503, headers: expect.objectContaining({ 'retry-after': '1' }) };
+/**
+ * The answer to a request whose admission overlapped a renewal of the
+ * token: 503, `Retry-After`, and the wire's body that asks for it to be
+ * made again, which the client tells from an error.
+ */
+const RETRY_LATER = {
+  status: 503,
+  headers: expect.objectContaining({ 'retry-after': '1', 'content-type': 'application/json' }),
+  body: JSON.stringify({ retry: true }),
+};
 
 /** What refused a handshake, its status and headers; `undefined` for one that opened. */
 async function handshakeRefusal(url: string, options: CallOptions) {
@@ -672,6 +680,19 @@ describe('a renewal of the token', () => {
     lookup.open(false);
 
     expect(await answer).toMatchObject({ status: 403 });
+  });
+
+  it('serves later requests with the token in force when the new one could not be put in force', async () => {
+    const { renewToken, local, lan } = await serve({ authorize: () => true, origins: lanOrigin });
+    const follower = await openedSocket(ws(local, '/follow/sessions'), { token: TOKEN });
+    const failure = new Error('EACCES: the token could not be written');
+
+    await expect(renewToken('the-new-token', Promise.reject(failure))).rejects.toBe(failure);
+
+    expect(await everySurface(ALL, local, { token: TOKEN })).toEqual(served(ALL));
+    expect((await call(`${lan}/sessions`, {})).status).toBe(200);
+    expect(follower.socket.readyState).toBe(follower.socket.OPEN);
+    follower.socket.close();
   });
 });
 

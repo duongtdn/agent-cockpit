@@ -573,6 +573,22 @@ describe('errors', () => {
     expect(errors.map((error) => error.code)).toEqual(['unreachable']);
   });
 
+  it('gives nothing for a handshake the server asked to be made again (a renewal of the token overlapped it): it only reconnects', async () => {
+    probeAnswer = () =>
+      Promise.resolve(
+        Response.json({ retry: true }, { status: 503, headers: { 'retry-after': '1' } }),
+      );
+    mountReporting();
+
+    await refuseHandshake();
+    await vi.advanceTimersByTimeAsync(500);
+    FakeWebSocket.last().accept();
+
+    expect(errors).toEqual([]);
+    expect(FakeWebSocket.created).toHaveLength(2);
+    expect(statuses).toEqual(['connecting', 'closed', 'connecting', 'open']);
+  });
+
   it('gives nothing, and asks nothing, for a drop: it only reconnects', async () => {
     mountReporting();
     FakeWebSocket.last().accept();

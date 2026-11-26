@@ -30,6 +30,11 @@ function noTokenAnswer(): Response {
   );
 }
 
+/** The server's answer to a request it asks to be made again: a renewal of its token overlapped it. */
+function makeAgainAnswer(): Response {
+  return Response.json({ retry: true }, { status: 503, headers: { 'retry-after': '1' } });
+}
+
 /** An answer whose body breaks off while it is read: the connection was reset. */
 function brokenOffAnswer(): Response {
   const body = new ReadableStream({
@@ -143,6 +148,15 @@ describe('sessions.follow, across drops', () => {
     await refuseHandshake();
 
     expect(errors.map((error) => error.code)).toEqual(['unreachable']);
+    expect(await socketsAfter(FIRST_DELAY_MS)).toBe(2);
+  });
+
+  it('reports nothing for a handshake the server asked to be made again (a renewal of the token overlapped it): it only reconnects', async () => {
+    vi.stubGlobal('fetch', async () => makeAgainAnswer());
+
+    await refuseHandshake();
+
+    expect(errors).toEqual([]);
     expect(await socketsAfter(FIRST_DELAY_MS)).toBe(2);
   });
 

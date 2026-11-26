@@ -30,6 +30,7 @@ import { SessionsClosedError } from '../../src/server/sessions/sessions.ts';
 import type { Session } from '../../src/shared/session.ts';
 import { SESSION_ENDED_CLOSE_CODE } from '../../src/shared/wire.ts';
 import { writeAgentShim } from '../support/agent-shim.ts';
+import { loadAfresh, openPage } from '../support/browser-page.ts';
 import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import { type Turn, writeScript } from '../support/fake-agent/script.ts';
 import { startNodeHttpApp } from '../support/node-http-app.ts';
@@ -151,6 +152,27 @@ async function mount(on: Mount, cockpit: Cockpit, address = '127.0.0.1'): Promis
 }
 
 const ws = (base: string, path: string) => `${base.replace(/^http/, 'ws')}${path}`;
+
+/** A promise a test settles when it chooses: an `authorize`'s lookup. */
+function gate<T>(): { readonly promise: Promise<T>; open(value: T): void } {
+  let open: (value: T) => void = () => {};
+  const promise = new Promise<T>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
+}
+
+/**
+ * The page's `fetch` as it reaches the app through a proxy in front of it,
+ * which says whom it forwards: every request of the page is remote.
+ */
+function behindAProxy(pageFetch: typeof fetch): typeof fetch {
+  return (input, init) =>
+    pageFetch(input, {
+      ...init,
+      headers: { ...(init?.headers as Record<string, string>), 'x-forwarded-for': '192.0.2.1' },
+    });
+}
 
 function errorOf(body: string): Record<string, unknown> {
   return (JSON.parse(body) as { error: Record<string, unknown> }).error;
@@ -382,6 +404,7 @@ describe.each([
       const retryLater = {
         status: 503,
         headers: expect.objectContaining({ 'retry-after': '1' }),
+        body: JSON.stringify({ retry: true }),
       };
       expect(await http).toMatchObject(retryLater);
       expect(await upgrade).toMatchObject({ refused: retryLater });
@@ -395,6 +418,37 @@ describe.each([
       ).socket.close();
       expect((await call(`${base}/sessions`, { token, headers: forwarded })).status).toBe(403);
       expect(asked).toBe(5);
+    });
+
+    it("makes the browser client's run again once a renewal overlapped it, with the token the page holds then, and resolves with what it did", async () => {
+      const lookup = gate<boolean>();
+      let asked = 0;
+      let cockpit: Cockpit | undefined;
+      const started = await start(undefined, {
+        authorize: async (request) => {
+          asked += 1;
+          return (cockpit?.verify(request) ?? false) && (await lookup.promise);
+        },
+      });
+      cockpit = started.cockpit;
+      writeScript(started.directory, [[{ do: 'reply', text: 'Done.' }]]);
+      const page = openPage(`http://127.0.0.1:8765/#cockpit=${started.token}`);
+      cleanups.push(async () => {
+        vi.unstubAllGlobals();
+      });
+      vi.stubGlobal('fetch', behindAProxy(fetch));
+      const client = (
+        await loadAfresh(() => import('../../src/client/index.ts'))
+      ).createCockpitClient({ baseUrl: started.base });
+      const run = client.run('explain', { file: 'a' });
+      await vi.waitFor(() => expect(asked).toBe(1));
+
+      await cockpit.renewToken();
+      page.followFragment(`cockpit=${tokenOf(cockpit)}`);
+      lookup.open(true);
+
+      expect(await run).toEqual({ action: 'started', state: 'busy' });
+      expect(asked).toBe(2);
     });
 
     it('admits an origin the app allowed, and a Host naming it', async () => {

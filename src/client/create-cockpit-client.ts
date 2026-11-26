@@ -21,7 +21,10 @@ export interface CockpitClientOptions {
  */
 export interface CockpitClient {
   /**
-   * Runs a job, as the server's `cockpit.run` does.
+   * Runs a job, as the server's `cockpit.run` does. A run the server did
+   * not serve because a renewal of the app's token overlapped it is made
+   * again once, a second later, with the token the page holds then;
+   * nothing of the first was run.
    *
    * @param jobId - The job's id.
    * @param args - The job's arguments, which the server checks against the
@@ -29,7 +32,9 @@ export interface CockpitClient {
    * @returns What the run did and the state it left the session in.
    * @throws `CockpitError` as the server's `run` throws it (`unknown-job`,
    * `invalid-arguments`, `wrong-state`, …); `refused` or `no-token` from the
-   * request checks; `unreachable` when the server cannot be reached.
+   * request checks; `unreachable` when the server cannot be reached, what
+   * answers is not the cockpit, or a renewal overlapped the run made again
+   * too.
    */
   run(jobId: string, args: unknown): Promise<RunResult>;
   /** The sessions. */
@@ -54,8 +59,10 @@ export interface CockpitClient {
    * connect: the server's refusal (`no-token`, `refused`) or `unreachable`,
    * once per failed attempt. The stream goes on trying, and its handler
    * receives what it follows once connected. A connection that drops and
-   * reconnects is not reported. A handler that throws stops neither the
-   * other handlers nor the stream; what it threw goes to the console.
+   * reconnects is not reported, nor a handshake the server asked to be
+   * made again (a renewal of the app's token overlapped it). A handler
+   * that throws stops neither the other handlers nor the stream; what it
+   * threw goes to the console.
    *
    * @param event - `'error'`.
    * @param handler - Receives each error.

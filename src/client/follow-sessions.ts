@@ -12,7 +12,8 @@ import { reconnectDelay } from './reconnect-delay.js';
  *
  * @param report - Told why a connection could not be made, once per failed
  * attempt, after the next attempt is set; a drop that only needs a
- * reconnection is not reported.
+ * reconnection is not reported, nor a handshake the server asked to be
+ * made again (a renewal of the app's token overlapped it).
  * @returns A function that stops following and closes the socket.
  */
 export function followSessions(
@@ -35,7 +36,8 @@ export function followSessions(
     // Stopped, or replaced by a socket with a new token: this failure is no longer the page's.
     if (stopped || socket !== failed) return;
     reconnectLater();
-    report(error);
+    // A handshake the server asked to be made again failed nothing: a drop.
+    if (error !== undefined) report(error);
   };
 
   function connect(): void {

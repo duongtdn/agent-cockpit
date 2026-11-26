@@ -67,7 +67,9 @@ Nothing is published yet.
 - `cockpit.renewToken()`: a new token in force, the old one refused at once,
   every browser-facing WebSocket closed; a request or a handshake whose
   admission overlapped the renewal is refused with a retryable 503 and
-  made again as a new request, `authorize` asked once for each.
+  made again as a new request, `authorize` asked once for each: the
+  client makes a run again once, a second later, and its streams and
+  terminals reconnect, none of them reporting it as an error.
 - `cockpit.on('error', handler)` and the code `internal-failure` (`where`:
   `'handler'`, `'authorize'` or `'agent-listener'`; `cause`): the
   failures the cockpit answered with a bare 500, and an `authorize` that

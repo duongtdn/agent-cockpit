@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CockpitError, createCockpitClient, isCockpitError } from '../../src/client/index.ts';
-import { openPage } from '../support/browser-page.ts';
-import { json, startWireServer, type WireServer } from '../support/wire-server.ts';
+import { loadAfresh, openPage } from '../support/browser-page.ts';
+import { type Answer, json, startWireServer, type WireServer } from '../support/wire-server.ts';
 
 const token = 'kq3J_x-9Zt0aPbXw2eYc8vRm4nLs6uHd1oQiGfAjK7E';
+const renewed = 'Zr8wL0pQx4TnB2yHc6Vd1sKe9mJa5uGi3oRf7tXq-Y_';
+
+/** The server's answer to a request it asks to be made again: a renewal of its token overlapped it. */
+const MAKE_AGAIN: Answer = json(503, { retry: true });
 
 let server: WireServer;
 
@@ -123,6 +127,56 @@ describe('run', () => {
 
     expect(error.code).toBe('unreachable');
     expect(error.message).toContain(String(answer.status));
+  });
+
+  it('makes the run again once, a second later, when the server asks for it (a renewal of the token overlapped it), and resolves with what it did', async () => {
+    server.answerNext('/run', MAKE_AGAIN);
+    server.answer('/run', json(200, { action: 'started', state: 'busy' }));
+    const sentAt: number[] = [];
+    server.onRequest(() => sentAt.push(performance.now()));
+
+    const result = await createCockpitClient({ baseUrl: server.baseUrl }).run('explain', {});
+
+    expect(result).toEqual({ action: 'started', state: 'busy' });
+    expect(server.requests.map(({ path, body }) => [path, body])).toEqual([
+      ['/run', JSON.stringify({ jobId: 'explain', args: {} })],
+      ['/run', JSON.stringify({ jobId: 'explain', args: {} })],
+    ]);
+    expect((sentAt[1] ?? 0) - (sentAt[0] ?? 0)).toBeGreaterThanOrEqual(990);
+  });
+
+  it('makes the run again with the token the page holds then: one a link opened meanwhile gave', async () => {
+    const page = openPage(`http://127.0.0.1:8765/#cockpit=${token}`);
+    const fresh = await loadAfresh(() => import('../../src/client/index.ts'));
+    server.answerNext('/run', MAKE_AGAIN);
+    server.answer('/run', json(200, { action: 'started', state: 'busy' }));
+    server.onRequest(() => page.followFragment(`cockpit=${renewed}`));
+
+    await fresh.createCockpitClient({ baseUrl: server.baseUrl }).run('explain', {});
+
+    expect(server.requests.map((request) => request.token)).toEqual([token, renewed]);
+  });
+
+  it('rejects with unreachable, naming the renewal, when the server asks twice: the run made no more', async () => {
+    server.answer('/run', MAKE_AGAIN);
+
+    const error = await rejection(createCockpitClient({ baseUrl: server.baseUrl }).run('x', {}));
+
+    expect(error.code).toBe('unreachable');
+    expect(error.message).toMatch(/renewal of its token/);
+    expect(server.requests).toHaveLength(2);
+  });
+
+  it("rejects with the server's error when the run made again is refused", async () => {
+    server.answerNext('/run', MAKE_AGAIN);
+    server.answer(
+      '/run',
+      json(401, { error: { name: 'CockpitError', code: 'no-token', message: 'No valid token.' } }),
+    );
+
+    const error = await rejection(createCockpitClient({ baseUrl: server.baseUrl }).run('x', {}));
+
+    expect(error.code).toBe('no-token');
   });
 
   it('rejects with unreachable when a success carries no JSON', async () => {

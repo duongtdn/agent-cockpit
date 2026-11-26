@@ -5,6 +5,8 @@ import { CockpitError, isCockpitError } from '../../shared/cockpit-error.js';
 import type { RunResult, Session } from '../../shared/session.js';
 import {
   type KeyRule,
+  RETRY_AFTER_SECONDS,
+  type RetryResponse,
   type RunRequest,
   type SessionsMessage,
   type SessionsResponse,
@@ -87,7 +89,8 @@ export interface Handler {
    * shell). A request or handshake whose admission overlaps the renewal
    * was checked, or let in by the app's `authorize`, against a token that
    * may be revoked: it is never admitted, but answered 503 with
-   * `Retry-After`, and comes back as a new request, checked afresh, so
+   * `Retry-After` and a `RetryResponse`, and comes back as a new request
+   * (the client makes it again, its streams reconnect), checked afresh, so
    * that `authorize` is still asked once a request. A refusal stands.
    * Later requests are served as before.
    *
@@ -271,9 +274,14 @@ const CLOSING: WireAnswer = { status: 503 };
 /**
  * The answer to a request whose admission overlapped a renewal of the
  * token: no verdict of the checks, which may admit it now, but a request
- * to come again — the client's reconnection does — and be checked afresh.
+ * to come again and be checked afresh — the client makes it again, its
+ * streams reconnect — told apart from an error by its body.
  */
-const RENEWED_MEANWHILE: WireAnswer = { status: 503, headers: { 'retry-after': '1' } };
+const RENEWED_MEANWHILE: WireAnswer = {
+  status: 503,
+  headers: { 'retry-after': String(RETRY_AFTER_SECONDS) },
+  body: JSON.stringify({ retry: true } satisfies RetryResponse),
+};
 
 function verdictOf(admission: Admission, overlapsRenewal: boolean): Verdict {
   if ('refused' in admission) return { answer: errorAnswer(admission.refused) };

@@ -106,9 +106,10 @@ export interface Cockpit {
    * each page that reconnects is checked again: pages need the new link,
    * which `link` then gives. A request or handshake whose admission
    * overlaps the renewal — the old token compared, or the app's `authorize`
-   * still out — is never admitted: it is answered 503 with `Retry-After`,
-   * and comes back as a new request, checked afresh (the client and the
-   * terminal reconnect on their own).
+   * still out — is never admitted: it is answered 503 with `Retry-After`
+   * and a body that asks for it again, and comes back as a new request,
+   * checked afresh (the client makes a request again once, its streams
+   * and the terminal reconnect, none reporting an error).
    *
    * @returns A promise fulfilled once the new token is in force and every
    * socket closed.

@@ -50,9 +50,10 @@ export interface MountedTerminal {
    * terminal's switch refuse the same way — `refused` with its `cause`
    * (`terminal-off` among them), or `no-token` — or `unreachable`: nothing
    * answers, the answer breaks off as it is read, what answers is not the
-   * cockpit, or the checks pass and still
-   * no WebSocket opened (a proxy between may not pass them). A connection
-   * that drops and reconnects is not reported. On `terminal-off` the
+   * cockpit, or the checks pass and still no WebSocket opened (a proxy
+   * between may not pass them). A connection that drops and reconnects is
+   * not reported, nor a handshake the server asked to be made again (a
+   * renewal of the app's token overlapped it). On `terminal-off` the
    * terminal stops trying: the app's switch refuses it until the app
    * changes it, and a new mount connects then. A handler that throws stops
    * neither the other handlers nor the reconnection; what it threw goes to

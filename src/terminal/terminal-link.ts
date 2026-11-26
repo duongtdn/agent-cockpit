@@ -50,8 +50,9 @@ export interface TerminalLink {
  * any other close is the connection's, and the link reconnects, waiting
  * longer after each attempt that did not reach the session. A handshake
  * that failed is explained first (`Connection.explainFailedSocket`) and the
- * screen told why, once the next attempt is set; when the terminal is off,
- * the link stops: no attempt can succeed until the app turns it on. A link
+ * screen told why, once the next attempt is set — unless the server asked
+ * for it to be made again, a drop; when the terminal is off, the link
+ * stops: no attempt can succeed until the app turns it on. A link
  * that gives the page a new token reconnects it at once, with it, unless it
  * stopped.
  *
@@ -89,6 +90,8 @@ export function linkTerminal(
     const error = await connection.explainFailedSocket(path);
     // Closed, or replaced by a socket with a new token: this failure is no longer the terminal's.
     if (closed || socket !== failed) return;
+    // A handshake the server asked to be made again failed nothing: a drop.
+    if (error === undefined) return reconnectLater();
     if (isTerminalOff(error)) closed = true;
     else reconnectLater();
     screen.failed(error);
