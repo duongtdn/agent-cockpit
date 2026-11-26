@@ -718,9 +718,24 @@ describe('creating and closing the cockpit', () => {
       };
     }
 
-    it.each(['*', '?', '[', ']', '{', '}'])(
-      'refuses a folder the app named whose path holds %s, which a deny rule reads as a pattern, before it writes anything',
-      async (character) => {
+    it.each([
+      ['*', '*'],
+      ['?', '?'],
+      ['[', '['],
+      [']', ']'],
+      ['{', '{'],
+      ['}', '}'],
+      ['(', '('],
+      [')', ')'],
+      ['\\', '\\'],
+      ['a newline', '\n'],
+      ['a tab', '\t'],
+      ['an escape', '\u001b'],
+      ['a delete', '\u007f'],
+      ['a C1 control', '\u0085'],
+    ])(
+      'refuses a folder the app named whose path holds %s, which a deny rule reads as its own, before it writes anything',
+      async (_, character) => {
         const stateDirectory = join(root, `glob-${character}-${made}`);
         await expect(createCockpit(optionsIn(stateDirectory))).rejects.toMatchObject({
           code: 'invalid-options',

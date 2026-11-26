@@ -11,11 +11,13 @@ import type { Confinement, NetworkAddress } from './driver.js';
 const LOCAL_NAMES: readonly string[] = ['localhost', '0.0.0.0'];
 
 /**
- * The characters a permission rule reads as a pattern: a state root whose
- * path holds one could be missed by its deny rules, which name it as a
- * pattern, and the rules have no escape for them.
+ * The characters a permission rule reads as its own: a pattern's (`*`, `?`,
+ * `[`, `]`, `{`, `}`), the rule's brackets around its path (`(`, `)`), its
+ * escape (`\`), and any control character. A state root whose path holds
+ * one could be missed by its deny rules (`Read(//path/**)`), which have no
+ * escape for them all: such a root is refused, failing closed.
  */
-const PATTERN_CHARACTERS = /[*?[\]{}]/;
+const RULE_SYNTAX = /[*?[\]{}()\\]|\p{Cc}/u;
 
 /** Where a launch's confinement is read from. */
 export interface ConfinementSources {
@@ -77,12 +79,13 @@ async function realPathOf(path: string): Promise<string> {
 }
 
 /**
- * Tells whether a path holds a character a permission rule reads as a
- * pattern (`*`, `?`, `[`, `]`, `{`, `}`): a state root's deny rules could
- * miss it, so the cockpit refuses such a root.
+ * Tells whether a path holds a character a permission rule reads as its
+ * own (`*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `\`, a control character):
+ * a state root's deny rules could miss it, so the cockpit refuses such a
+ * root.
  */
-export function holdsPatternCharacter(path: string): boolean {
-  return PATTERN_CHARACTERS.test(path);
+export function holdsRuleSyntax(path: string): boolean {
+  return RULE_SYNTAX.test(path);
 }
 
 /** Every port on the local names and on every address of every interface, each once. */

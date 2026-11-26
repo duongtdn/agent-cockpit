@@ -9,7 +9,7 @@ import {
   type CockpitOptions,
   checkCockpitOptions,
 } from './cockpit-options.js';
-import { confinementReader, givenAndRealPaths, holdsPatternCharacter } from './confinement.js';
+import { confinementReader, givenAndRealPaths, holdsRuleSyntax } from './confinement.js';
 import { createFailureReport, type InternalFailure } from './failures.js';
 import { createHandler } from './http/handler.js';
 import { carriesAppToken, type RequestHeaders } from './http/request-token.js';
@@ -140,8 +140,9 @@ export interface Cockpit {
  * it, is not the cockpit's own (a symbolic link, not a folder or a regular
  * file, another user's) — on `stateDirectory` when the app named the
  * folder; with an issue for each state root whose path, as given or as
- * the system resolves it, holds a character a permission rule reads as a
- * pattern (`*`, `?`, `[`, `]`, `{`, `}`), whose deny rules could miss it;
+ * the system resolves it, holds a character a permission rule reads as
+ * its own (`*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `\`, a control
+ * character), whose deny rules could miss it;
  * `unsupported-machine` when the machine is not Linux, or its tmux is
  * missing or too old; `cockpit-locked` when another process of the app runs
  * a cockpit.
@@ -152,7 +153,7 @@ export async function createCockpit(options: CockpitOptions): Promise<Cockpit> {
   const host = createTmuxSessionHost({ appName: checked.name });
   await host.checkMachine();
   const statePath = stateFolderPath(checked.name, checked.stateDirectory);
-  await refusePatternedStateRoots(checked, statePath);
+  await refuseStateRootsRulesMisread(checked, statePath);
   try {
     return await openCockpit(checked, host, statePath);
   } catch (error) {
@@ -256,11 +257,11 @@ async function openCockpit(
 
 /**
  * Refuses a state root whose path, as given or as the system resolves it
- * (the folder made if missing), holds a character a deny rule reads as a
- * pattern: its rules could miss the folder. Checked before anything is
+ * (the folder made if missing), holds a character a deny rule reads as its
+ * own: its rules could miss the folder. Checked before anything is
  * written.
  */
-async function refusePatternedStateRoots(
+async function refuseStateRootsRulesMisread(
   checked: CheckedCockpitOptions,
   statePath: string,
 ): Promise<void> {
@@ -273,10 +274,10 @@ async function refusePatternedStateRoots(
   const issues = [];
   for (const { root, issuePath, what } of roots) {
     for (const path of await givenAndRealPaths([root])) {
-      if (!holdsPatternCharacter(path)) continue;
+      if (!holdsRuleSyntax(path)) continue;
       issues.push({
         path: issuePath,
-        message: `${what} ${path} holds a character a permission rule reads as a pattern (* ? [ ] { }), so the rule keeping the agent out of it could miss it.`,
+        message: `${what} ${path} holds a character a permission rule reads as its own (* ? [ ] { } ( ) \\ or a control character), so the rule keeping the agent out of it could miss it.`,
       });
     }
   }
