@@ -1,5 +1,8 @@
-import { type ChildProcess, spawn } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { existsSync, readdirSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
@@ -15,13 +18,31 @@ export interface ExampleApp {
   /** Everything it printed so far, its errors included. */
   printed(): string;
   /**
-   * Stops it as a person does, with Ctrl+C (`SIGINT`), and waits for it to
-   * exit. Safe to call twice.
-   *
-   * @returns Its exit code.
-   * @throws Error when it has not exited in time; it is then killed.
+   * The temporary folder it says its scripted agent keeps everything in
+   * (`… in <folder>.`); `undefined` when it named none.
    */
-  stop(): Promise<number | null>;
+  temporaryRoot(): string | undefined;
+  /**
+   * Stops it with a signal, by default as a person does with Ctrl+C
+   * (`SIGINT`), and waits for it to exit. Safe to call twice: the first
+   * call's signal is the one sent.
+   *
+   * @param signal - The signal it is sent: `SIGHUP` as when its terminal closes.
+   * @returns Its exit code.
+   * @throws Error when it has not exited in time; it is then killed, and
+   * what its scripted agent left (its tmux servers, its temporary folder) removed.
+   */
+  stop(signal?: NodeJS.Signals): Promise<number | null>;
+}
+
+/** How an example that ran to its end ended. */
+export interface ExampleExit {
+  /** Its exit code. */
+  readonly code: number | null;
+  /** Everything it printed, its errors included. */
+  readonly printed: string;
+  /** The temporary folder it said its scripted agent keeps everything in; `undefined` when it named none. */
+  readonly temporaryRoot: string | undefined;
 }
 
 /**
@@ -35,10 +56,7 @@ export interface ExampleApp {
  * @throws Error, with what it printed, when it exits or takes too long before printing its link.
  */
 export async function startExampleApp(name: string, args: readonly string[]): Promise<ExampleApp> {
-  const child = spawn(process.execPath, [`examples/${name}/server.js`, ...args], {
-    cwd: repository,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = startChild(name, args);
   let output = '';
   child.stderr?.on('data', (chunk) => {
     output += chunk;
@@ -46,8 +64,9 @@ export async function startExampleApp(name: string, args: readonly string[]): Pr
   const exited = once(child, 'exit').then(([code]) => code as number | null);
   const link = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`The example printed no link in time:\n${output}`));
+      void killAndClean(child, output).finally(() =>
+        reject(new Error(`The example printed no link in time:\n${output}`)),
+      );
     }, PATIENCE_MS);
     createInterface({ input: child.stdout as NodeJS.ReadableStream }).on('line', (line) => {
       output += `${line}\n`;
@@ -65,25 +84,77 @@ export async function startExampleApp(name: string, args: readonly string[]): Pr
   return {
     link,
     printed: () => output,
-    stop: () => {
-      stopped ??= stopChild(child, exited, () => output);
+    temporaryRoot: () => temporaryRootIn(output),
+    stop: (signal = 'SIGINT') => {
+      stopped ??= stopChild(child, signal, exited, () => output);
       return stopped;
     },
   };
 }
 
+/**
+ * Runs an example of `examples/` that is expected to end by itself, such as
+ * one that cannot start, and waits for it to exit.
+ *
+ * @param name - The example's folder in `examples/`.
+ * @param args - Its command-line arguments.
+ * @returns How it ended.
+ * @throws Error when it has not exited in time; it is then killed, and what
+ * its scripted agent left removed.
+ */
+export async function runExampleToItsEnd(
+  name: string,
+  args: readonly string[],
+): Promise<ExampleExit> {
+  const child = startChild(name, args);
+  let output = '';
+  child.stdout?.on('data', (chunk) => {
+    output += chunk;
+  });
+  child.stderr?.on('data', (chunk) => {
+    output += chunk;
+  });
+  const exited = once(child, 'exit').then(([code]) => code as number | null);
+  const code = await withinPatience(child, exited, () => output, 'did not end');
+  return { code, printed: output, temporaryRoot: temporaryRootIn(output) };
+}
+
+/** The folder the scripted agent's description names: `…, in <folder>.` */
+function temporaryRootIn(printed: string): string | undefined {
+  return /fake API, in (\S+)\.$/m.exec(printed)?.[1];
+}
+
+function startChild(name: string, args: readonly string[]): ChildProcess {
+  return spawn(process.execPath, [`examples/${name}/server.js`, ...args], {
+    cwd: repository,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
 async function stopChild(
   child: ChildProcess,
+  signal: NodeJS.Signals,
   exited: Promise<number | null>,
   output: () => string,
 ): Promise<number | null> {
   if (child.exitCode !== null) return child.exitCode;
-  child.kill('SIGINT');
+  child.kill(signal);
+  return withinPatience(child, exited, output, 'did not stop');
+}
+
+/** Waits for the example to exit; one that takes too long is killed, and what it left removed. */
+async function withinPatience(
+  child: ChildProcess,
+  exited: Promise<number | null>,
+  output: () => string,
+  failure: string,
+): Promise<number | null> {
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`The example did not stop in time:\n${output()}`));
+      void killAndClean(child, output()).finally(() =>
+        reject(new Error(`The example ${failure} in time:\n${output()}`)),
+      );
     }, PATIENCE_MS);
   });
   try {
@@ -91,4 +162,31 @@ async function stopChild(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Kills the example, which then cleans nothing up, and removes what its
+ * scripted agent left: the tmux servers of its sockets (their sessions, the
+ * agents) and its temporary folder.
+ */
+async function killAndClean(child: ChildProcess, output: string): Promise<void> {
+  child.kill('SIGKILL');
+  const root = temporaryRootIn(output);
+  if (root === undefined) return;
+  for (const socket of socketsUnder(join(root, 'tmux'))) {
+    try {
+      execFileSync('tmux', ['-S', socket, 'kill-server'], { stdio: 'ignore' });
+    } catch {
+      // Its server is gone already.
+    }
+  }
+  await rm(root, { recursive: true, force: true, maxRetries: 5 });
+}
+
+/** The tmux sockets under a `TMUX_TMPDIR`: tmux keeps them in a folder per user, `tmux-<uid>`. */
+function socketsUnder(tmuxFolder: string): string[] {
+  if (!existsSync(tmuxFolder)) return [];
+  return readdirSync(tmuxFolder).flatMap((userFolder) =>
+    readdirSync(join(tmuxFolder, userFolder)).map((socket) => join(tmuxFolder, userFolder, socket)),
+  );
 }

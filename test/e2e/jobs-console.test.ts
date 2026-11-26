@@ -44,7 +44,7 @@ afterAll(async () => {
 
 /** The folder the example says its scripted agent keeps everything in. */
 function temporaryRoot(example: ExampleApp): string {
-  const root = /fake API, in (\S+)\.$/m.exec(example.printed())?.[1];
+  const root = example.temporaryRoot();
   if (root === undefined) throw new Error(`The example named no folder:\n${example.printed()}`);
   return root;
 }
