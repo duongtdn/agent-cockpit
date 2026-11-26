@@ -29,7 +29,7 @@ export function followSessions(
   };
 
   const explainThenReconnect = async (): Promise<void> => {
-    const error = await connection.explainFailedSocket();
+    const error = await connection.explainFailedSocket(FOLLOW_SESSIONS_PATH);
     if (stopped) return;
     report(error);
     reconnectLater();

@@ -1,8 +1,18 @@
 import { type Browser, type BrowserContext, chromium, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { eventually } from '../support/eventually.ts';
-import { startTerminalPage, type TerminalPage } from '../support/terminal-page.ts';
-import { type AcceptedSocket, startWireServer, type WireServer } from '../support/wire-server.ts';
+import {
+  serveTerminalPage,
+  startTerminalPage,
+  type TerminalPage,
+  terminalPageUrl,
+} from '../support/terminal-page.ts';
+import {
+  type AcceptedSocket,
+  json,
+  startWireServer,
+  type WireServer,
+} from '../support/wire-server.ts';
 
 const token = 'kq3J_x-9Zt0aPbXw2eYc8vRm4nLs6uHd1oQiGfAjK7E';
 const claudeCodeKeys = JSON.stringify({
@@ -27,7 +37,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  server = await startWireServer();
+  server = await startWireServer({ page: serveTerminalPage });
   // Headless Chromium grants no clipboard by default; a person's browser grants writing on 127.0.0.1.
   context = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
   page = await context.newPage();
@@ -181,5 +191,76 @@ describe('in a browser', () => {
     expect(
       await page.evaluate(() => (window as unknown as { statuses: string[] }).statuses),
     ).toEqual(['connecting', 'open', 'ended']);
+  });
+});
+
+describe('in a browser, when the terminal cannot connect', () => {
+  /** What the page was told, and the statuses it went through. */
+  const told = (): Promise<{ errors: unknown[]; statuses: string[] }> =>
+    page.evaluate(() => {
+      const shown = window as unknown as { errors: unknown[]; statuses: string[] };
+      return { errors: shown.errors, statuses: shown.statuses };
+    });
+
+  /**
+   * Opens the page on the wire's own origin, as an app serves the cockpit
+   * under its prefix: the browser then lets the request that explains a
+   * refusal carry the token's header.
+   */
+  const openOnTheAppsOrigin = (): Promise<unknown> =>
+    page.goto(
+      terminalPageUrl(new URL(server.baseUrl).origin, {
+        baseUrl: '/cockpit',
+        key: 'explain-a',
+        token,
+      }),
+    );
+
+  /** The server refuses every handshake, and its terminal path over HTTP, with this error. */
+  function refuseWith(status: number, error: Record<string, unknown>): void {
+    const answer = json(status, { error: { name: 'CockpitError', ...error } });
+    server.refuseSockets(answer);
+    server.answer('/terminal/explain-a', answer);
+  }
+
+  it('tells no-token, asking the terminal’s path with the token, and keeps trying', async () => {
+    refuseWith(401, { code: 'no-token', message: 'No valid token.' });
+
+    await openOnTheAppsOrigin();
+    await page.waitForFunction(
+      () => (window as unknown as { errors: unknown[] }).errors.length >= 2,
+    );
+
+    const { errors } = await told();
+    expect(errors.slice(0, 2)).toEqual([
+      { name: 'CockpitError', code: 'no-token', message: 'No valid token.' },
+      { name: 'CockpitError', code: 'no-token', message: 'No valid token.' },
+    ]);
+    expect(server.requests[0]).toMatchObject({ method: 'GET', path: '/terminal/explain-a', token });
+  });
+
+  it('tells terminal-off once, stays closed and tries no more', async () => {
+    refuseWith(403, { code: 'refused', message: 'The terminal is off.', cause: 'terminal-off' });
+
+    await page.clock.install();
+    await openOnTheAppsOrigin();
+    await page.waitForFunction(
+      () => (window as unknown as { errors: unknown[] }).errors.length === 1,
+    );
+    // Past the longest wait before a reconnection: a retry would show `connecting` at once.
+    await page.clock.runFor(60_000);
+
+    expect(await told()).toEqual({
+      errors: [
+        {
+          name: 'CockpitError',
+          code: 'refused',
+          message: 'The terminal is off.',
+          cause: 'terminal-off',
+        },
+      ],
+      statuses: ['connecting', 'closed'],
+    });
+    expect(server.requests).toHaveLength(1);
   });
 });

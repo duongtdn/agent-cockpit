@@ -1,6 +1,6 @@
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
-import { createServer, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { stripTypeScriptTypes } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -13,8 +13,8 @@ const root = new URL('../../', import.meta.url);
  * their types stripped (Node's own stripping: no bundler), xterm.js comes
  * from the package's ESM build through an import map, and its style sheet
  * is linked. The page reads `baseUrl` and `key` from its query and keeps, on
- * `window`, the mounted terminal (`terminal`) and every status it gave
- * (`statuses`).
+ * `window`, the mounted terminal (`terminal`), every status it gave
+ * (`statuses`) and every error, as JSON (`errors`).
  */
 export interface TerminalPage {
   /** The page's address for a mount; the fragment carries the app's token. */
@@ -51,6 +51,8 @@ const PAGE = `<!doctype html>
         baseUrl: query.get('baseUrl'),
       });
       window.terminal.on('status', (status) => window.statuses.push(status));
+      window.errors = [];
+      window.terminal.on('error', (error) => window.errors.push(error.toJSON()));
     </script>
   </body>
 </html>`;
@@ -59,17 +61,30 @@ const PAGE = `<!doctype html>
 const SERVED =
   /^\/(src\/(terminal|client|shared)\/[a-z-]+\.js|node_modules\/@xterm\/[a-z-]+\/(lib\/[a-z-]+\.mjs|css\/xterm\.css))$/;
 
+/**
+ * Serves the page and the files it loads, as an app's server serves its
+ * pages: alone ({@link startTerminalPage}), or beside a mounted wire.
+ */
+export function serveTerminalPage(request: IncomingMessage, response: ServerResponse): void {
+  void serve(new URL(request.url ?? '/', 'http://page').pathname, response);
+}
+
+/** The page's address on an origin; the fragment carries the app's token. */
+export function terminalPageUrl(
+  origin: string,
+  { baseUrl, key, token }: { baseUrl: string; key: string; token: string },
+): string {
+  return `${origin}/?${new URLSearchParams({ baseUrl, key })}#cockpit=${token}`;
+}
+
 /** Starts serving a {@link TerminalPage} on a free loopback port. */
 export async function startTerminalPage(): Promise<TerminalPage> {
-  const server = createServer((request, response) => {
-    void serve(new URL(request.url ?? '/', 'http://page').pathname, response);
-  });
+  const server = createServer(serveTerminalPage);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const { port } = server.address() as AddressInfo;
   return {
-    url: ({ baseUrl, key, token }) =>
-      `http://127.0.0.1:${port}/?${new URLSearchParams({ baseUrl, key })}#cockpit=${token}`,
+    url: (options) => terminalPageUrl(`http://127.0.0.1:${port}`, options),
     close: async () => {
       server.closeAllConnections();
       server.close();

@@ -104,7 +104,7 @@ describe('sessions.follow, on a real WebSocket', () => {
       error: { name: 'CockpitError', code: 'refused', message: 'Refused.', cause: 'origin' },
     };
     server.refuseSockets(json(403, refusal));
-    server.answer('/sessions', json(403, refusal));
+    server.answer(FOLLOW_SESSIONS_PATH, json(403, refusal));
     const client = createCockpitClient({ baseUrl: server.baseUrl });
     const errors: CockpitError[] = [];
     const reported = new Promise<void>((resolve) => {
@@ -120,18 +120,34 @@ describe('sessions.follow, on a real WebSocket', () => {
     await reported;
 
     expect(errors.map((error) => error.toJSON())).toEqual([refusal.error]);
-    expect(server.requests).toMatchObject([{ method: 'GET', path: '/sessions', token }]);
+    expect(server.requests).toMatchObject([{ method: 'GET', path: FOLLOW_SESSIONS_PATH, token }]);
   });
 
-  it('reports unreachable when the HTTP request passes but the WebSocket does not', async () => {
+  it('reports unreachable when the checks pass but the WebSocket does not open: a proxy may not pass it', async () => {
     server.refuseSockets({ status: 502, body: '' });
-    server.answer('/sessions', json(200, { sessions: [] }));
+    server.answer(FOLLOW_SESSIONS_PATH, { status: 426, body: '' });
     const client = createCockpitClient({ baseUrl: server.baseUrl });
     const reported = new Promise<CockpitError>((resolve) => {
       stops.push(client.on('error', resolve));
     });
     stops.push(client.sessions.follow(() => {}));
 
-    expect((await reported).code).toBe('unreachable');
+    const error = await reported;
+    expect(error.code).toBe('unreachable');
+    expect(error.message).toMatch(/WebSocket/);
+  });
+
+  it('reports unreachable when what answers the explaining request is not the cockpit', async () => {
+    server.refuseSockets({ status: 502, body: '' });
+    server.answer(FOLLOW_SESSIONS_PATH, { status: 502, body: '<html>Bad gateway</html>' });
+    const client = createCockpitClient({ baseUrl: server.baseUrl });
+    const reported = new Promise<CockpitError>((resolve) => {
+      stops.push(client.on('error', resolve));
+    });
+    stops.push(client.sessions.follow(() => {}));
+
+    const error = await reported;
+    expect(error.code).toBe('unreachable');
+    expect(error.message).toMatch(/502/);
   });
 });

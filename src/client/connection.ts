@@ -1,7 +1,10 @@
 import { CockpitError } from '../shared/cockpit-error.js';
-import { SESSIONS_PATH, TOKEN_HEADER, WIRE_SUBPROTOCOL, wireSubprotocols } from '../shared/wire.js';
+import { TOKEN_HEADER, WIRE_SUBPROTOCOL, wireSubprotocols } from '../shared/wire.js';
 import type { TokenKeeper } from './token.js';
 import { errorOfAnswer, unreachable } from './wire-error.js';
+
+/** What the cockpit answers a plain GET on a WebSocket's path whose checks pass. */
+const UPGRADE_REQUIRED = 426;
 
 /**
  * How the page reaches the cockpit's handler: where it is mounted, and the
@@ -28,12 +31,16 @@ export interface Connection {
   openSocket(path: string): WebSocket;
   /**
    * Says why a WebSocket of the wire was not opened. A browser cannot read
-   * the answer to a refused handshake, so this asks the same checks over
-   * HTTP, which refuse the same way.
+   * the answer to a refused handshake, so this asks the socket's own path
+   * over HTTP, which the same checks refuse the same way, and which answers
+   * 426 when they pass.
    *
-   * @returns The server's refusal; `unreachable` when there is none to read.
+   * @param path - The socket's path, relative to the mount.
+   * @returns The server's refusal; `unreachable` when there is none to
+   * read: no answer, an answer not the cockpit's, or the checks passing
+   * though no WebSocket opened.
    */
-  explainFailedSocket(): Promise<CockpitError>;
+  explainFailedSocket(path: string): Promise<CockpitError>;
 }
 
 /**
@@ -48,14 +55,17 @@ export function createConnection(baseUrl: unknown, token: TokenKeeper): Connecti
   const mount = resolveMount(baseUrl);
   const urlOf = (path: string): URL => new URL(`${mount}${path}`);
 
-  const request: Connection['request'] = async (path, init) => {
+  /** Sends a request, the token in its header; `unreachable` when nothing answers. */
+  const send = async (
+    path: string,
+    init?: { method: string; body: unknown },
+  ): Promise<Response> => {
     const current = token.current();
     const headers: Record<string, string> =
       current === undefined ? {} : { [TOKEN_HEADER]: current };
     if (init !== undefined) headers['content-type'] = 'application/json';
-    let answer: Response;
     try {
-      answer = await fetch(urlOf(path), {
+      return await fetch(urlOf(path), {
         method: init?.method ?? 'GET',
         headers,
         cache: 'no-store',
@@ -64,6 +74,10 @@ export function createConnection(baseUrl: unknown, token: TokenKeeper): Connecti
     } catch (cause) {
       throw unreachable(`The cockpit at ${mount} cannot be reached.`, cause);
     }
+  };
+
+  const request: Connection['request'] = async (path, init) => {
+    const answer = await send(path, init);
     if (!answer.ok) throw await errorOfAnswer(answer);
     try {
       return await answer.json();
@@ -83,14 +97,16 @@ export function createConnection(baseUrl: unknown, token: TokenKeeper): Connecti
         current === undefined ? [WIRE_SUBPROTOCOL] : wireSubprotocols(current),
       );
     },
-    explainFailedSocket: async () => {
+    explainFailedSocket: async (path) => {
+      let answer: Response;
       try {
-        await request(SESSIONS_PATH);
+        answer = await send(path);
       } catch (error) {
         return error as CockpitError;
       }
+      if (answer.status !== UPGRADE_REQUIRED) return await errorOfAnswer(answer);
       return unreachable(
-        `The cockpit at ${mount} answers HTTP but did not open a WebSocket: a proxy between may not pass them.`,
+        `The cockpit at ${mount} lets ${path} through but did not open its WebSocket: a proxy between may not pass them.`,
       );
     },
   };

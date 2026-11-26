@@ -79,7 +79,9 @@ Nothing is published yet.
   fitted to it, attached over a WebSocket with the app's token, reconnecting
   after a drop, `ended` once the session is gone; the driver's key rules;
   copy through OSC 52 and Ctrl+C on the terminal's own selection; status
-  events, `focus()` and `dispose()`, with the types `MountedTerminal`,
+  events; `on('error', handler)`, which tells why it could not connect
+  (`no-token`, `refused`, `unreachable`), and stops it on `terminal-off`;
+  `focus()` and `dispose()`, with the types `MountedTerminal`,
   `MountTerminalOptions` and `TerminalStatus`. Any program in a session can
   write the person's clipboard through OSC 52; none can read it.
 

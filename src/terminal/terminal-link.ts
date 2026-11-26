@@ -1,5 +1,6 @@
 import type { Connection } from '../client/connection.js';
 import { reconnectDelay } from '../client/reconnect-delay.js';
+import { type CockpitError, isCockpitError } from '../shared/cockpit-error.js';
 import {
   type KeyRule,
   SESSION_ENDED_CLOSE_CODE,
@@ -24,6 +25,8 @@ export interface LinkedScreen {
   write(output: Uint8Array): void;
   /** Told each status, as it changes. */
   status(status: TerminalStatus): void;
+  /** Told why an attempt to connect failed, once per attempt. */
+  failed(error: CockpitError): void;
 }
 
 /** A terminal's connection to its session, kept up until the session ends. */
@@ -45,7 +48,10 @@ export interface TerminalLink {
  * first, as the server attaches at that size, then input and output as
  * binary messages. A close with {@link SESSION_ENDED_CLOSE_CODE} ends it;
  * any other close is the connection's, and the link reconnects, waiting
- * longer after each attempt that did not reach the session.
+ * longer after each attempt that did not reach the session. A handshake
+ * that failed is explained first (`Connection.explainFailedSocket`) and the
+ * screen told why; when the terminal is off, the link stops: no attempt
+ * can succeed until the app turns it on.
  *
  * @param connection - How the page reaches the cockpit.
  * @param key - The session's key: a valid one.
@@ -72,12 +78,27 @@ export function linkTerminal(
     sendWhenOpen(JSON.stringify(message));
   };
 
+  const reconnectLater = (): void => {
+    retry = setTimeout(connect, reconnectDelay(failures));
+    failures += 1;
+  };
+
+  const explainThenReconnect = async (): Promise<void> => {
+    const error = await connection.explainFailedSocket(path);
+    if (closed) return;
+    screen.failed(error);
+    if (isTerminalOff(error)) closed = true;
+    else reconnectLater();
+  };
+
   function connect(): void {
     screen.status('connecting');
     const current = connection.openSocket(path);
     current.binaryType = 'arraybuffer';
     socket = current;
+    let opened = false;
     current.addEventListener('open', () => {
+      opened = true;
       sendMessage({ type: 'resize', ...screen.size() });
       screen.status('open');
     });
@@ -100,8 +121,8 @@ export function linkTerminal(
         return;
       }
       screen.status('closed');
-      retry = setTimeout(connect, reconnectDelay(failures));
-      failures += 1;
+      if (opened) reconnectLater();
+      else void explainThenReconnect();
     });
   }
 
@@ -118,6 +139,15 @@ export function linkTerminal(
       socket?.close();
     },
   };
+}
+
+/**
+ * Whether the terminal's switch refused it: off, or loopback-only to a
+ * remote page. The app's configuration says so, and it holds until the app
+ * changes it, so trying again would only repeat the refusal.
+ */
+function isTerminalOff(error: CockpitError): boolean {
+  return isCockpitError(error, 'refused') && error.cause === 'terminal-off';
 }
 
 /**

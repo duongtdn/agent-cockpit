@@ -27,6 +27,27 @@ const claudeCodeKeys = JSON.stringify({
 let terminal: MountedTerminal | undefined;
 let statuses: TerminalStatus[];
 let clipboard: string[];
+/** The requests the page sent, as `fetch` received them. */
+let probes: { url: string; method: string; headers: Record<string, string> }[];
+/** What the server answers the next requests. */
+let probeAnswer: () => Promise<Response>;
+
+/** The cockpit's answer when a terminal's checks pass: its path is a WebSocket's. */
+const upgradeRequired = (): Promise<Response> =>
+  Promise.resolve(new Response(null, { status: 426, headers: { upgrade: 'websocket' } }));
+
+/** The cockpit's refusal of a request, as the wire carries it. */
+function refusal(status: number, error: Record<string, unknown>): () => Promise<Response> {
+  return () =>
+    Promise.resolve(Response.json({ error: { name: 'CockpitError', ...error } }, { status }));
+}
+
+const noToken = refusal(401, { code: 'no-token', message: 'No valid token.' });
+const terminalOff = refusal(403, {
+  code: 'refused',
+  message: 'The terminal is off.',
+  cause: 'terminal-off',
+});
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -45,6 +66,16 @@ beforeEach(() => {
     },
   });
   statuses = [];
+  probes = [];
+  probeAnswer = upgradeRequired;
+  vi.stubGlobal('fetch', (url: URL, init: RequestInit) => {
+    probes.push({
+      url: String(url),
+      method: init.method ?? 'GET',
+      headers: init.headers as Record<string, string>,
+    });
+    return probeAnswer();
+  });
 });
 
 afterEach(() => {
@@ -413,6 +444,171 @@ describe('reconnecting', () => {
     await vi.advanceTimersByTimeAsync(500);
 
     expect(FakeWebSocket.created).toHaveLength(4);
+  });
+});
+
+describe('errors', () => {
+  let errors: CockpitError[];
+
+  /** Mounts with an error handler. */
+  function mountReporting(): MountedTerminal {
+    const mounted = mount();
+    errors = [];
+    mounted.on('error', (error) => errors.push(error));
+    return mounted;
+  }
+
+  /** The server refuses the current handshake; the terminal asks why. */
+  async function refuseHandshake(): Promise<void> {
+    FakeWebSocket.last().drop();
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  it("explains a refused handshake by a GET on the terminal's own path, with the token", async () => {
+    probeAnswer = noToken;
+    mountReporting();
+
+    await refuseHandshake();
+
+    expect(probes).toEqual([
+      {
+        url: 'http://127.0.0.1:8765/cockpit/terminal/explain-a',
+        method: 'GET',
+        headers: { 'cockpit-token': token },
+      },
+    ]);
+    expect(errors.map((error) => error.toJSON())).toEqual([
+      { name: 'CockpitError', code: 'no-token', message: 'No valid token.' },
+    ]);
+  });
+
+  it('gives a refusal with its cause, once per failed attempt, and tries again', async () => {
+    probeAnswer = refusal(403, { code: 'refused', message: 'Refused.', cause: 'origin' });
+    mountReporting();
+
+    await refuseHandshake();
+    await vi.advanceTimersByTimeAsync(500);
+    await refuseHandshake();
+
+    expect(errors).toHaveLength(2);
+    expect(errors.every((error) => isCockpitError(error, 'refused'))).toBe(true);
+    expect((errors[0] as CockpitError<'refused'>).cause).toBe('origin');
+    expect(FakeWebSocket.created).toHaveLength(2);
+    expect(statuses).toEqual(['connecting', 'closed', 'connecting', 'closed']);
+  });
+
+  it('gives no-token, and goes on trying: a link opened in another tab may give one', async () => {
+    probeAnswer = noToken;
+    mountReporting();
+
+    await refuseHandshake();
+    await vi.advanceTimersByTimeAsync(500);
+    FakeWebSocket.last().accept();
+
+    expect(errors.map((error) => error.code)).toEqual(['no-token']);
+    expect(statuses.at(-1)).toBe('open');
+  });
+
+  it('gives unreachable when the explaining request reaches nothing either', async () => {
+    probeAnswer = () => Promise.reject(new TypeError('fetch failed'));
+    mountReporting();
+
+    await refuseHandshake();
+
+    expect(errors.map((error) => error.code)).toEqual(['unreachable']);
+  });
+
+  it('gives unreachable when the checks pass yet no WebSocket opened: a proxy may not pass it', async () => {
+    mountReporting();
+
+    await refuseHandshake();
+
+    expect(errors.map((error) => error.code)).toEqual(['unreachable']);
+    expect(errors[0]?.message).toMatch(/WebSocket/);
+  });
+
+  it('gives unreachable when what answers is not the cockpit', async () => {
+    probeAnswer = () => Promise.resolve(new Response('<html>Bad gateway</html>', { status: 502 }));
+    mountReporting();
+
+    await refuseHandshake();
+
+    expect(errors.map((error) => error.code)).toEqual(['unreachable']);
+  });
+
+  it('gives nothing, and asks nothing, for a drop: it only reconnects', async () => {
+    mountReporting();
+    FakeWebSocket.last().accept();
+
+    FakeWebSocket.last().drop();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(probes).toEqual([]);
+    expect(errors).toEqual([]);
+    expect(FakeWebSocket.created).toHaveLength(2);
+  });
+
+  it('asks nothing when the session is gone before the socket opened', async () => {
+    mountReporting();
+
+    FakeWebSocket.last().closeWith(4000);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(probes).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  it('stops trying once the terminal is off: closed, the error given once', async () => {
+    probeAnswer = terminalOff;
+    mountReporting();
+
+    await refuseHandshake();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(errors.map((error) => (error as CockpitError<'refused'>).cause)).toEqual([
+      'terminal-off',
+    ]);
+    expect(FakeWebSocket.created).toHaveLength(1);
+    expect(statuses).toEqual(['connecting', 'closed']);
+  });
+
+  it('gives nothing and tries no more when disposed while it explains a refusal', async () => {
+    let answer: (response: Response) => void = () => {};
+    probeAnswer = () => new Promise<Response>((resolve) => (answer = resolve));
+    const mounted = mountReporting();
+    await refuseHandshake();
+
+    mounted.dispose();
+    answer(await noToken());
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(errors).toEqual([]);
+    expect(FakeWebSocket.created).toHaveLength(1);
+  });
+
+  it('tells every error handler, and none that was removed', async () => {
+    probeAnswer = noToken;
+    const mounted = mountReporting();
+    const others: CockpitError[] = [];
+    const stopOthers = mounted.on('error', (error) => others.push(error));
+
+    await refuseHandshake();
+    stopOthers();
+    await vi.advanceTimersByTimeAsync(500);
+    await refuseHandshake();
+
+    expect(errors).toHaveLength(2);
+    expect(others).toHaveLength(1);
+  });
+
+  it('keeps trying without an error handler', async () => {
+    probeAnswer = noToken;
+    mount();
+
+    await refuseHandshake();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(FakeWebSocket.created).toHaveLength(2);
   });
 });
 

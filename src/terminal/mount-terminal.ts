@@ -30,9 +30,10 @@ export interface MountTerminalOptions {
 export interface MountedTerminal {
   /**
    * Follows the connection's status: `connecting`, `open`, `closed` (the
-   * connection dropped; the terminal reconnects by itself) or `ended` (the
-   * session is gone: nothing to attach to). The handler receives the
-   * status at once, then each change.
+   * connection dropped or was refused; the terminal reconnects by itself,
+   * unless the terminal's switch refused it: then it stays `closed`) or
+   * `ended` (the session is gone: nothing to attach to). The handler
+   * receives the status at once, then each change.
    *
    * @param event - `'status'`.
    * @param handler - Receives each status.
@@ -44,8 +45,12 @@ export interface MountedTerminal {
    * after the client's `on('error')`: the server's refusal, explained by an
    * HTTP request to the terminal's path that the same checks and the
    * terminal's switch refuse the same way — `refused` with its `cause`
-   * (`terminal-off` among them), or `no-token` — or `unreachable`. A
-   * connection that drops and reconnects is not reported.
+   * (`terminal-off` among them), or `no-token` — or `unreachable`: nothing
+   * answers, what answers is not the cockpit, or the checks pass and still
+   * no WebSocket opened (a proxy between may not pass them). A connection
+   * that drops and reconnects is not reported. On `terminal-off` the
+   * terminal stops trying: the app's switch refuses it until the app
+   * changes it, and a new mount connects then.
    *
    * @param event - `'error'`.
    * @param handler - Receives each error.
@@ -67,7 +72,8 @@ export interface MountedTerminal {
  * the session over a WebSocket that carries the app's token (taken from the
  * page's link as the client takes it). After a drop it reconnects by itself,
  * waiting 0.5 s, doubling up to 10 s; once the session has ended it stays
- * `ended`.
+ * `ended`. Why it could not connect goes to `on('error')`; refused by the
+ * terminal's switch (`terminal-off`), it stays `closed`.
  *
  * Keys: the session's driver sends its key rules when the terminal attaches
  * (for Claude Code, Shift+Enter types a new line rather than submitting).
@@ -107,6 +113,9 @@ export function mountTerminal(
     size: () => ({ columns: terminal.cols, rows: terminal.rows }),
     write: (output) => terminal.write(output),
     status: statuses.emit,
+    failed: (error) => {
+      for (const handler of errors) handler(error);
+    },
   });
   const subscriptions = [
     terminal.onData((text) => link.sendInput(text)),

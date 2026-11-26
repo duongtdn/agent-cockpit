@@ -70,8 +70,16 @@ export function json(status: number, value: unknown): Answer {
   return { status, body: JSON.stringify(value), contentType: 'application/json' };
 }
 
-/** Starts a {@link WireServer} on a free loopback port. */
-export async function startWireServer(): Promise<WireServer> {
+/**
+ * Starts a {@link WireServer} on a free loopback port.
+ *
+ * @param options - `page`, the app's own routes, served beside the mount
+ * (the page and the wire on one origin, as an app serves them, so that the
+ * browser lets the page's requests carry the token's header).
+ */
+export async function startWireServer(
+  options: { page?: (request: IncomingMessage, response: ServerResponse) => void } = {},
+): Promise<WireServer> {
   const requests: ReceivedRequest[] = [];
   const answers = new Map<string, Answer>();
   const accepted: AcceptedSocket[] = [];
@@ -84,6 +92,10 @@ export async function startWireServer(): Promise<WireServer> {
   });
 
   const server = createServer(async (request, response) => {
+    if (options.page !== undefined && !isBelowMount(request)) {
+      options.page(request, response);
+      return;
+    }
     const body = await readBody(request);
     const path = pathBelowMount(request);
     requests.push({
@@ -146,6 +158,11 @@ export async function startWireServer(): Promise<WireServer> {
       await once(server, 'close');
     },
   };
+}
+
+function isBelowMount(request: IncomingMessage): boolean {
+  const path = new URL(request.url ?? '/', 'http://server').pathname;
+  return path === MOUNT || path.startsWith(`${MOUNT}/`);
 }
 
 function pathBelowMount(request: IncomingMessage): string {
