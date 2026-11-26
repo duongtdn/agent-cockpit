@@ -47,5 +47,5 @@ jobs:
           path: test-results/contract.json
       - run: pnpm build
       - run: pnpm test:pack
-      # A browser through examples/jobs-console, on the built package, against the scripted API.
+      # A browser through the apps of examples/, on the built package, against the scripted API.
       - run: pnpm test:e2e

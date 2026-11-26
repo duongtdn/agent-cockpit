@@ -17,7 +17,7 @@ and their states live, and shows a session's terminal.
   package: an app runs the person's own `claude`.
 
 The end-to-end tests (`test/e2e/jobs-console.test.ts`) follow these steps in
-a browser; `test/e2e/jobs-console-ends.test.ts` checks that it leaves
+a browser; `test/e2e/examples-end.test.ts` checks that it leaves
 nothing behind however it ends.
 
 ## Start it

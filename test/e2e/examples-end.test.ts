@@ -10,9 +10,11 @@ import {
 } from '../support/example-app.ts';
 
 /**
- * However the jobs console ends, its scripted agent leaves nothing behind:
- * its temporary folder (and the tmux socket, the agent's files in it) is gone.
+ * However an example ends, its scripted agent leaves nothing behind: its
+ * temporary folder (and the tmux socket, the agent's files in it) is gone.
  */
+
+const EXAMPLES = ['jobs-console', 'translate-and-access'] as const;
 
 let app: ExampleApp | undefined;
 let taken: Server | undefined;
@@ -37,9 +39,9 @@ async function takenPort(): Promise<number> {
   return (taken.address() as AddressInfo).port;
 }
 
-describe('the jobs console, as it ends', () => {
+describe.each(EXAMPLES)('%s, as it ends', (example) => {
   it('removes what it started when it cannot start: its port is taken', async () => {
-    const ended = await runExampleToItsEnd('jobs-console', ['--port', String(await takenPort())]);
+    const ended = await runExampleToItsEnd(example, ['--port', String(await takenPort())]);
 
     expect(ended.code, ended.printed).not.toBe(0);
     expect(ended.printed).toContain('EADDRINUSE');
@@ -50,7 +52,7 @@ describe('the jobs console, as it ends', () => {
   });
 
   it('stops as on Ctrl+C when its terminal closes (SIGHUP)', async () => {
-    app = await startExampleApp('jobs-console', ['--port', '0']);
+    app = await startExampleApp(example, ['--port', '0']);
     const root = named(app.temporaryRoot(), app.printed());
 
     const exitCode = await app.stop('SIGHUP');
@@ -63,7 +65,7 @@ describe('the jobs console, as it ends', () => {
   it.each(['SIGINT', 'SIGHUP'] as const)(
     'removes what it started when stopped while it starts (%s)',
     async (signal) => {
-      const ended = await interruptExampleWhileStarting('jobs-console', ['--port', '0'], signal);
+      const ended = await interruptExampleWhileStarting(example, ['--port', '0'], signal);
 
       expect(ended.code, ended.printed).toBe(0);
       expect(ended.printed).toContain('Stopped.');
@@ -73,4 +75,14 @@ describe('the jobs console, as it ends', () => {
       ).toBe(false);
     },
   );
+});
+
+describe('translate-and-access, refusing what it cannot do', () => {
+  it('starts nothing with --open on a port chosen when it listens', async () => {
+    const ended = await runExampleToItsEnd('translate-and-access', ['--open', '--port', '0']);
+
+    expect(ended.code, ended.printed).toBe(2);
+    expect(ended.printed).toContain('--open needs a fixed --port');
+    expect(ended.temporaryRoot, 'no scripted agent was started').toBeUndefined();
+  });
 });

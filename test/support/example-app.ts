@@ -11,6 +11,9 @@ const repository = fileURLToPath(new URL('../../', import.meta.url));
 /** How long an example may take to print its link, or to stop, before the test fails saying what it printed. */
 const PATIENCE_MS = 20_000;
 
+/** The line where an example prints the link to open, the link its one group. */
+export const LINK_LINE = /^Open (\S+)$/;
+
 /** An example app running as a person starts it, in a process of its own. */
 export interface ExampleApp {
   /** The link it printed for the person to open: the page's URL, the app's token in its fragment. */
@@ -22,6 +25,15 @@ export interface ExampleApp {
    * (`… in <folder>.`); `undefined` when it named none.
    */
   temporaryRoot(): string | undefined;
+  /**
+   * Waits for the next line it prints, from now on, that matches a pattern.
+   *
+   * @param pattern - What the line must match.
+   * @returns The match.
+   * @throws Error, with what it printed, when it exits or takes too long
+   * before printing such a line.
+   */
+  nextLine(pattern: RegExp): Promise<RegExpExecArray>;
   /**
    * Stops it with a signal, by default as a person does with Ctrl+C
    * (`SIGINT`), and waits for it to exit. Safe to call twice: the first
@@ -62,29 +74,44 @@ export async function startExampleApp(name: string, args: readonly string[]): Pr
     output += chunk;
   });
   const exited = once(child, 'exit').then(([code]) => code as number | null);
-  const link = await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      void killAndClean(child, output).finally(() =>
-        reject(new Error(`The example printed no link in time:\n${output}`)),
-      );
-    }, PATIENCE_MS);
-    createInterface({ input: child.stdout as NodeJS.ReadableStream }).on('line', (line) => {
-      output += `${line}\n`;
-      const printed = /^Open (\S+)$/.exec(line)?.[1];
-      if (printed === undefined) return;
-      clearTimeout(timer);
-      resolve(printed);
+  const lineHandlers = new Set<(line: string) => void>();
+  createInterface({ input: child.stdout as NodeJS.ReadableStream }).on('line', (line) => {
+    output += `${line}\n`;
+    for (const handler of lineHandlers) handler(line);
+  });
+  const nextLine = (pattern: RegExp): Promise<RegExpExecArray> =>
+    new Promise((resolve, reject) => {
+      const done = () => {
+        clearTimeout(timer);
+        lineHandlers.delete(onLine);
+      };
+      const timer = setTimeout(() => {
+        done();
+        reject(new Error(`The example printed no line matching ${pattern} in time:\n${output}`));
+      }, PATIENCE_MS);
+      const onLine = (line: string) => {
+        const match = pattern.exec(line);
+        if (match === null) return;
+        done();
+        resolve(match);
+      };
+      lineHandlers.add(onLine);
+      void exited.then((code) => {
+        done();
+        reject(new Error(`The example exited (${code}) before printing ${pattern}:\n${output}`));
+      });
     });
-    void exited.then((code) => {
-      clearTimeout(timer);
-      reject(new Error(`The example exited (${code}) before printing its link:\n${output}`));
-    });
+  const opened = await nextLine(LINK_LINE).catch(async (error: unknown) => {
+    // One that is late is killed; what it or its scripted agent left is removed.
+    await killAndClean(child, output);
+    throw error;
   });
   let stopped: Promise<number | null> | undefined;
   return {
-    link,
+    link: opened[1] as string,
     printed: () => output,
     temporaryRoot: () => temporaryRootIn(output),
+    nextLine,
     stop: (signal = 'SIGINT') => {
       stopped ??= stopChild(child, signal, exited, () => output);
       return stopped;
