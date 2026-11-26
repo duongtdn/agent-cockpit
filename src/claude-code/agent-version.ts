@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access, realpath, stat } from 'node:fs/promises';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { AgentVersion, TestedRange } from '../server/agent-status.js';
 import { AGENT_COMMAND } from './launching.js';
@@ -8,31 +11,81 @@ const run = promisify(execFile);
 /** A version as Claude Code prints it: three numbers, first on its `--version` line. */
 const VERSION = /^(\d+)\.(\d+)\.(\d+)(?=\s|$)/;
 
+/** An executable as a cache knows it: the file it really is, as it was when read. */
+interface ExecutableFile {
+  /** Its real path: every link to it leads there. */
+  readonly realPath: string;
+  /** When it last changed, which an update of the agent changes. */
+  readonly changedMs: number;
+}
+
 /**
- * Reads the version of the `claude` a launch with this environment would
- * run: `claude --version`, looked up on the environment's `PATH`.
+ * Creates the reader of the version of the `claude` a launch would run:
+ * the first executable `claude` on the launch's `PATH`, asked
+ * `claude --version`. The agent is asked once per executable, known by its
+ * real path and its time of change, so that a launch after the first pays
+ * a few file lookups and not a process; an update of the agent, which
+ * replaces the file or the link to it, is read anew.
  *
- * @param environment - The launch's environment.
  * @param range - The tested range the version stands against.
- * @returns The version and its standing, or that no agent was found.
- * @throws An `Error` when the agent fails, or prints no version.
+ * @returns The reader. It gives the version and its standing, or that no
+ * agent was found; it rejects with an `Error` when the agent fails, or
+ * prints no version, and keeps no such failure.
  */
-export async function readAgentVersion(
-  environment: Readonly<Record<string, string>>,
+export function agentVersionReader(
   range: TestedRange,
-): Promise<AgentVersion> {
-  let printed: string;
-  try {
-    printed = (await run(AGENT_COMMAND, ['--version'], { env: environment })).stdout;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { found: false, command: AGENT_COMMAND };
+): (environment: Readonly<Record<string, string>>) => Promise<AgentVersion> {
+  const versions = new Map<string, { readonly changedMs: number; readonly version: string }>();
+
+  return async (environment) => {
+    const program = await findOnPath(AGENT_COMMAND, environment.PATH);
+    if (program === undefined) return { found: false, command: AGENT_COMMAND };
+    const file = await executableFile(program);
+    let version = versions.get(file.realPath);
+    if (version?.changedMs !== file.changedMs) {
+      version = { changedMs: file.changedMs, version: await askVersion(program, environment) };
+      versions.set(file.realPath, version);
     }
-    throw error;
+    return { found: true, version: version.version, standing: standingOf(version.version, range) };
+  };
+}
+
+/**
+ * Finds a program as a launch would: in the first folder of the `PATH` that
+ * holds an executable file of that name. Only absolute folders count: a
+ * relative one would depend on the folder the server runs in.
+ */
+async function findOnPath(name: string, path: string | undefined): Promise<string | undefined> {
+  for (const folder of (path ?? '').split(delimiter)) {
+    if (!isAbsolute(folder)) continue;
+    const candidate = join(folder, name);
+    if (await isExecutableFile(candidate)) return candidate;
   }
+  return undefined;
+}
+
+async function isExecutableFile(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.X_OK);
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function executableFile(program: string): Promise<ExecutableFile> {
+  const realPath = await realpath(program);
+  return { realPath, changedMs: (await stat(realPath)).mtimeMs };
+}
+
+async function askVersion(
+  program: string,
+  environment: Readonly<Record<string, string>>,
+): Promise<string> {
+  const printed = (await run(program, ['--version'], { env: environment })).stdout;
   const version = parseVersion(printed);
   if (version === undefined) throw new Error(`claude --version printed no version: ${printed}`);
-  return { found: true, version, standing: standingOf(version, range) };
+  return version;
 }
 
 /**

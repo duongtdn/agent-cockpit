@@ -12,7 +12,7 @@ import {
 import { writePrivateFile } from '../server/state/private-files.js';
 import { CockpitError } from '../shared/cockpit-error.js';
 import type { KeyRule } from '../shared/wire.js';
-import { readAgentVersion } from './agent-version.js';
+import { agentVersionReader } from './agent-version.js';
 import { agentConfigFolder, keepsConversation } from './conversations.js';
 import { readHook } from './hook-payloads.js';
 import {
@@ -146,7 +146,7 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
     terminalKeys: TERMINAL_KEYS,
     silentStartCause: SILENT_START_CAUSE,
     testedRange: TESTED_RANGE,
-    agentVersion: (environment) => readAgentVersion(environment, TESTED_RANGE),
+    agentVersion: agentVersionReader(TESTED_RANGE),
     checkPart: checkJobPart,
     networkOf: (part) => networkOf(checked, part),
     readScreen,
