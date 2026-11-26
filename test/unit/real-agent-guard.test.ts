@@ -151,10 +151,43 @@ describe('the guard of the real agent', () => {
     },
   );
 
-  it('refuses a work folder that is outside the root or no real folder', () => {
-    for (const path of [elsewhere, root, ...Object.values(notRealFolders())]) {
-      expect(check({ workFolder: path }), path).toThrow(/the work folder .* is not a real folder/);
+  it('refuses a work folder that is outside the root, no real folder, or a link that leads out of it', () => {
+    const { 'a link to a folder inside the root': _linkIn, ...others } = notRealFolders();
+    for (const path of [elsewhere, root, ...Object.values(others)]) {
+      expect(check({ workFolder: path }), path).toThrow(
+        /the work folder .* is (not a real folder|a link that leads to no real folder)/,
+      );
     }
+  });
+
+  it('lets a work folder start that is a link inside the root to a real folder inside it', () => {
+    const link = join(root, 'linked-work');
+    symlinkSync(folders.workFolder, link);
+    made.push(link);
+
+    expect(check({ workFolder: link })).not.toThrow();
+  });
+
+  it('refuses a link to a work folder whose settings, above the folder it leads to, send the agent elsewhere', () => {
+    const below = join(folders.home, 'project');
+    makeFolder(below);
+    writeFile(
+      join(folders.home, '.claude', 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://example.com' } }),
+    );
+    const link = join(root, 'linked-project');
+    symlinkSync(below, link);
+    made.push(link);
+
+    expect(check({ workFolder: link })).toThrow(join(folders.home, '.claude', 'settings.json'));
+  });
+
+  it('refuses a link inside the root that leads nowhere, or out of it', () => {
+    const nowhere = join(root, 'link-to-nowhere');
+    symlinkSync(join(root, 'never-made'), nowhere);
+    made.push(nowhere);
+
+    expect(check({ workFolder: nowhere })).toThrow(/a link that leads to no real folder/);
   });
 
   it.each([
@@ -253,11 +286,37 @@ describe('the guard of the real agent', () => {
 describe("the guard of the real agent's settings", () => {
   const withSettings = (given: unknown) => check({ args: argsWith(given) });
 
-  it('refuses settings that give the agent variables: they would replace the checked ones', () => {
+  it('refuses settings that give the agent a variable its rule refuses, or one with no rule', () => {
     expect(
       withSettings({ ...settings, env: { ANTHROPIC_BASE_URL: 'https://example.com' } }),
-    ).toThrow(/settings.*"env"/);
-    expect(withSettings({ ...settings, env: {} })).toThrow(/settings.*"env"/);
+    ).toThrow(/settings.*"env", the variable ANTHROPIC_BASE_URL, not the origin/);
+    expect(withSettings({ ...settings, env: { HTTPS_PROXY: 'http://127.0.0.1:1' } })).toThrow(
+      /settings.*"env", the variable HTTPS_PROXY, which has no rule a launch may give/,
+    );
+    expect(withSettings({ ...settings, env: { TERM: 'xterm' } })).toThrow(
+      /the variable TERM, which has no rule a launch may give/,
+    );
+    expect(withSettings({ ...settings, env: { CLAUDE_CODE_MAX_RETRIES: 3 } })).toThrow(
+      /the variable CLAUDE_CODE_MAX_RETRIES, which is no text/,
+    );
+    expect(withSettings({ ...settings, env: [] })).toThrow(/variables that are no object/);
+  });
+
+  it('lets settings give the agent variables that pass the rules a launch passes', () => {
+    expect(
+      withSettings({
+        ...settings,
+        env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:4011', CLAUDE_CODE_MAX_RETRIES: '3' },
+      }),
+    ).not.toThrow();
+    expect(withSettings({ ...settings, env: {} })).not.toThrow();
+  });
+
+  it('lets settings turn every hook off, and nothing else of that setting', () => {
+    expect(withSettings({ ...settings, disableAllHooks: true })).not.toThrow();
+    expect(withSettings({ ...settings, disableAllHooks: false })).toThrow(
+      /"disableAllHooks", not true/,
+    );
   });
 
   it('refuses settings that name a program to get a key from', () => {
@@ -464,14 +523,63 @@ describe("the guard of the real agent's arguments", () => {
     );
   });
 
-  it.each(['--mcp-config', '--plugin-dir', '--setting-sources'])(
-    'refuses %s, which no launch needs yet, and says where a rule is added',
-    (option) => {
-      expect(check({ args: [...SESSION, option, 'x'] })).toThrow(
-        new RegExp(`${option} is refused.*OPTION_RULES.*launch-rules\\.ts`),
-      );
-    },
-  );
+  it('refuses --mcp-config, which no launch needs yet, and says where a rule is added', () => {
+    expect(check({ args: [...SESSION, '--mcp-config', 'x'] })).toThrow(
+      /--mcp-config is refused.*OPTION_RULES.*launch-rules\.ts/,
+    );
+  });
+
+  it('lets --setting-sources name the sources of settings, or none', () => {
+    for (const sources of ['', 'user', 'user,project,local']) {
+      expect(check({ args: [...SESSION, '--setting-sources', sources] }), sources).not.toThrow();
+    }
+    expect(check({ args: [...SESSION, '--setting-sources', 'user,policy'] })).toThrow(
+      /--setting-sources is naming policy, no source of settings/,
+    );
+  });
+
+  it('lets --strict-mcp-config pass as a flag, the option after it read as one', () => {
+    expect(
+      check({ args: [...SESSION, '--strict-mcp-config', '--permission-mode', 'default'] }),
+    ).not.toThrow();
+    expect(check({ args: [...SESSION, '--strict-mcp-config', '--mcp-config', 'x'] })).toThrow(
+      /--mcp-config is refused/,
+    );
+  });
+
+  describe('--plugin-dir', () => {
+    const plugin = join(root, 'plugin');
+    const withPlugin = (folder = plugin) => check({ args: [...SESSION, '--plugin-dir', folder] });
+    const manifest = (content: object) =>
+      writeFile(join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify(content));
+
+    it('lets a plugin of commands pass, its manifest naming it', () => {
+      manifest({ name: 'probe', description: 'Commands.', version: '1.0.0' });
+      writeFile(join(plugin, 'commands', 'greet.md'), 'Say hello.');
+
+      expect(withPlugin()).not.toThrow();
+    });
+
+    it('refuses a plugin with anything but commands: hooks, servers, agents', () => {
+      manifest({ name: 'probe' });
+      for (const stray of ['hooks/hooks.json', '.mcp.json', 'agents/helper.md']) {
+        const path = writeFile(join(plugin, stray), '{}');
+        expect(withPlugin(), stray).toThrow(/a plugin holding .*only commands have a rule/);
+        unlinkSync(path);
+      }
+    });
+
+    it('refuses a manifest that says more than who the plugin is, or no JSON', () => {
+      manifest({ name: 'probe', mcpServers: {} });
+      expect(withPlugin()).toThrow(/a plugin whose manifest says "mcpServers"/);
+      writeFile(join(plugin, '.claude-plugin', 'plugin.json'), '{');
+      expect(withPlugin()).toThrow(/a plugin whose manifest cannot be read as JSON/);
+    });
+
+    it('refuses a plugin outside the root', () => {
+      expect(withPlugin(elsewhere)).toThrow(/--plugin-dir is not a real folder inside/);
+    });
+  });
 
   it('refuses an argument that has no rule, and says where a rule is added', () => {
     for (const argument of [

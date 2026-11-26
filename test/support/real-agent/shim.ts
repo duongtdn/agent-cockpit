@@ -4,7 +4,12 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { shellWord } from '../../../src/claude-code/launching.ts';
 import type { Driver, LaunchCommand } from '../../../src/server/driver.ts';
 import { pinnedAgentBinary } from './binary.ts';
-import { type AgentFolders, agentEnvironment, TERMINAL_VARIABLES } from './environment.ts';
+import {
+  type AgentFolders,
+  agentEnvironment,
+  type RecipePiece,
+  TERMINAL_VARIABLES,
+} from './environment.ts';
 import { assertStaysLocal, loopbackOrigin } from './guard.ts';
 import { isInside } from './launch-rules.ts';
 import { createAgentFolders } from './run-root.ts';
@@ -44,24 +49,49 @@ export interface RealAgentShim extends AgentFolders {
   guarded(driver: Driver): Driver;
 }
 
+/** What a shim is made with, beside the API's address. */
+export interface RealAgentShimOptions {
+  /**
+   * The pieces of the configuration that starts the agent at its input
+   * prompt left out, each for the start-up dialog it spares; none by default.
+   */
+  readonly leftOutOfRecipe?: readonly RecipePiece[];
+  /**
+   * Variables the shim gives the agent beside the ones that keep it local,
+   * over them for a name both have; each must pass its launch rule. None by default.
+   */
+  readonly variables?: Readonly<Record<string, string>>;
+  /**
+   * Variables the shim passes on from the launch when the launch carries
+   * them, rather than dropping them: what the driver lets through then
+   * reaches the agent, checked by the guard as the launch's. None by default.
+   */
+  readonly passedOn?: readonly string[];
+}
+
 /**
  * Makes the run's temporary root, with the agent's folders, a state folder
  * and the shim. Nothing runs until the cockpit launches.
  *
  * @param apiBaseUrl - Where the API's double listens: a plain HTTP address
  * of the loopback interface, with its port.
+ * @param options - See {@link RealAgentShimOptions}.
  * @returns The shim; the caller removes its root (`tearDownRun`).
  * @throws Error naming `ANTHROPIC_BASE_URL` when the API's address is not a
  * plain HTTP address of the loopback interface; nothing is made then.
  */
-export async function startRealAgentShim(apiBaseUrl: string): Promise<RealAgentShim> {
+export async function startRealAgentShim(
+  apiBaseUrl: string,
+  options: RealAgentShimOptions = {},
+): Promise<RealAgentShim> {
   const apiOrigin = loopbackOrigin(apiBaseUrl);
-  const folders = await createAgentFolders();
-  const environment = agentEnvironment(folders, apiOrigin);
+  const { leftOutOfRecipe = [], variables = {}, passedOn = [] } = options;
+  const folders = await createAgentFolders(leftOutOfRecipe);
+  const environment = { ...agentEnvironment(folders, apiOrigin), ...variables };
   const shimFolder = join(folders.root, 'bin');
   const stateFolder = join(folders.root, 'state');
   await mkdir(shimFolder);
-  const shim = writeRealAgentShim(shimFolder, environment, pinnedAgentBinary());
+  const shim = writeRealAgentShim(shimFolder, environment, pinnedAgentBinary(), passedOn);
 
   function checkLaunch(command: LaunchCommand, workFolder: string): void {
     const program = onPath(command.command, command.environment.PATH, workFolder);
@@ -71,7 +101,18 @@ export async function startRealAgentShim(apiBaseUrl: string): Promise<RealAgentS
       );
     }
     makeSettingsReadOnly(command.args, folders.root);
-    assertStaysLocal({ environment, args: command.args, workFolder, root: folders.root });
+    const passed = Object.fromEntries(
+      passedOn.flatMap((name) => {
+        const value = command.environment[name];
+        return value === undefined ? [] : [[name, value]];
+      }),
+    );
+    assertStaysLocal({
+      environment: { ...environment, ...passed },
+      args: command.args,
+      workFolder,
+      root: folders.root,
+    });
   }
 
   return {
@@ -94,29 +135,42 @@ export async function startRealAgentShim(apiBaseUrl: string): Promise<RealAgentS
 }
 
 /**
- * Writes a `claude` that runs a program with exactly the variables given
- * and the terminal's own ({@link TERMINAL_VARIABLES}), the ones the session
- * host sets: everything else the launch carries is dropped. The arguments
- * pass as they are.
+ * Writes a `claude` that runs a program with exactly the variables given,
+ * the terminal's own ({@link TERMINAL_VARIABLES}), the ones the session
+ * host sets, and those passed on from the launch when it carries them:
+ * everything else the launch carries is dropped. The arguments pass as
+ * they are.
  *
  * @param folder - An existing folder of the run's own.
  * @param environment - The variables the program is given.
  * @param program - The program's absolute path.
+ * @param passedOn - The names of the launch's variables passed on, over the given ones; none by default.
  * @returns The shim's path.
  * @throws Error for a program whose path holds `=`, which `env` would read
- * as a variable.
+ * as a variable, or a name passed on that is no variable's name.
  */
 export function writeRealAgentShim(
   folder: string,
   environment: Readonly<Record<string, string>>,
   program: string,
+  passedOn: readonly string[] = [],
 ): string {
   if (program.includes('=')) throw new Error(`The program's path holds "=": ${program}`);
+  const unnamed = passedOn.find((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+  if (unnamed !== undefined) throw new Error(`Not a variable's name: ${JSON.stringify(unnamed)}`);
   const shim = join(folder, AGENT_COMMAND);
-  // `${NAME+"NAME=$NAME"}` is one word when the terminal set NAME, and none when it did not.
-  const terminals = TERMINAL_VARIABLES.map((name) => `\${${name}+"${name}=$${name}"}`);
+  // `${NAME+"NAME=$NAME"}` is one word when the terminal or the launch set NAME, and none when not.
+  const whenSet = (name: string) => `\${${name}+"${name}=$${name}"}`;
   const given = Object.entries(environment).map(([name, value]) => shellWord(`${name}=${value}`));
-  const words = ['/usr/bin/env', '-i', ...terminals, ...given, shellWord(program), '"$@"'];
+  const words = [
+    '/usr/bin/env',
+    '-i',
+    ...TERMINAL_VARIABLES.map(whenSet),
+    ...given,
+    ...passedOn.map(whenSet),
+    shellWord(program),
+    '"$@"',
+  ];
   writeFileSync(shim, `#!/bin/sh\nexec ${words.join(' ')}\n`);
   chmodSync(shim, 0o700);
   return shim;

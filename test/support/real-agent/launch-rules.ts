@@ -1,5 +1,5 @@
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { FAKE_API_KEY, TERMINAL_VARIABLES } from './environment.ts';
 
 /**
@@ -141,6 +141,25 @@ export const VARIABLE_RULES: Readonly<Record<string, VariableRule>> = {
   ...Object.fromEntries(TERMINAL_VARIABLES.map((name) => [name, theTerminals])),
 };
 
+/**
+ * Variables given in settings (`env`), which the agent applies over the
+ * ones it was launched with: each must have a rule that a launch may give,
+ * and pass it, as if the launch gave it.
+ */
+const variablesThatPassTheirRules: Check<unknown> = (variables, root) => {
+  if (!isRecord(variables)) return 'variables that are no object';
+  for (const [name, value] of Object.entries(variables)) {
+    const rule = ruleIn(VARIABLE_RULES, name);
+    if (rule === undefined || rule.given === 'by the terminal') {
+      return `the variable ${name}, which has no rule a launch may give in VARIABLE_RULES (${RULES_FILE})`;
+    }
+    if (typeof value !== 'string') return `the variable ${name}, which is no text`;
+    const reason = rule.check(value, root);
+    if (reason !== undefined) return `the variable ${name}, ${reason}`;
+  }
+  return undefined;
+};
+
 function hookProblem(hook: unknown): string | undefined {
   if (!isRecord(hook)) return `a hook that is no object: ${JSON.stringify(hook)}`;
   // A command hook is the test's own program, as the test itself is.
@@ -218,7 +237,11 @@ export const SETTINGS_RULES: Readonly<Record<string, Check<unknown>>> = {
   // WebFetch asks api.anthropic.com about each host before it fetches, whatever the API's
   // address: a test whose agent fetches turns that off, and the setting may do nothing else.
   skipWebFetchPreflight: (value) => (value === true ? undefined : 'not true'),
-  env: refused('it would replace the variables checked here'),
+  // The person's own variables, which the agent applies over its environment: each passes the
+  // rule the launch's variable of that name passes.
+  env: variablesThatPassTheirRules,
+  // Every hook off, the cockpit's too: a session then reports nothing, and calls nobody more.
+  disableAllHooks: (value) => (value === true ? undefined : 'not true'),
   apiKeyHelper: refused('it would run a program for a key'),
 };
 
@@ -310,6 +333,54 @@ function notNeededYet(what: string): Check<string> {
   );
 }
 
+/** The sources of settings `--setting-sources` may name, beside the command line's own. */
+const SETTING_SOURCES: readonly string[] = ['user', 'project', 'local'];
+
+/**
+ * Fewer sources of settings only take settings away, each of which the
+ * guard checks whether the agent reads it or not.
+ */
+const someSettingSources: Check<string> = (value) => {
+  // The empty word is no source at all.
+  const sources = value === '' ? [] : value.split(',');
+  const unknown = sources.filter((source) => !SETTING_SOURCES.includes(source));
+  return unknown.length === 0 ? undefined : `naming ${unknown.join(', ')}, no source of settings`;
+};
+
+/** What a plugin's manifest may say of it: who it is, nothing that runs or connects. */
+const PLUGIN_MANIFEST_KEYS: readonly string[] = ['name', 'description', 'version'];
+
+/**
+ * A plugin of commands only, the run's own: a real folder inside the root
+ * holding its manifest, which names it and nothing more, and a folder of
+ * commands, each a Markdown file the agent reads as a prompt. A plugin's
+ * hooks, MCP servers, agents or anything else have no rule.
+ */
+const aPluginOfCommands: Check<string> = (value, root) => {
+  const notOwn = aRealFolderInsideTheRoot(value, root);
+  if (notOwn !== undefined) return notOwn;
+  const strays = entriesIn(value).filter(
+    (entry) => entry !== '.claude-plugin/plugin.json' && !/^commands\/[^/]+\.md$/.test(entry),
+  );
+  if (strays.length > 0) return `a plugin holding ${strays.join(', ')}: only commands have a rule`;
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(readFileSync(join(value, '.claude-plugin', 'plugin.json'), 'utf8'));
+  } catch {
+    return 'a plugin whose manifest cannot be read as JSON';
+  }
+  if (!isRecord(manifest)) return 'a plugin whose manifest is no object';
+  const other = Object.keys(manifest).find((key) => !PLUGIN_MANIFEST_KEYS.includes(key));
+  return other === undefined ? undefined : `a plugin whose manifest says ${JSON.stringify(other)}`;
+};
+
+/** Every file and link under a folder, by its path from it: a link is not followed. */
+function entriesIn(folder: string): string[] {
+  return readdirSync(folder, { recursive: true, withFileTypes: true })
+    .filter((entry) => !entry.isDirectory())
+    .map((entry) => relative(folder, join(entry.parentPath, entry.name)));
+}
+
 /**
  * The options a launch may carry before `--`, each with one value, and
  * what the value must be. An option with no rule is refused.
@@ -321,9 +392,18 @@ export const OPTION_RULES: Readonly<Record<string, Check<string>>> = {
   '--permission-mode': allowedAsIs,
   '--model': allowedAsIs,
   '--mcp-config': notNeededYet('it would give the agent servers to call'),
-  '--plugin-dir': notNeededYet('it would give the agent code to load'),
-  '--setting-sources': notNeededYet('it would change which settings the agent reads'),
+  '--plugin-dir': aPluginOfCommands,
+  '--setting-sources': someSettingSources,
 };
+
+/**
+ * The options a launch may carry before `--` that take no value. Each only
+ * takes something away from the agent.
+ */
+export const FLAG_RULES: readonly string[] = [
+  // Only the servers of --mcp-config, which has its own rule.
+  '--strict-mcp-config',
+];
 
 /** What ends the options of a command line: one prompt may follow. */
 const PROMPT_SEPARATOR = '--';
@@ -339,9 +419,13 @@ export const argumentsProblem: Check<readonly string[]> = (args, root) => {
   const separator = args.indexOf(PROMPT_SEPARATOR);
   const options = separator === -1 ? args : args.slice(0, separator);
   if (separator !== -1 && args.length - separator > 2) return 'more than one prompt follows --';
-  for (let index = 0; index < options.length; index += 2) {
-    const problem = optionProblem(options[index] as string, options[index + 1], root);
+  let index = 0;
+  while (index < options.length) {
+    const option = options[index] as string;
+    const isFlag = FLAG_RULES.includes(option);
+    const problem = isFlag ? undefined : optionProblem(option, options[index + 1], root);
     if (problem !== undefined) return problem;
+    index += isFlag ? 1 : 2;
   }
   return undefined;
 };

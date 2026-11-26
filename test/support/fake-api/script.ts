@@ -41,8 +41,11 @@ export type CutStream = {
   readonly afterEvents: number;
 };
 
-/** A turn that starts and then waits for the test, as a model that is still generating. */
-export type HeldTurn = { readonly kind: 'held'; readonly turn: Turn };
+/**
+ * A turn that starts and then waits for the test, as a model that is still
+ * generating: its first events are sent, the rest once it is released.
+ */
+export type HeldTurn = { readonly kind: 'held'; readonly turn: Turn; readonly afterEvents: number };
 
 /** What a test scripts for one conversation request. */
 export type ScriptedAnswer = Turn | ApiError | CutStream | HeldTurn;
@@ -151,9 +154,22 @@ export function cutStream(
  * Scripts a turn that is held: the stream starts, then waits until the test
  * releases it or the client goes away.
  *
- * @param scripted - The turn that follows the release; a short text by default.
+ * @param scripted - The turn; a short text by default.
+ * @param where - `afterEvents`: how many of its stream events are sent
+ *   before the hold; by default only its start, so that the model has
+ *   written nothing yet. The rest follows the release.
  * @returns The scripted held turn.
  */
-export function heldTurn(scripted: Turn = turn('ok')): HeldTurn {
-  return { kind: 'held', turn: scripted };
+export function heldTurn(
+  scripted: Turn = turn('ok'),
+  where: { readonly afterEvents: number } = { afterEvents: 1 },
+): HeldTurn {
+  return { kind: 'held', turn: scripted, afterEvents: where.afterEvents };
 }
+
+/**
+ * How many stream events of a turn whose first block is a text are sent
+ * once that text is written: the message's start, the block's start and its
+ * one delta.
+ */
+export const TEXT_WRITTEN = 3;

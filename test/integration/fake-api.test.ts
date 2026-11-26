@@ -6,6 +6,7 @@ import {
   type FakeApiOptions,
   heldTurn,
   startFakeApi,
+  TEXT_WRITTEN,
   toolUse,
   turn,
   withUsage,
@@ -273,6 +274,36 @@ describe('a held turn', () => {
     expect(parseFrames(afterRelease).at(-1)?.data.type).toBe('message_stop');
     expect(afterRelease).toContain('At last');
     await expect(held.ended).resolves.toBe('released');
+  });
+
+  it('holds after the events given: a text written, the turn not ended', async () => {
+    const api = await start();
+    api.script(heldTurn(turn('Half way'), { afterEvents: TEXT_WRITTEN }));
+
+    const response = await post(api, conversation('think'));
+    const reader = response.body?.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+    const held = await api.heldRequest();
+    let beforeRelease = '';
+    while (parseFrames(beforeRelease).length < TEXT_WRITTEN) {
+      beforeRelease += new TextDecoder().decode((await reader.read()).value);
+    }
+
+    expect(parseFrames(beforeRelease).map((frame) => frame.data.type)).toEqual([
+      'message_start',
+      'content_block_start',
+      'content_block_delta',
+    ]);
+    expect(beforeRelease).toContain('Half way');
+    held.release();
+    let afterRelease = '';
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+      afterRelease += new TextDecoder().decode(chunk.value);
+    }
+    expect(parseFrames(afterRelease).map((frame) => frame.data.type)).toEqual([
+      'content_block_stop',
+      'message_delta',
+      'message_stop',
+    ]);
   });
 
   it('ends when the client goes away', async () => {

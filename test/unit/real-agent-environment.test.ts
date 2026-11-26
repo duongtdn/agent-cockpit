@@ -102,6 +102,9 @@ describe("the real agent's configuration", () => {
   });
 
   it('leaves out a piece of that recipe, for the dialog it spares', () => {
+    expect(agentConfiguration(folders, ['onboarding'])).not.toHaveProperty(
+      'hasCompletedOnboarding',
+    );
     expect(agentConfiguration(folders, ['folder-trust'])).not.toHaveProperty('projects');
     expect(agentConfiguration(folders, ['key-approval'])).not.toHaveProperty(
       'customApiKeyResponses',

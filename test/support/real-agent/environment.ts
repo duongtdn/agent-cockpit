@@ -77,7 +77,7 @@ export function agentEnvironment(folders: AgentFolders, apiOrigin: string): Reco
  * prompt: each spares one start-up dialog, which the agent shows, before
  * any hook, when the piece is left out.
  */
-export type RecipePiece = 'folder-trust' | 'key-approval';
+export type RecipePiece = 'onboarding' | 'folder-trust' | 'key-approval';
 
 /**
  * Gives the content of the agent's `.claude.json` with which it starts at
@@ -94,7 +94,7 @@ export function agentConfiguration(
   leftOut: readonly RecipePiece[] = [],
 ): object {
   return {
-    hasCompletedOnboarding: true,
+    ...(leftOut.includes('onboarding') ? {} : { hasCompletedOnboarding: true }),
     ...(leftOut.includes('key-approval')
       ? {}
       : { customApiKeyResponses: { approved: [FAKE_API_KEY.slice(-KEY_SUFFIX_LENGTH)] } }),

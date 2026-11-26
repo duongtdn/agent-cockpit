@@ -256,11 +256,13 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
   function hold(exchange: Exchange, scripted: HeldTurn): void {
     const { request, response } = exchange;
     const message = messageFor(exchange, scripted.turn);
-    const [start, ...rest] = messageEvents(message);
+    const events = messageEvents(message);
+    const sent = events.slice(0, scripted.afterEvents);
+    const rest = events.slice(scripted.afterEvents);
     const streamed = asksForStream(exchange);
     if (streamed) {
       startStream(response);
-      response.write(frames(start === undefined ? [] : [start]));
+      response.write(frames(sent));
     }
     let released = false;
     const ended = new Promise<HoldOutcome>((resolve) => {

@@ -27,7 +27,7 @@ import { startRealAgentShim, writeRealAgentShim } from '../support/real-agent/sh
 
 const LOOPBACK = 'http://127.0.0.1:9';
 /** Another address of this machine, where nothing listens: what a refused launch would have been sent to. */
-const ELSEWHERE = { env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:10' } };
+const ELSEWHERE = { env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } };
 const SOME_SESSION = '0c9a3d4e-0000-4000-8000-000000000000';
 
 let runner: RealAgentRunner | undefined;
@@ -93,7 +93,9 @@ describe('the runner of the real agent', () => {
       rmSync(join(started.root, name), { recursive: true });
       symlinkSync(outside, join(started.root, name));
 
-      await expect(started.startNew()).rejects.toThrow(/not a real folder inside/);
+      await expect(started.startNew()).rejects.toThrow(
+        /not a real folder inside|a link that leads to no real folder inside/,
+      );
     },
   );
 
@@ -240,6 +242,82 @@ describe('the shim that runs the real agent in place of the driver’s claude', 
     } finally {
       await host.shutDown();
     }
+  });
+
+  it('passes on a variable it names, when the launch carries it, over the given one', async () => {
+    const folder = mkdtempSync(join(realpathSync(tmpdir()), 'cockpit-shim-test-'));
+    made.push(folder);
+    const report = join(folder, 'report.json');
+    const program = join(folder, 'report');
+    writeFileSync(
+      program,
+      `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(report)}, JSON.stringify(process.env))\n`,
+      { mode: 0o700 },
+    );
+    const given = { PATH: '/usr/bin:/bin', CLAUDE_CODE_MAX_RETRIES: '1' };
+    const shim = writeRealAgentShim(folder, given, program, ['CLAUDE_CODE_MAX_RETRIES', 'LANG']);
+    const host = createTmuxSessionHost({ appName: `real-agent-shim-on-${process.pid}` });
+
+    try {
+      await host.start({
+        name: 'shim',
+        folder,
+        command: shim,
+        args: [],
+        environment: {
+          set: { CLAUDE_CODE_MAX_RETRIES: '7', CLAUDE_CODE_ENTRYPOINT: 'cli' },
+          remove: ['LANG'],
+        },
+        size: { columns: 80, rows: 24 },
+      });
+      const reported = await eventually(
+        () => JSON.parse(readFileSync(report, 'utf8')) as Record<string, string>,
+      );
+
+      expect(reported.CLAUDE_CODE_MAX_RETRIES).toBe('7');
+      expect(reported).not.toHaveProperty('LANG');
+      expect(reported).not.toHaveProperty('CLAUDE_CODE_ENTRYPOINT');
+    } finally {
+      await host.shutDown();
+    }
+    expect(() => writeRealAgentShim(folder, given, program, ['A-B'])).toThrow(/Not a variable/);
+  });
+
+  it('checks a variable it passes on with the launch rules', async () => {
+    api = await startFakeApi();
+    const shim = await startRealAgentShim(api.baseUrl, { passedOn: ['CLAUDE_CODE_MAX_RETRIES'] });
+    made.push(shim.root);
+    const launching = (environment: Record<string, string>) =>
+      shim
+        .guarded({
+          terminalKeys: [],
+          silentStartCause: '',
+          ...DRIVER_DEFAULTS,
+          launch: async () => ({ command: 'claude', args: [], environment }),
+          readHook: () => ({ events: [] }),
+          canResume: async () => false,
+        })
+        .launch({
+          key: 'k',
+          conversationId: SOME_SESSION,
+          directory: shim.workFolder,
+          files: shim.root,
+          hooks: { url: 'http://127.0.0.1:9', token: 't' },
+          environment: {},
+          confinement: {
+            stateRoots: [],
+            appAddresses: [],
+            listener: { host: '127.0.0.1', port: 9 },
+          },
+        });
+    const path = shim.serverVariables.PATH as string;
+
+    await expect(launching({ PATH: path, CLAUDE_CODE_MAX_RETRIES: 'many' })).rejects.toThrow(
+      /CLAUDE_CODE_MAX_RETRIES is not a whole number/,
+    );
+    await expect(launching({ PATH: path, CLAUDE_CODE_MAX_RETRIES: '2' })).resolves.toMatchObject({
+      command: 'claude',
+    });
   });
 
   it("refuses a launch whose claude is not the shim on the launch's PATH, and one that fails the guard", async () => {

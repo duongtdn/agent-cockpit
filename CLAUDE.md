@@ -93,9 +93,10 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   worktree (the agent would read the settings of the repository it belongs
   to, elsewhere), and a file that gives the agent MCP servers (`.mcp.json`
   in the work folder or above it, the machine's managed one). The rules are
-  three tables in
-  `test/support/real-agent/launch-rules.ts`; a feature that needs one more
-  option or setting adds its rule there. One setting exists to keep tests
+  the tables of `test/support/real-agent/launch-rules.ts` (variables,
+  options with a value, flags, settings); a settings file's `env` passes
+  only when each variable passes the rule a launch's would. A feature that
+  needs one more option or setting adds its rule there. One setting exists to keep tests
   off Anthropic: `skipWebFetchPreflight` passes only as `true` (WebFetch
   otherwise asks `api.anthropic.com` about each host before it fetches,
   whatever the API's address); a test whose agent fetches sets it in
@@ -108,7 +109,11 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   recipe's variables and no other. Every launch passes the same guard
   before the cockpit starts it: the command must resolve to the shim, and
   the driver's settings file is made read-only, then checked (a settings
-  file passes only when nobody can write it).
+  file passes only when nobody can write it). The shim drops every variable
+  of the launch but those a test names in `passedOn`, which then reach the
+  agent and are checked as the launch's: what the driver strips is seen
+  stripped at the agent (row 74). The rows of the driver's options,
+  dialogs, failed turns, compaction, tasks and version run through it.
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:

@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process';
-import { setTimeout as pause } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
 import type { AgentSession } from '../support/agent-session.ts';
@@ -7,6 +6,7 @@ import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import type { Question, ReplyStep, ToolStep } from '../support/fake-agent/script.ts';
 import { INTERRUPTED } from '../support/fake-agent/transcript.ts';
 import { pinnedAgentBinary } from '../support/real-agent/binary.ts';
+import { answerYes, pressOnDialog } from './dialog-keys.ts';
 import { submitInputBox, submitPrompt, userTexts } from './harness.ts';
 import { hooksOfBothAgents, type ParityAgent, type Scenario } from './parity-agents.ts';
 
@@ -68,72 +68,6 @@ async function shows(agent: ParityAgent, session: AgentSession, text: string): P
 const TRUST_DIALOG = 'Accessing workspace:';
 const BYPASS_WARNING = 'WARNING: Claude Code running in Bypass Permissions mode';
 const KEY_QUESTION = 'Do you want to use this API key?';
-
-/** How long a key on a start-up dialog is given to be taken before it is pressed again. */
-const DIALOG_KEY_PATIENCE_MS = 1000;
-const DIALOG_KEY_PRESSES = 3;
-const SCREEN_POLL_MS = 20;
-
-/** What a session shows, or nothing once it is gone. */
-async function screenOrNothing(session: AgentSession): Promise<string | undefined> {
-  if (!(await session.isLive())) return undefined;
-  return session.screen().catch(() => undefined);
-}
-
-/**
- * Presses a key on a start-up dialog until it is taken, as the screen
- * tells: the real agent's dialog was seen to drop the keys pressed in the
- * moment after it showed, as its input box drops an early Enter.
- *
- * @param taken - Tells from the screen, or from its absence once the session is gone, that the key was taken.
- */
-async function pressOnDialog(
-  session: AgentSession,
-  key: string,
-  taken: (screen: string | undefined) => boolean,
-): Promise<void> {
-  for (let presses = 1; presses <= DIALOG_KEY_PRESSES; presses++) {
-    await session.press(key);
-    const deadline = Date.now() + DIALOG_KEY_PATIENCE_MS;
-    while (Date.now() < deadline) {
-      if (taken(await screenOrNothing(session))) return;
-      await pause(SCREEN_POLL_MS);
-    }
-  }
-  throw new Error(`The dialog did not take ${key} in ${DIALOG_KEY_PRESSES} presses.`);
-}
-
-/**
- * How long the selection of a start-up dialog must stay before it is
- * chosen: seen of 2.1.332, a dialog draws itself again about 150 ms after
- * it showed, its selection back on its first option.
- */
-const SELECTION_SETTLES_MS = 500;
-
-/** Tells whether a selection stays on screen for a while, or stops as soon as it is gone. */
-async function stays(session: AgentSession, selected: RegExp): Promise<boolean> {
-  const until = Date.now() + SELECTION_SETTLES_MS;
-  while (Date.now() < until) {
-    if (!selected.test((await screenOrNothing(session)) ?? '')) return false;
-    await pause(SCREEN_POLL_MS);
-  }
-  return true;
-}
-
-/** Selects a start-up dialog's "Yes", once it stays selected, and chooses it. */
-async function answerYes(
-  session: AgentSession,
-  dialog: string,
-  move: 'Up' | 'Down',
-): Promise<void> {
-  const yes = /❯ Yes/u;
-  for (let tries = 1; ; tries++) {
-    await pressOnDialog(session, move, (screen) => yes.test(screen ?? ''));
-    if (await stays(session, yes)) break;
-    if (tries === DIALOG_KEY_PRESSES) throw new Error(`The dialog did not keep "Yes" selected.`);
-  }
-  await pressOnDialog(session, 'Enter', (screen) => !screen?.includes(dialog));
-}
 
 /** Leaves at a start-up dialog with a key, and waits until the session is gone. */
 async function leaveAt(agent: ParityAgent, session: AgentSession, key: string): Promise<void> {

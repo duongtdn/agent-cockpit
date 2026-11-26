@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { ROOT_NAME_PREFIX } from './environment.ts';
@@ -145,10 +145,42 @@ function isMadeByTheRunner(root: string, machine: Machine): boolean {
 
 function workFolderProblem(launch: AgentLaunch): string | undefined {
   const problem =
-    aRealFolderInsideTheRoot(launch.workFolder, launch.root) ?? worktreeProblem(launch.workFolder);
+    ownWorkFolderProblem(launch.workFolder, launch.root) ??
+    workFoldersOf(launch)
+      .map(worktreeProblem)
+      .find((found) => found !== undefined);
   return problem === undefined
     ? undefined
     : `the work folder ${describe(launch.workFolder)} is ${problem}`;
+}
+
+/**
+ * A work folder is the run's own: a real folder inside the root, or a link
+ * inside it, in a real folder, to one. A link is checked by both paths,
+ * since the agent may look for settings above either.
+ */
+function ownWorkFolderProblem(workFolder: string, root: string): string | undefined {
+  if (!isLink(workFolder)) return aRealFolderInsideTheRoot(workFolder, root);
+  const leadsToOwn =
+    isInside(workFolder, root) &&
+    isRealPath(dirname(workFolder)) &&
+    existsSync(workFolder) &&
+    aRealFolderInsideTheRoot(realpathSync(workFolder), root) === undefined;
+  return leadsToOwn ? undefined : `a link that leads to no real folder inside ${root}`;
+}
+
+/** The paths the agent may name its work folder by: as given, and resolved. */
+function workFoldersOf(launch: AgentLaunch): string[] {
+  const resolved = realpathSync(launch.workFolder);
+  return resolved === launch.workFolder ? [resolved] : [launch.workFolder, resolved];
+}
+
+function isLink(path: string): boolean {
+  return lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink() === true;
+}
+
+function isRealPath(path: string): boolean {
+  return realpathSync(path) === path;
 }
 
 function worktreeProblem(workFolder: string): string | undefined {
@@ -158,13 +190,14 @@ function worktreeProblem(workFolder: string): string | undefined {
     : `in a git worktree (${marker} is no folder): the agent would read the settings of a repository elsewhere, which are not checked`;
 }
 
-function settingsFoldersOf(launch: AgentLaunch, machine: Machine): SettingsFolders {
-  return {
+/** Where the agent reads settings, once for each path its work folder goes by. */
+function settingsFoldersOf(launch: AgentLaunch, machine: Machine): SettingsFolders[] {
+  return workFoldersOf(launch).map((workFolder) => ({
     // Checked before: the environment has it, a real folder inside the root.
     configFolder: launch.environment.CLAUDE_CONFIG_DIR as string,
-    workFolder: launch.workFolder,
+    workFolder,
     managedSettingsFolders: machine.managedSettingsFolders,
-  };
+  }));
 }
 
 function environmentProblem(
@@ -190,7 +223,8 @@ function environmentProblem(
 
 /** Every settings file the agent would read passes the rules the settings of the command line pass. */
 function settingsFilesProblem(launch: AgentLaunch, machine: Machine): string | undefined {
-  for (const file of settingsFilesOf(settingsFoldersOf(launch, machine))) {
+  const files = new Set(settingsFoldersOf(launch, machine).flatMap(settingsFilesOf));
+  for (const file of files) {
     const problem = settingsInFileProblem(file, launch.root);
     if (problem !== undefined)
       return `the settings of ${file}, which the agent would read: ${problem}`;
@@ -199,7 +233,7 @@ function settingsFilesProblem(launch: AgentLaunch, machine: Machine): string | u
 }
 
 function mcpServerFilesProblem(launch: AgentLaunch, machine: Machine): string | undefined {
-  const [file] = mcpServerFilesOf(settingsFoldersOf(launch, machine));
+  const [file] = settingsFoldersOf(launch, machine).flatMap(mcpServerFilesOf);
   return file === undefined
     ? undefined
     : `the MCP servers of ${file}, which the agent would read: no launch needs them yet, so no rule lets any pass`;
