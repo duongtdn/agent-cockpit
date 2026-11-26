@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createCockpitClient } from '../../src/client/index.ts';
 import {
   type CockpitError,
   isCockpitError,
@@ -6,7 +7,7 @@ import {
   mountTerminal,
   type TerminalStatus,
 } from '../../src/terminal/index.ts';
-import { openPage } from '../support/browser-page.ts';
+import { openPage, RefusedStorage } from '../support/browser-page.ts';
 import { FakeWebSocket } from '../support/fake-web-socket.ts';
 import { FakeFitAddon, FakeResizeObserver, FakeTerminal } from '../support/fake-xterm.ts';
 
@@ -100,6 +101,18 @@ describe('mounting', () => {
     expect(socket.url).toBe('ws://127.0.0.1:8765/cockpit/terminal/explain-a');
     expect(socket.protocols).toEqual(['agent-cockpit', `agent-cockpit.token.${token}`]);
     expect(socket.binaryType).toBe('arraybuffer');
+  });
+
+  it("offers the token the page's client took from the link, when the browser refuses storage", () => {
+    openPage(`http://127.0.0.1:8765/#cockpit=${token}`, { storage: new RefusedStorage() });
+    createCockpitClient({ baseUrl: '/cockpit' });
+
+    mount();
+
+    expect(FakeWebSocket.last().protocols).toEqual([
+      'agent-cockpit',
+      `agent-cockpit.token.${token}`,
+    ]);
   });
 
   it('sends the size fitted to the element first, once the socket opens', () => {

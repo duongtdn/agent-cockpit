@@ -85,3 +85,17 @@ export function openPage(
   vi.stubGlobal('localStorage', storage);
   return { address: () => current.href, historyState: () => currentState, storage };
 }
+
+/**
+ * Loads the module a page's script imports, as a page newly opened loads it:
+ * afresh, holding nothing an earlier page's modules kept (the token a page
+ * took from its link lives in the client's module). A test file's static
+ * imports are loaded once, for all its pages.
+ *
+ * @param load - Imports the module, such as `() => import('…/client/index.ts')`.
+ * @returns The module, loaded afresh.
+ */
+export async function loadAfresh<Module>(load: () => Promise<Module>): Promise<Module> {
+  vi.resetModules();
+  return load();
+}

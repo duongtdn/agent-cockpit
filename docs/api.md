@@ -71,7 +71,10 @@ Runs in the browser: the framework-free client. It takes the app's token from
 the page's link (`#cockpit=…`), removes it from the address bar and keeps it
 in the origin's local storage, then sends it with every request (in the
 `cockpit-token` header) and every WebSocket (as a subprotocol), never in a
-URL. Without a valid token the server refuses every call with `no-token`.
+URL. The token is the page's: every client and terminal of the page has it,
+whichever took it from the link, and keeps it in memory when the browser
+refuses the page its storage. Without a valid token the server refuses every
+call with `no-token`.
 
 | Export                 | Kind     | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

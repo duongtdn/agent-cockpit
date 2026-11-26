@@ -16,25 +16,36 @@ export interface TokenKeeper {
 }
 
 /**
+ * The token this page knows: the one its link carried, or the last one read
+ * from the storage. It is the page's, not a caller's: the first caller takes
+ * the token from the address bar and leaves none there for the next (the
+ * client and the terminal both take it), and with the storage refused to
+ * the page this is where every caller finds it.
+ */
+let pageToken: string | undefined;
+
+/**
  * Takes the app's token from the page's link, when it carries one: removes
  * it from the address bar, so a bookmark, a screenshot or a shared address
  * never holds it, and keeps it in the origin's local storage, so a reload or
  * another tab of the app needs no link. The token is read from the storage
- * at every call, so a link opened in another tab serves this one too.
+ * at every call, so a link opened in another tab serves this one too. Every
+ * caller on a page gets the token the first one took.
  *
  * @returns The keeper of the token for this page.
  */
 export function takeTokenFromLink(): TokenKeeper {
   const linked = removeTokenFromAddress();
-  // The storage may be refused to the page (a private window, a policy): the
-  // page then keeps the link's token for its own life.
-  let kept = linked;
-  if (linked !== undefined) writeStorage(linked);
+  if (linked !== undefined) {
+    pageToken = linked;
+    writeStorage(linked);
+  }
   return {
     current: () => {
-      const stored = readStorage();
-      if (stored !== undefined) kept = stored;
-      return kept;
+      // The storage may be refused to the page (a private window, a policy):
+      // the page then keeps the token it knows for its own life.
+      pageToken = readStorage() ?? pageToken;
+      return pageToken;
     },
   };
 }

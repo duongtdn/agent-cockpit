@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCockpitClient } from '../../src/client/index.ts';
+import type { createCockpitClient as CreateCockpitClient } from '../../src/client/index.ts';
 import {
+  loadAfresh,
   MemoryStorage,
   openPage,
   RefusedStorage,
@@ -12,8 +13,16 @@ const token = 'kq3J_x-9Zt0aPbXw2eYc8vRm4nLs6uHd1oQiGfAjK7E';
 const otherToken = 'Zz9_another-token-0123456789abcdefABCDEF-xy';
 
 let server: WireServer;
+/** The client's factory, loaded afresh for each test's page. */
+let createCockpitClient: typeof CreateCockpitClient;
+
+/** Loads the client as a page newly opened does: it knows no token yet. */
+async function loadClient(): Promise<typeof CreateCockpitClient> {
+  return (await loadAfresh(() => import('../../src/client/index.ts'))).createCockpitClient;
+}
 
 beforeEach(async () => {
+  createCockpitClient = await loadClient();
   server = await startWireServer();
   server.answer('/run', json(200, { action: 'started', state: 'busy' }));
 });
@@ -79,7 +88,7 @@ describe('the token from the link', () => {
     createCockpitClient({ baseUrl: server.baseUrl });
 
     openPage('http://127.0.0.1:8765/', { storage });
-    const reloaded = createCockpitClient({ baseUrl: server.baseUrl });
+    const reloaded = (await loadClient())({ baseUrl: server.baseUrl });
 
     expect(await tokenSent(reloaded)).toBe(token);
   });
@@ -103,6 +112,13 @@ describe('the token from the link', () => {
 
   it('still serves the page when the browser refuses it local storage', async () => {
     openPage(`http://127.0.0.1:8765/#cockpit=${token}`, { storage: new RefusedStorage() });
+
+    expect(await tokenSent(createCockpitClient({ baseUrl: server.baseUrl }))).toBe(token);
+  });
+
+  it('is shared by every taker on the page: the first one leaves no token in the address', async () => {
+    openPage(`http://127.0.0.1:8765/#cockpit=${token}`, { storage: new RefusedStorage() });
+    createCockpitClient({ baseUrl: server.baseUrl });
 
     expect(await tokenSent(createCockpitClient({ baseUrl: server.baseUrl }))).toBe(token);
   });

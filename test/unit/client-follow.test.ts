@@ -2,7 +2,7 @@ import { once } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CockpitError, createCockpitClient, type Session } from '../../src/client/index.ts';
 import { FOLLOW_SESSIONS_PATH, WIRE_SUBPROTOCOL } from '../../src/shared/wire.ts';
-import { openPage } from '../support/browser-page.ts';
+import { loadAfresh, openPage } from '../support/browser-page.ts';
 import { json, startWireServer, type WireServer } from '../support/wire-server.ts';
 
 const token = 'kq3J_x-9Zt0aPbXw2eYc8vRm4nLs6uHd1oQiGfAjK7E';
@@ -88,6 +88,7 @@ describe('sessions.follow, on a real WebSocket', () => {
 
   it('offers no token when none is kept, and lets the server say why', async () => {
     openPage('http://127.0.0.1:8765/');
+    const { createCockpitClient } = await loadAfresh(() => import('../../src/client/index.ts'));
 
     stops.push(createCockpitClient({ baseUrl: server.baseUrl }).sessions.follow(() => {}));
     const accepted = await server.nextSocket();
