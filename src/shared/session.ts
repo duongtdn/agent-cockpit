@@ -222,6 +222,11 @@ export type RunResult =
       readonly reason?: 'settings-changed';
       /** The state the session left `starting` for. */
       readonly state: SessionState;
+      /**
+       * The background tasks stopped with the session a restart on other
+       * settings ended first; absent when none ran.
+       */
+      readonly stoppedTasks?: readonly BackgroundTask[];
     }
   | SentResult
   | {

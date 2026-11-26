@@ -1,0 +1,1075 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DriverPart } from '../../src/server/driver.ts';
+import { MAX_PROMPT_LENGTH } from '../../src/server/prompt-length.ts';
+import type { JobRun, JobRuns } from '../../src/server/sessions/job-runs.ts';
+import {
+  createSessions,
+  LIVENESS_INTERVAL_MS,
+  type Sessions,
+} from '../../src/server/sessions/sessions.ts';
+import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/units-of-work.ts';
+import type { UnitRecord } from '../../src/server/state/records.ts';
+import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
+import { CockpitError } from '../../src/shared/cockpit-error.ts';
+import type { Session } from '../../src/shared/session.ts';
+import {
+  CONVERSATION_PATH,
+  createFakeHost,
+  createMemoryRecords,
+  createRecordingHookAccess,
+  createStubDriver,
+  type FakeHost,
+  type MemoryRecords,
+  PROMPT_PATH,
+  type StubDriver,
+  stubFolders,
+  stubScreen,
+} from '../support/sessions-doubles.ts';
+
+const T0 = new Date('2026-11-27T10:00:00.000Z');
+const APP = '/apps/demo';
+const KEY = 'explain-a';
+const PLAN: DriverPart = { permissionMode: 'plan' };
+const UUID = /^[0-9a-f-]{36}$/;
+
+/** The app's jobs, as a stub reads them: each from its arguments. */
+const JOBS: Readonly<Record<string, (args: { file: string }) => Omit<JobRun, 'jobId'>>> = {
+  explain: ({ file }) => ({ key: `explain-${file}`, prompt: `Explain ${file}.`, ...rest(file) }),
+  review: ({ file }) => ({
+    key: `explain-${file}`,
+    prompt: `Review ${file}.`,
+    part: PLAN,
+    ...rest(file),
+  }),
+  type: ({ file }) => ({ key: `explain-${file}`, ...rest(file) }),
+  redraft: ({ file }) => ({
+    key: `explain-${file}`,
+    prompt: `Redraft ${file}.`,
+    ...rest(file),
+    fresh: true,
+  }),
+  books: ({ file }) => ({
+    key: `explain-${file}`,
+    prompt: `Explain ${file}.`,
+    ...rest(file),
+    folder: { path: `${APP}/books`, relative: 'books' },
+  }),
+  'plan-typing': ({ file }) => ({ key: `explain-${file}`, part: PLAN, ...rest(file) }),
+  long: ({ file }) => ({ key: `explain-${file}`, prompt: longPrompt, ...rest(file) }),
+};
+
+/** The prompt of the `long` job. */
+let longPrompt = '';
+
+function rest(file: string): Pick<JobRun, 'args' | 'folder' | 'fresh'> {
+  return { args: { file }, folder: { path: APP, relative: '.' }, fresh: false };
+}
+
+let host: FakeHost;
+let driver: StubDriver;
+let records: MemoryRecords;
+let sessions: Sessions;
+let units: UnitsOfWork;
+/** The jobs read, `<jobId> <file>`, in order. */
+let reads: string[];
+/** What reading a job throws from now on, by its id. */
+let refusals: Map<string, unknown>;
+/** The folders made, by their relative path. */
+let made: string[];
+/** Every signal sent, `<key> <signal>`; an agent exits on one when `exitOnSignal`. */
+let signals: string[];
+let exitOnSignal: boolean;
+
+const jobs: JobRuns = {
+  read(jobId, args) {
+    const job = JOBS[jobId];
+    if (job === undefined) throw new CockpitError('unknown-job', `No ${jobId}.`, { jobId });
+    const run = { jobId, ...job(args as { file: string }) };
+    return {
+      key: run.key,
+      ...(run.prompt === undefined ? {} : { prompt: run.prompt }),
+      async checked() {
+        const refusal = refusals.get(jobId);
+        if (refusal !== undefined) throw refusal;
+        reads.push(`${jobId} ${(args as { file: string }).file}`);
+        return run;
+      },
+    };
+  },
+  async makeFolder(folder) {
+    made.push(folder.relative);
+    return folder;
+  },
+  async recordedFolder(relative) {
+    return { path: relative === '.' ? APP : `${APP}/${relative}`, relative };
+  },
+};
+
+beforeEach(() => {
+  vi.useFakeTimers({ now: T0 });
+  host = createFakeHost();
+  driver = createStubDriver();
+  driver.launchSettings = (part) => ({ part: (part ?? null) as never });
+  reads = [];
+  refusals = new Map();
+  made = [];
+  signals = [];
+  exitOnSignal = true;
+  sessions = createSessions({
+    host,
+    driver,
+    hooks: createRecordingHookAccess(),
+    folders: stubFolders(),
+    environment: () => ({ PATH: '/usr/bin' }),
+    admitAgent: async () => {},
+    confinement: async () => ({
+      stateRoots: ['/state'],
+      appAddresses: [],
+      listener: { host: '127.0.0.1', port: 4000 },
+    }),
+    holds: createTerminalHolds(),
+    signal(pid, signal) {
+      const key = sessions.liveKeys().find((each) => host.pidOf(each) === pid);
+      signals.push(`${key} ${signal}`);
+      if (exitOnSignal && key !== undefined) host.exit(key);
+    },
+  });
+});
+
+afterEach(() => {
+  units?.close();
+  sessions.close();
+  vi.useRealTimers();
+});
+
+async function open(
+  options: { records?: readonly UnitRecord[]; maxSessions?: number } = {},
+): Promise<UnitsOfWork> {
+  records = createMemoryRecords(options.records);
+  units = await openUnitsOfWork({
+    sessions,
+    records,
+    jobs,
+    driver,
+    environment: () => ({ PATH: '/usr/bin' }),
+    ...(options.maxSessions === undefined ? {} : { maxSessions: options.maxSessions }),
+  });
+  return units;
+}
+
+function hook(path: string, key = KEY): void {
+  sessions.receive({ key, path, body: {} });
+}
+
+const settle = () => vi.advanceTimersByTimeAsync(0);
+
+/** Lets the liveness watch see a session gone, a graceful end's among them. */
+const listHost = () => vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+/** Keeps a pending outcome from failing the test before it looks. */
+function pending<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => {});
+  return promise;
+}
+
+/** Runs a job to its start, the agent taking the prompt: `busy`. */
+async function started(jobId = 'explain', file = 'a'): Promise<void> {
+  const ran = pending(units.run(jobId, { file }));
+  await settle();
+  hook('/start-and-take', `explain-${file}`);
+  await ran;
+}
+
+/** Ends the key's turn: `idle`, its input box on screen. */
+function idle(key = KEY): void {
+  hook('/turn-ended', key);
+  host.show(key, stubScreen('ready'));
+}
+
+/** Makes the key's agent exit by itself, and the core see it. */
+async function exits(key = KEY): Promise<void> {
+  host.exit(key);
+  await listHost();
+}
+
+function sessionOf(key = KEY): Session | undefined {
+  return units.list().find((session) => session.key === key);
+}
+
+function recordOf(key = KEY): UnitRecord | undefined {
+  return records.get(key);
+}
+
+describe('a run on a key with no record', () => {
+  beforeEach(() => open());
+
+  it('starts the agent in a new conversation, the prompt passed at launch, in the folder made', async () => {
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+    expect(driver.launches).toMatchObject([
+      {
+        key: KEY,
+        directory: APP,
+        prompt: 'Explain a.',
+        conversationId: expect.stringMatching(UUID),
+      },
+    ]);
+    expect(driver.launches[0]).not.toHaveProperty('resume');
+    expect(made).toEqual(['.']);
+  });
+
+  it('records the key: its conversation, folder, launch settings and the run in its history', async () => {
+    await started();
+
+    const conversationId = driver.launches[0]?.conversationId;
+    expect(recordOf()).toEqual({
+      key: KEY,
+      conversationId,
+      earlierConversations: [],
+      history: [
+        {
+          operation: 'run',
+          jobId: 'explain',
+          args: { file: 'a' },
+          at: T0.toISOString(),
+          action: 'started',
+          conversationId,
+        },
+      ],
+      directory: '.',
+      launchSettings: { part: null },
+    });
+  });
+
+  it('lists the session with its record', async () => {
+    await started();
+
+    expect(sessionOf()).toMatchObject({
+      key: KEY,
+      state: 'busy',
+      record: { conversationId: driver.launches[0]?.conversationId, earlierConversations: [] },
+    });
+  });
+
+  it('starts the same way with `fresh`', async () => {
+    const ran = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+    await settle();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+  });
+
+  it('starts a job with no prompt with none, and resolves at `idle`', async () => {
+    const ran = pending(units.run('type', { file: 'a' }));
+    await settle();
+    hook('/ready');
+
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'idle' });
+    expect(driver.launches[0]).not.toHaveProperty('prompt');
+  });
+
+  it(`refuses a prompt over ${MAX_PROMPT_LENGTH} characters, \`prompt-too-long\`, launching nothing`, async () => {
+    longPrompt = 'x'.repeat(MAX_PROMPT_LENGTH + 1);
+    const long = units.run('long', { file: 'a' });
+
+    await expect(long).rejects.toMatchObject({
+      code: 'prompt-too-long',
+      length: MAX_PROMPT_LENGTH + 1,
+      max: MAX_PROMPT_LENGTH,
+    });
+    expect(driver.launches).toEqual([]);
+  });
+
+  it('refuses what reading the job refuses, launching nothing', async () => {
+    const refusal = new CockpitError('not-a-choice', 'No.', { field: 'file', value: 'z' });
+    refusals.set('explain', refusal);
+
+    await expect(units.run('explain', { file: 'z' })).rejects.toBe(refusal);
+    expect(driver.launches).toEqual([]);
+  });
+
+  it('types a first prompt too long for the command line once the agent is ready: the same result', async () => {
+    driver.promptFitsLaunch = () => false;
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    host.show(KEY, stubScreen('ready'));
+    hook('/ready');
+    await settle();
+    hook(`${PROMPT_PATH}Explain a.`);
+
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+    expect(driver.launches[0]).not.toHaveProperty('prompt');
+    expect(recordOf()?.history).toHaveLength(1);
+  });
+
+  it('records a session whose typed first prompt was not taken: it lives, `idle`', async () => {
+    driver.promptFitsLaunch = () => false;
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    host.show(KEY, stubScreen('ready'));
+    hook('/ready');
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(ran).rejects.toMatchObject({ code: 'prompt-not-taken', state: 'idle' });
+    expect(recordOf()?.history).toMatchObject([{ action: 'started' }]);
+  });
+});
+
+describe('a run on a live session', () => {
+  beforeEach(() => open());
+
+  it('is refused on `busy` with `wrong-state`', async () => {
+    await started();
+
+    await expect(units.run('explain', { file: 'a' })).rejects.toMatchObject({
+      code: 'wrong-state',
+      key: KEY,
+      state: 'busy',
+    });
+  });
+
+  it('is refused on `waiting` with `wrong-state` and what it waits for', async () => {
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(300);
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'waiting' });
+
+    await expect(units.run('explain', { file: 'a' })).rejects.toMatchObject({
+      code: 'wrong-state',
+      state: 'waiting',
+      pending: [{ kind: 'terminal', dialog: 'trust-folder' }],
+    });
+  });
+
+  it('is refused on `starting` with `wrong-state`, `fresh` too', async () => {
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(300);
+    await ran;
+    hook('/ready');
+
+    await expect(units.run('explain', { file: 'a' })).rejects.toMatchObject({
+      code: 'wrong-state',
+      state: 'starting',
+    });
+    await expect(units.run('explain', { file: 'a' }, { fresh: true })).rejects.toMatchObject({
+      code: 'wrong-state',
+      state: 'starting',
+    });
+  });
+
+  it('types the prompt into an `idle` session launched with the same settings: `sent`, nothing recorded', async () => {
+    await started();
+    idle();
+    const puts = records.puts;
+
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    hook(`${PROMPT_PATH}Explain a.`);
+
+    await expect(ran).resolves.toEqual({ action: 'sent', state: 'busy' });
+    expect(host.writes).toContain(`${KEY} text:Explain a.`);
+    expect(driver.launches).toHaveLength(1);
+    expect(records.puts).toBe(puts);
+  });
+
+  it('restarts an `idle` session launched with other settings, resuming its conversation with the run’s', async () => {
+    await started();
+    idle();
+    const conversationId = driver.launches[0]?.conversationId;
+
+    const ran = pending(units.run('review', { file: 'a' }));
+    await settle();
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+    await listHost();
+    expect(sessions.session(KEY)).toMatchObject({ state: 'starting' });
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({
+      action: 'resumed',
+      reason: 'settings-changed',
+      state: 'busy',
+    });
+    expect(driver.launches[1]).toMatchObject({
+      conversationId,
+      resume: true,
+      prompt: 'Review a.',
+      part: PLAN,
+    });
+    expect(recordOf()).toMatchObject({
+      conversationId,
+      launchSettings: { part: PLAN },
+      history: [
+        { action: 'started' },
+        { jobId: 'review', action: 'resumed', reason: 'settings-changed', conversationId },
+      ],
+    });
+  });
+
+  it('lists the background tasks the restart stopped', async () => {
+    await started();
+    hook('/turn-ended-with-a-task');
+    host.show(KEY, stubScreen('ready'));
+
+    const ran = pending(units.run('review', { file: 'a' }));
+    await listHost();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({
+      action: 'resumed',
+      reason: 'settings-changed',
+      state: 'busy',
+      stoppedTasks: [{ id: 'a1', type: 'general-purpose' }],
+    });
+  });
+
+  it('sees the session that a restart ended as `ended`, `restarted`, in its followers', async () => {
+    await started();
+    idle();
+    const states: string[] = [];
+    units.follow((list) => {
+      const session = list[0];
+      const seen = session?.state === 'ended' ? `ended ${session.reason}` : session?.state;
+      if (seen !== undefined && states.at(-1) !== seen) states.push(seen);
+    });
+
+    const ran = pending(units.run('review', { file: 'a' }));
+    await listHost();
+    hook('/start-and-take');
+    await ran;
+
+    expect(states).toEqual(['idle', 'ended restarted', 'starting', 'busy']);
+  });
+
+  it('kills a session the restart’s signal did not end, once the driver’s bound passed', async () => {
+    await started();
+    idle();
+    exitOnSignal = false;
+
+    const ran = pending(units.run('review', { file: 'a' }));
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toMatchObject({ action: 'resumed' });
+    expect(host.kills).toEqual([KEY]);
+  });
+
+  it('refuses a run whose job gives another folder than the recorded one: `folder-changed`', async () => {
+    await started();
+    idle();
+
+    await expect(units.run('books', { file: 'a' })).rejects.toMatchObject({
+      code: 'folder-changed',
+      recorded: '.',
+      computed: 'books',
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('has nothing to send for a job with no prompt, whatever the live state', async () => {
+    await started();
+
+    await expect(units.run('type', { file: 'a' })).resolves.toEqual({
+      action: 'nothing-to-send',
+      state: 'busy',
+    });
+    idle();
+    const sameSettings = units.run('type', { file: 'a' });
+    await expect(sameSettings).resolves.toEqual({ action: 'nothing-to-send', state: 'idle' });
+  });
+
+  it('restarts for a job with no prompt whose settings differ from the `idle` session’s', async () => {
+    await started();
+    idle();
+
+    const ran = pending(units.run('plan-typing', { file: 'a' }));
+    await listHost();
+    hook('/ready');
+
+    await expect(ran).resolves.toEqual({
+      action: 'resumed',
+      reason: 'settings-changed',
+      state: 'idle',
+    });
+  });
+});
+
+describe('a run with `fresh` on a live session', () => {
+  beforeEach(() => open());
+
+  it.each([
+    ['idle', () => idle()],
+    ['busy', () => {}],
+  ])(
+    'ends the `%s` session, then starts a new conversation: `fresh-on-request`',
+    async (_state, bring) => {
+      await started();
+      bring();
+      const old = driver.launches[0]?.conversationId;
+
+      const ran = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+      await listHost();
+      hook('/start-and-take');
+
+      await expect(ran).resolves.toEqual({
+        action: 'started',
+        reason: 'fresh-on-request',
+        state: 'busy',
+      });
+      const fresh = driver.launches[1]?.conversationId;
+      expect(fresh).not.toBe(old);
+      expect(driver.launches[1]).not.toHaveProperty('resume');
+      expect(recordOf()).toMatchObject({ conversationId: fresh, earlierConversations: [old] });
+    },
+  );
+
+  it('lists the background tasks stopped with the old session', async () => {
+    await started();
+    hook('/turn-ended-with-a-task');
+
+    const ran = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+    await listHost();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toMatchObject({
+      action: 'started',
+      reason: 'fresh-on-request',
+      stoppedTasks: [{ id: 'a1', type: 'general-purpose' }],
+    });
+  });
+
+  it('records the folder anew: a job that gives another folder is not refused', async () => {
+    await started();
+
+    const ran = pending(units.run('books', { file: 'a' }, { fresh: true }));
+    await listHost();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toMatchObject({ action: 'started', reason: 'fresh-on-request' });
+    expect(recordOf()?.directory).toBe('books');
+    expect(driver.launches[1]?.directory).toBe(`${APP}/books`);
+  });
+});
+
+describe('a run on an `ended` session', () => {
+  beforeEach(async () => {
+    await open();
+    await started();
+    idle();
+    await exits();
+  });
+
+  it('resumes the conversation with the prompt passed at launch: `resumed`', async () => {
+    const conversationId = driver.launches[0]?.conversationId;
+
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({ action: 'resumed', state: 'busy' });
+    expect(driver.launches[1]).toMatchObject({
+      conversationId,
+      resume: true,
+      prompt: 'Explain a.',
+    });
+    expect(recordOf()?.history).toMatchObject([
+      { action: 'started' },
+      { action: 'resumed', conversationId },
+    ]);
+  });
+
+  it('starts a new conversation for a job that asks for it: `fresh`, the old one earlier', async () => {
+    const old = driver.launches[0]?.conversationId;
+
+    const ran = pending(units.run('redraft', { file: 'a' }));
+    await settle();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({ action: 'started', reason: 'fresh', state: 'busy' });
+    expect(driver.launches[1]?.conversationId).not.toBe(old);
+    expect(recordOf()?.earlierConversations).toEqual([old]);
+  });
+
+  it('starts a new conversation with `fresh`: `fresh-on-request`', async () => {
+    const ran = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+    await settle();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({
+      action: 'started',
+      reason: 'fresh-on-request',
+      state: 'busy',
+    });
+  });
+
+  it('starts a new conversation when the agent no longer keeps it: `conversation-gone`', async () => {
+    driver.resumable = false;
+    const old = driver.launches[0]?.conversationId;
+
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({
+      action: 'started',
+      reason: 'conversation-gone',
+      state: 'busy',
+    });
+    expect(driver.launches[1]).not.toHaveProperty('resume');
+    expect(recordOf()).toMatchObject({
+      earlierConversations: [old],
+      history: [{ action: 'started' }, { action: 'started', reason: 'conversation-gone' }],
+    });
+  });
+
+  it('starts anew when the resumed agent exits at once with nothing kept: `conversation-gone`', async () => {
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    driver.resumable = false;
+    hook('/agent-exit');
+    await exits();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({
+      action: 'started',
+      reason: 'conversation-gone',
+      state: 'busy',
+    });
+    expect(driver.launches).toHaveLength(3);
+    expect(driver.launches[2]).not.toHaveProperty('resume');
+    expect(recordOf()).toMatchObject({
+      conversationId: driver.launches[2]?.conversationId,
+      earlierConversations: [driver.launches[0]?.conversationId],
+      history: [{ action: 'started' }, { action: 'started', reason: 'conversation-gone' }],
+    });
+  });
+
+  it('refuses a job that gives another folder than the recorded one: `folder-changed`', async () => {
+    await expect(units.run('books', { file: 'a' })).rejects.toMatchObject({
+      code: 'folder-changed',
+    });
+    expect(driver.launches).toHaveLength(1);
+  });
+});
+
+describe('a send', () => {
+  beforeEach(() => open());
+
+  it('is refused for a key with no record: `unknown-key`', async () => {
+    await expect(units.send(KEY, 'Hello')).rejects.toMatchObject({
+      code: 'unknown-key',
+      key: KEY,
+    });
+  });
+
+  it(`is refused over ${MAX_PROMPT_LENGTH} characters, before anything: \`prompt-too-long\``, async () => {
+    await expect(units.send(KEY, 'x'.repeat(MAX_PROMPT_LENGTH + 1))).rejects.toMatchObject({
+      code: 'prompt-too-long',
+    });
+  });
+
+  it('types into an `idle` session: `sent`, the session’s settings kept, nothing recorded', async () => {
+    await started('review');
+    idle();
+    const puts = records.puts;
+
+    const sent = pending(units.send(KEY, 'Hello'));
+    await settle();
+    hook(`${PROMPT_PATH}Hello`);
+
+    await expect(sent).resolves.toEqual({ action: 'sent', state: 'busy' });
+    expect(driver.launches).toHaveLength(1);
+    expect(records.puts).toBe(puts);
+  });
+
+  it('is refused on `busy` with `wrong-state`', async () => {
+    await started();
+
+    await expect(units.send(KEY, 'Hello')).rejects.toMatchObject({
+      code: 'wrong-state',
+      state: 'busy',
+    });
+  });
+
+  it('fails `prompt-not-taken` when the agent does not take it', async () => {
+    await started();
+    idle();
+
+    const sent = pending(units.send(KEY, 'Hello'));
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(sent).rejects.toMatchObject({ code: 'prompt-not-taken', state: 'idle' });
+  });
+
+  describe('on an `ended` session', () => {
+    beforeEach(async () => {
+      await started('review');
+      idle();
+      await exits();
+    });
+
+    it('resumes it with the prompt, the last run’s job read again with its recorded arguments: `resumed`', async () => {
+      const conversationId = driver.launches[0]?.conversationId;
+      reads.length = 0;
+
+      const sent = pending(units.send(KEY, 'Hello'));
+      await settle();
+      hook('/start-and-take');
+
+      await expect(sent).resolves.toEqual({ action: 'resumed', state: 'busy' });
+      expect(reads).toEqual(['review a']);
+      expect(driver.launches[1]).toMatchObject({
+        conversationId,
+        resume: true,
+        prompt: 'Hello',
+        part: PLAN,
+      });
+      expect(recordOf()?.history).toHaveLength(1);
+    });
+
+    it('starts anew when the agent no longer keeps its conversation: `conversation-gone`', async () => {
+      driver.resumable = false;
+
+      const sent = pending(units.send(KEY, 'Hello'));
+      await settle();
+      hook('/start-and-take');
+
+      await expect(sent).resolves.toEqual({
+        action: 'started',
+        reason: 'conversation-gone',
+        state: 'busy',
+      });
+      expect(recordOf()?.earlierConversations).toEqual([driver.launches[0]?.conversationId]);
+    });
+
+    it('is refused `unknown-job` when the last run’s job is gone', async () => {
+      refusals.set('review', new CockpitError('unknown-job', 'Gone.', { jobId: 'review' }));
+
+      await expect(units.send(KEY, 'Hello')).rejects.toMatchObject({
+        code: 'unknown-job',
+        jobId: 'review',
+      });
+      expect(driver.launches).toHaveLength(1);
+    });
+
+    it('is refused what any run check refuses on the recorded arguments', async () => {
+      const refusal = new CockpitError('invalid-options', 'Opened beyond loopback.', {
+        issues: [],
+      });
+      refusals.set('review', refusal);
+
+      await expect(units.send(KEY, 'Hello')).rejects.toBe(refusal);
+    });
+  });
+});
+
+describe('an open', () => {
+  beforeEach(() => open());
+
+  it('has nothing to open for a key with no record, `fresh` or not', async () => {
+    await expect(units.open(KEY)).resolves.toEqual({ action: 'nothing-to-open' });
+    await expect(units.open(KEY, { fresh: true })).resolves.toEqual({ action: 'nothing-to-open' });
+  });
+
+  it('has nothing to open on a live session, with its state', async () => {
+    await started();
+
+    await expect(units.open(KEY)).resolves.toEqual({ action: 'nothing-to-open', state: 'busy' });
+  });
+
+  it('resumes an `ended` session with no prompt, with the last run’s settings: `resumed`, recorded', async () => {
+    await started('review');
+    idle();
+    await exits();
+    const conversationId = driver.launches[0]?.conversationId;
+
+    const opened = pending(units.open(KEY));
+    await settle();
+    hook('/ready');
+
+    await expect(opened).resolves.toEqual({ action: 'resumed', state: 'idle' });
+    expect(driver.launches[1]).toMatchObject({ conversationId, resume: true, part: PLAN });
+    expect(driver.launches[1]).not.toHaveProperty('prompt');
+    expect(recordOf()?.history).toMatchObject([
+      { operation: 'run', jobId: 'review' },
+      {
+        operation: 'open',
+        jobId: 'review',
+        args: { file: 'a' },
+        action: 'resumed',
+        conversationId,
+      },
+    ]);
+  });
+
+  it('starts a new conversation when the agent no longer keeps it: `conversation-gone`', async () => {
+    await started();
+    idle();
+    await exits();
+    driver.resumable = false;
+
+    const opened = pending(units.open(KEY));
+    await settle();
+    hook('/ready');
+
+    await expect(opened).resolves.toEqual({
+      action: 'started',
+      reason: 'conversation-gone',
+      state: 'idle',
+    });
+  });
+
+  it('starts a new conversation with `fresh`, ending a live session first: `fresh-on-request`', async () => {
+    await started();
+    hook('/turn-ended-with-a-task');
+
+    const opened = pending(units.open(KEY, { fresh: true }));
+    await listHost();
+    hook('/ready');
+
+    await expect(opened).resolves.toEqual({
+      action: 'started',
+      reason: 'fresh-on-request',
+      state: 'idle',
+      stoppedTasks: [{ id: 'a1', type: 'general-purpose' }],
+    });
+    expect(recordOf()?.history).toMatchObject([
+      { operation: 'run' },
+      { operation: 'open', action: 'started', reason: 'fresh-on-request' },
+    ]);
+  });
+
+  it('is refused `wrong-state` with `fresh` on `starting`', async () => {
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(300);
+    await ran;
+    hook('/ready');
+
+    await expect(units.open(KEY, { fresh: true })).rejects.toMatchObject({
+      code: 'wrong-state',
+      state: 'starting',
+    });
+  });
+
+  it('is refused `unknown-job` when the last run’s job is gone', async () => {
+    await started();
+    idle();
+    await exits();
+    refusals.set('explain', new CockpitError('unknown-job', 'Gone.', { jobId: 'explain' }));
+
+    await expect(units.open(KEY)).rejects.toMatchObject({ code: 'unknown-job' });
+  });
+});
+
+describe('the operations on one key', () => {
+  beforeEach(() => open());
+
+  it('run one at a time: each acts on the state the one before left', async () => {
+    const first = pending(units.run('explain', { file: 'a' }));
+    const second = pending(units.run('explain', { file: 'a' }));
+    const send = pending(units.send(KEY, 'Hello'));
+    await settle();
+    hook('/start-and-take');
+
+    await expect(first).resolves.toEqual({ action: 'started', state: 'busy' });
+    await expect(second).rejects.toMatchObject({ code: 'wrong-state', state: 'busy' });
+    await expect(send).rejects.toMatchObject({ code: 'wrong-state', state: 'busy' });
+    expect(driver.launches).toHaveLength(1);
+  });
+
+  it('go on after one failed', async () => {
+    driver.failNextLaunch(new Error('No launch.'));
+    const failed = pending(units.run('explain', { file: 'a' }));
+    const next = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    hook('/start-and-take');
+
+    await expect(failed).rejects.toThrow('No launch.');
+    await expect(next).resolves.toEqual({ action: 'started', state: 'busy' });
+  });
+
+  it('do not wait for another key’s', async () => {
+    const one = pending(units.run('explain', { file: 'a' }));
+    const two = pending(units.run('explain', { file: 'b' }));
+    await settle();
+    hook('/start-and-take', 'explain-b');
+
+    await expect(two).resolves.toEqual({ action: 'started', state: 'busy' });
+    hook('/start-and-take');
+    await expect(one).resolves.toEqual({ action: 'started', state: 'busy' });
+  });
+});
+
+describe('the cap on live sessions', () => {
+  it('ends the `idle` session idle longest to make room for a start: `session-cap`', async () => {
+    await open({ maxSessions: 2 });
+    await started('explain', 'a');
+    await started('explain', 'b');
+    idle('explain-b');
+    vi.advanceTimersByTime(1000);
+    idle('explain-a');
+
+    const ran = pending(units.run('explain', { file: 'c' }));
+    await listHost();
+    hook('/start-and-take', 'explain-c');
+
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+    expect(sessions.session('explain-b')).toMatchObject({ state: 'ended', reason: 'session-cap' });
+    expect(sessions.session('explain-a')?.state).toBe('idle');
+  });
+
+  it('ends no session at work, with a background task, or with a terminal attached: `session-cap-reached`', async () => {
+    await open({ maxSessions: 3 });
+    await started('explain', 'a');
+    await started('explain', 'b');
+    hook('/turn-ended-with-a-task', 'explain-b');
+    await started('explain', 'c');
+    idle('explain-c');
+    host.attachTerminals('explain-c', 1);
+
+    await expect(units.run('explain', { file: 'd' })).rejects.toMatchObject({
+      code: 'session-cap-reached',
+      cap: 3,
+      live: ['explain-a', 'explain-b', 'explain-c'],
+    });
+    expect(driver.launches).toHaveLength(3);
+    expect(signals).toEqual([]);
+  });
+
+  it('lets two starts at once never pass one free place', async () => {
+    await open({ maxSessions: 1 });
+
+    const one = pending(units.run('explain', { file: 'a' }));
+    const two = pending(units.run('explain', { file: 'b' }));
+    await settle();
+
+    await expect(two).rejects.toMatchObject({ code: 'session-cap-reached', live: ['explain-a'] });
+    hook('/start-and-take');
+    await expect(one).resolves.toMatchObject({ action: 'started' });
+  });
+
+  it('counts no session for a prompt typed into a live one', async () => {
+    await open({ maxSessions: 1 });
+    await started();
+    idle();
+
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    hook(`${PROMPT_PATH}Explain a.`);
+
+    await expect(ran).resolves.toEqual({ action: 'sent', state: 'busy' });
+  });
+
+  it('makes room for a resume, an open and a send that start a session', async () => {
+    await open({ maxSessions: 1 });
+    await started('explain', 'a');
+    idle('explain-a');
+    await exits('explain-a');
+    await started('explain', 'b');
+    idle('explain-b');
+
+    const opened = pending(units.open('explain-a'));
+    await listHost();
+    hook('/ready', 'explain-a');
+
+    await expect(opened).resolves.toEqual({ action: 'resumed', state: 'idle' });
+    expect(sessions.session('explain-b')).toMatchObject({ state: 'ended', reason: 'session-cap' });
+  });
+});
+
+describe('the records of the units of work', () => {
+  const RECORDED: UnitRecord = {
+    key: 'explain-r',
+    conversationId: 'c-recorded',
+    earlierConversations: ['c-before'],
+    history: [
+      {
+        operation: 'run',
+        jobId: 'explain',
+        args: { file: 'r' },
+        at: '2026-11-20T09:00:00.000Z',
+        action: 'started',
+        conversationId: 'c-recorded',
+      },
+    ],
+    directory: '.',
+    launchSettings: { part: null },
+  };
+
+  it('lists a recorded key with no live session `ended`, with its record and whether it can resume', async () => {
+    driver.resumable = false;
+    await open({ records: [RECORDED] });
+
+    expect(units.list()).toEqual([
+      {
+        key: 'explain-r',
+        state: 'ended',
+        since: T0.toISOString(),
+        canResume: false,
+        reason: 'lost',
+        record: {
+          conversationId: 'c-recorded',
+          earlierConversations: ['c-before'],
+          history: RECORDED.history,
+        },
+      },
+    ]);
+    expect(driver.resumeQuestions).toMatchObject([
+      { conversationId: 'c-recorded', directory: APP, environment: { PATH: '/usr/bin' } },
+    ]);
+  });
+
+  it('resumes a recorded key’s conversation at its next run', async () => {
+    await open({ records: [RECORDED] });
+
+    const ran = pending(units.run('explain', { file: 'r' }));
+    await settle();
+    hook('/start-and-take', 'explain-r');
+
+    await expect(ran).resolves.toEqual({ action: 'resumed', state: 'busy' });
+    expect(driver.launches[0]).toMatchObject({ conversationId: 'c-recorded', resume: true });
+  });
+
+  it('follows the agent to a new conversation (a `/clear`): the one left is an earlier one', async () => {
+    await open();
+    await started();
+    const old = driver.launches[0]?.conversationId;
+
+    hook(`${CONVERSATION_PATH}c-cleared`);
+    await settle();
+
+    expect(recordOf()).toMatchObject({ conversationId: 'c-cleared', earlierConversations: [old] });
+  });
+
+  it('tells its followers each change of a record', async () => {
+    await open();
+    const seen: (string | undefined)[] = [];
+    units.follow((list) => seen.push(list[0]?.record?.conversationId));
+
+    await started();
+
+    expect(seen.at(-1)).toBe(driver.launches[0]?.conversationId);
+  });
+
+  it('lists the keys in the order they were first recorded, a session not recorded yet last', async () => {
+    await open({ records: [RECORDED] });
+    await started('explain', 'a');
+    const pendingRun = pending(units.run('explain', { file: 'b' }));
+    await settle();
+
+    expect(units.list().map((session) => session.key)).toEqual([
+      'explain-r',
+      'explain-a',
+      'explain-b',
+    ]);
+    hook('/start-and-take', 'explain-b');
+    await pendingRun;
+  });
+});
