@@ -45,8 +45,8 @@ Runs in Node, in the app's server: the server library and its handler.
 
 Runs in Node, in the app's server: the Fastify adapter.
 
-| Export           | Kind     | What it is                                                                                                                                                                                                                      |
-| ---------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Export           | Kind     | What it is                                                                                                                                                                                                                                                                                            |
+| ---------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cockpitFastify` | function | `app.register(cockpitFastify(cockpit), { prefix: '/cockpit' })` mounts the cockpit under the prefix: its requests, their bodies unread by Fastify, and its WebSocket upgrades. Upgrades outside the prefix are left to the app's own upgrade listeners; with none, they are ended, as Node ends them. |
 
 ### `@duongtdn/agent-cockpit/claude-code`
