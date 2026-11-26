@@ -64,6 +64,23 @@ describe('package.json', () => {
     expect(versions.filter(([, version]) => !EXACT_VERSION.test(version))).toEqual([]);
   });
 
+  it('pins the agent the contract suite runs to one exact version', () => {
+    expect(manifest.devDependencies['@anthropic-ai/claude-code']).toBe('2.1.332');
+  });
+
+  it('lets pnpm run the install scripts of node-pty and of the pinned agent, and no other', () => {
+    // Without its install script the agent's package holds a placeholder, not the agent.
+    const workspace = readFileSync(new URL('pnpm-workspace.yaml', root), 'utf8');
+    const [, list = ''] = /^onlyBuiltDependencies:\n((?: {2}- .+\n)+)/m.exec(workspace) ?? [];
+
+    expect(
+      list
+        .trim()
+        .split('\n')
+        .map((line) => line.replace(/^ *- /, '').replaceAll('"', '')),
+    ).toEqual(['@anthropic-ai/claude-code', 'node-pty']);
+  });
+
   it('takes zod 4 as a peer, and Fastify as an optional one', () => {
     expect(Object.keys(manifest.peerDependencies).sort()).toEqual(['fastify', 'zod']);
     expect(manifest.peerDependencies.zod).toBe('^4');
@@ -81,6 +98,16 @@ describe('package.json', () => {
     'check',
   ])('has the script %s', (script) => {
     expect(manifest.scripts[script]).toEqual(expect.any(String));
+  });
+
+  it('runs each suite by its project, so that no other run takes the contract suite along', () => {
+    expect(manifest.scripts.test).toBe('vitest run --project unit');
+    expect(manifest.scripts['test:integration']).toBe('vitest run --project integration');
+    expect(manifest.scripts['test:contract']).toMatch(/^vitest run --project contract( |$)/);
+  });
+
+  it('fails the contract suite when it finds no test', () => {
+    expect(manifest.scripts['test:contract']).not.toContain('passWithNoTests');
   });
 
   it('measures coverage over the unit and the integration tests together', () => {
@@ -101,8 +128,15 @@ describe('the check script and CI', () => {
     .map(([, script]) => script)
     .filter((script) => script !== 'install');
 
-  it('check typechecks, lints, tests, builds and packs', () => {
-    expect(scriptsOfCheck).toEqual(['typecheck', 'lint', 'test:coverage', 'build', 'test:pack']);
+  it('check typechecks, lints, tests, runs the contract suite, builds and packs', () => {
+    expect(scriptsOfCheck).toEqual([
+      'typecheck',
+      'lint',
+      'test:coverage',
+      'test:contract',
+      'build',
+      'test:pack',
+    ]);
   });
 
   it('CI runs the steps of check, in its order', () => {
@@ -119,6 +153,14 @@ describe('the check script and CI', () => {
     expect(packages.split(' ')).toEqual(
       expect.arrayContaining(['tmux', 'build-essential', 'python3']),
     );
+  });
+
+  it('CI keeps the contract results, whether the suite passed or not', () => {
+    const [, step = ''] =
+      /\n( {6}- uses: actions\/upload-artifact@v\d+\n(?: {8,}.*\n?)+)/.exec(workflow) ?? [];
+
+    expect(step).toContain('if: always()');
+    expect(step).toContain('path: test-results/contract.json');
   });
 
   it('CI uses no secret', () => {

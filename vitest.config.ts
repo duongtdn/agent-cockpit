@@ -1,8 +1,5 @@
 import { defineConfig } from 'vitest/config';
 
-// The contract suite drives the real agent, so it runs only when asked for.
-const contractTests = process.env.COCKPIT_CONTRACT === '1' ? ['test/contract/**/*.test.ts'] : [];
-
 export default defineConfig({
   test: {
     projects: [
@@ -16,7 +13,16 @@ export default defineConfig({
           testTimeout: 15_000,
         },
       },
-      { test: { name: 'contract', include: contractTests } },
+      {
+        // The contract suite drives the real agent: it runs only as its own
+        // project, never along with another. Its waits fail by themselves,
+        // saying what the agent showed, well before this timeout.
+        test: {
+          name: 'contract',
+          include: ['test/contract/**/*.test.ts'],
+          testTimeout: 60_000,
+        },
+      },
       { test: { name: 'pack', include: ['test/pack/**/*.test.ts'] } },
     ],
     coverage: {

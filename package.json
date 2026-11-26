@@ -57,8 +57,8 @@
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "test:coverage": "vitest run --project unit --project integration --coverage",
-    "test:contract": "vitest run --project contract --passWithNoTests",
-    "check": "pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm build && pnpm test:pack",
+    "test:contract": "vitest run --project contract --reporter=default --reporter=./test/contract/results-reporter.ts",
+    "check": "pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm test:contract && pnpm build && pnpm test:pack",
     "test:pack": "vitest run --project pack"
   },
   "dependencies": {
@@ -73,6 +73,7 @@
     }
   },
   "devDependencies": {
+    "@anthropic-ai/claude-code": "2.1.332",
     "@biomejs/biome": "2.6.9",
     "@types/node": "22.20.7",
     "@vitest/coverage-v8": "5.1.2",

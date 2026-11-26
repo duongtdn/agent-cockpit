@@ -32,9 +32,11 @@ export interface HookReceiver {
   /** Gives the names of the events received so far, in the order of arrival. */
   events(): string[];
   /**
-   * Gives settings that send a session's hooks here: HTTP hooks for every
-   * event the fake agent plays, `SessionStart` included, with an
-   * `Authorization` header; command hooks for `SessionStart` and `SessionEnd`.
+   * Gives settings that send a session's hooks here: HTTP hooks for the
+   * events of a session's start, prompts, tools, turn ends and end,
+   * `SessionStart` included, with an `Authorization` header; command hooks
+   * for `SessionStart` and `SessionEnd`. An agent, real or fake, is given
+   * both kinds so that a test sees which one it uses.
    */
   settings(): object;
   /** Holds, from now on, the hooks of an event until the test answers them; the others get `{}` at once. */
@@ -50,7 +52,7 @@ export interface HookReceiver {
 }
 
 /** The header the receiver's settings give every HTTP hook. */
-export const RECEIVER_AUTHORIZATION = 'Bearer fake-agent-test-token';
+export const RECEIVER_AUTHORIZATION = 'Bearer hook-receiver-test-token';
 
 const HTTP_EVENTS = [
   'SessionStart',

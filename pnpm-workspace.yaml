@@ -1,3 +1,6 @@
 # node-pty ships no prebuilt binary for Linux: its install script compiles it.
+# The agent's package holds a placeholder until its install script puts the
+# platform's binary in place.
 onlyBuiltDependencies:
+  - "@anthropic-ai/claude-code"
   - node-pty

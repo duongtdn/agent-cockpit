@@ -6,12 +6,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { SessionHost } from '../../src/server/session-host/session-host.ts';
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
 import { eventually } from '../support/eventually.ts';
-import {
-  type HookReceiver,
-  RECEIVER_AUTHORIZATION,
-  type ReceivedHook,
-  startHookReceiver,
-} from '../support/fake-agent/hook-receiver.ts';
 import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import { type Question, type Turn, writeScript } from '../support/fake-agent/script.ts';
 import { holdStart, releaseStart } from '../support/fake-agent/start-gate.ts';
@@ -20,6 +14,12 @@ import {
   INTERRUPTED_FOR_TOOL_USE,
   transcriptPathFor,
 } from '../support/fake-agent/transcript.ts';
+import {
+  type HookReceiver,
+  RECEIVER_AUTHORIZATION,
+  type ReceivedHook,
+  startHookReceiver,
+} from '../support/hooks/hook-receiver.ts';
 
 const appName = `fake-agent-test-${process.pid}-${Date.now()}`;
 const pacing = { chunkLength: 200, pauseMs: 1 };
