@@ -3,8 +3,8 @@
 Where the cockpit runs, and with which versions.
 
 **Status:** nothing is released yet. The requirements below are what this
-version checks and is tested on; each release will state the platforms and
-versions it was tested on.
+version checks and is tested on, the agent's tested range included; each
+release will state the platforms and versions it was tested on.
 
 ## Supported platforms
 
@@ -93,12 +93,13 @@ npm runs the script by default.
 
 ## The agent's sandbox
 
-The cockpit never turns the agent's sandbox on: the person does, in their
-own Claude Code settings (`"sandbox": { "enabled": true }`), and the cockpit
-then writes into every session the lines that keep a sandboxed command from
-the cockpit's files and the app's port ([security](security.md#keeping-the-agent-out)).
-Without the sandbox those lines change nothing, and a session runs as it
-would without them.
+The agent's sandbox is on when the person turns it on, in their own Claude
+Code settings (`"sandbox": { "enabled": true }`), or when the app asks for
+it (`claudeCode({ sandbox: true })`). The cockpit writes into every session
+the lines that keep a sandboxed command from the cockpit's files and the
+app's port ([security](security.md#keeping-the-agent-out)). Without the
+sandbox those lines change nothing, and a session runs as it would without
+them.
 
 On Linux, Claude Code's sandbox needs:
 
@@ -138,17 +139,38 @@ Without the sandbox, the cockpit's lines keep the agent out only as the
 [confinement table](security.md#keeping-the-agent-out) says.
 
 WSL2 runs the sandbox as Linux does. Claude Code's `sandbox.failIfUnavailable: true`
-in the person's settings makes the agent stop where the sandbox cannot run,
-rather than run unsandboxed. The cockpit's own tests run the sandbox on
-these programs, on CI too.
+makes the agent stop where the sandbox cannot run, rather than run
+unsandboxed: the person sets it in their own settings, and the app's
+`sandbox` option writes it into every session. With that option, the driver
+also looks for `bwrap` and `socat` on the agent's `PATH` before each launch,
+and refuses one that lacks either with `sandbox-unavailable`; the nested
+check above is the person's to run. The cockpit's own tests run the sandbox
+on these programs, on CI too.
 
 ## The agent's tested range
 
-The range of agent versions each driver was tested on. Not set yet: the
-driver does not check the agent's version so far. Its tests run Claude Code
-2.1.332.
+The range of agent versions each driver was tested on: its contract tests
+ran on them. The Claude Code driver's is 2.1.332 to 2.1.332, the version
+its tests are pinned to; `cockpit.status().testedRange` gives it.
+
+The driver reads the version of the agent each launch would run: the first
+executable `claude` on the launch's `PATH`, asked `claude --version`
+(which prints `2.1.332 (Claude Code)`, with no dialog and no hook, whatever
+its configuration lacks). It asks once per executable, known by its real path and its time
+of change, so an update of the agent is read anew at the next launch.
+`createCockpit` reads it too, for `status()`; an agent missing then is no
+failure, since no session runs yet.
 
 ## Outside the tested range
 
-What happens when the agent is newer or older than the tested range. Not
-written yet: the driver's version check is not built.
+- **No agent** on the launch's `PATH`: the launch is refused with
+  `agent-not-found` (`command: 'claude'`), and nothing starts.
+- **Older** than the oldest tested: the launch is refused with
+  `agent-too-old` (`found`, `oldestTested`). Update the agent.
+- **Newer** than the newest tested: the session runs.
+  `cockpit.on('untested-version', handler)` tells the app the first time a
+  launch runs such a version, once per version, and `status()` says
+  `tested: false`. What the driver relies on was not tested on that
+  version.
+- An agent that fails `claude --version`, or prints no version, rejects the
+  run with an error that is not a `CockpitError`.

@@ -5,8 +5,10 @@ exact names and types, read the [API reference](api.md).
 
 **Status:** the first path is built: a cockpit mounted in the app's server,
 a job run on a key with no session, the sessions followed live, a
-session's terminal in the page, and access: the app's own API routes,
-opening beyond loopback, and renewing the token. The sections after "Getting started" are
+session's terminal in the page, access (the app's own API routes,
+opening beyond loopback, and renewing the token), and the Claude Code
+driver: its options, a job's driver part, the sandbox and the agent's
+version. The sections after "Getting started" are
 written as the parts they describe are built; until then they only say what
 they will cover. [examples/jobs-console](../examples/jobs-console/DEMO.md) is
 a whole app that does what this guide shows;
@@ -249,9 +251,39 @@ What an app declares: a named piece of work for the agent. Built so far: a
 job's `id`, `title` and `description`; its arguments, a zod 4 schema every
 run is checked against (`invalid-arguments`); its `key`, which names the
 unit of work from the arguments (`[a-z0-9-]+`); and its `prompt`, built from
-the arguments, or none for a job the person types into. The agent runs in
-the app's folder. Option sources, a job's own folder and its driver part
-come later, and are refused until then.
+the arguments, or none for a job the person types into; and its driver
+part. The agent runs in the app's folder. Option sources and a job's own
+folder come later, and are refused until then.
+
+A job's driver part changes, for its own sessions, what the driver's
+options set for every session. For Claude Code, `claudeCode.job(…)` builds
+it, with a mode, rules and a model:
+
+```js
+const cockpit = await createCockpit({
+  // …
+  driver: claudeCode({ permissionMode: 'default', permissions: { deny: ['Bash(git push:*)'] } }),
+  jobs: [
+    {
+      id: 'review',
+      title: 'Review a change',
+      args: z.object({ pr: z.number().int().positive() }),
+      key: ({ pr }) => `review-${pr}`,
+      prompt: ({ pr }) => `Review pull request #${pr}.`,
+      driver: claudeCode.job({ permissionMode: 'plan', model: 'opus' }),
+    },
+  ],
+});
+```
+
+The part's mode and model replace the driver's; its rules are added after
+the driver's, so the app's deny and ask rules always hold. The plugin, the
+sources of settings, the sandbox and the acceptance of an open network stay
+the app's. A part that does not fit is refused with `invalid-options`, at
+`createCockpit` and again when the job runs. A part whose mode opens the
+network (`plan`, `auto`, `bypassPermissions`) is refused in a cockpit
+opened beyond loopback, as the driver's own mode would be, unless the
+driver accepts it (`acceptOpenNetwork`).
 
 ## Units of work
 
@@ -271,15 +303,30 @@ why, `canResume` whether its conversation is still kept). Each state carries
 `idle`; a background task's work never makes the session `busy`, but the
 turn the agent starts itself when a task finishes does; a compaction begun
 while `idle` is `busy`, then the same `idle` again, its `since` kept. `cockpit.sessions.follow` and the client's
-`sessions.follow` give the whole list at once, then at every change. The
-cockpit does not yet tell `waiting`.
+`sessions.follow` give the whole list at once, then at every change.
+
+So far a session is `waiting` only for something in the terminal
+(`pending: [{ kind: 'terminal', dialog? }]`): a start-up dialog the agent
+shows before it takes a first prompt (`trust-folder`,
+`bypass-permissions`, `onboarding`, `login`), a dialog it shows that the
+driver has no name for, or a panel a launch prompt opened (`/help`). The
+person answers it in the mounted terminal, and the session goes on. A
+person who leaves a start-up dialog ("No", or Esc) ends the session
+`declined`, with its `dialog`: the app tells them what the next launch will
+meet again.
 
 ## Run, send and open
 
 Starting or resuming a session with a job, sending it a prompt, and opening
 it with none. Built so far: a run on a key with no session, which launches
 the agent with the job's prompt and resolves once the session leaves
-`starting` (`busy`, or `idle` for a job without a prompt). A run on a key
+`starting`: `busy`; `idle` for a job without a prompt, or one the agent
+takes without a turn (a local command such as `/clear`); `waiting` at a
+start-up dialog; `ended` when the agent was gone first. A launch is refused
+when the agent is missing (`agent-not-found`), older than the driver was
+tested on (`agent-too-old`), or cannot be sandboxed as the app asked
+(`sandbox-unavailable`), and ended with `unobservable` when the agent
+neither reports nor shows a dialog in time. A run on a key
 that has a session is refused with `wrong-state`; the
 [API reference](api.md#operations) lists what else is refused for now.
 
@@ -321,6 +368,60 @@ session has ended there is nothing to attach to: the status is `ended`.
 `terminal.on('error', handler)` tells why it could not connect (`no-token`,
 `refused` with its `cause`, `unreachable`); refused by the app's `terminal`
 switch (`terminal-off`), it stays `closed` and stops trying.
+
+## The Claude Code driver
+
+`claudeCode(options?)` is the driver an app gives `createCockpit`. It
+launches `claude` from the server's `PATH` in a tmux session, with settings
+of its own: the hooks that report to the cockpit, the app's rules, and the
+lines that keep the agent from the cockpit's files, the app's port and
+every Claude Code settings file ([security](security.md#keeping-the-agent-out)).
+The person's own Claude Code settings still load below them, unless the app
+narrows them. Its options ([reference](api.md#claudecodeoptions)):
+
+- `permissionMode` and `permissions`: the mode every session runs in
+  (`default` unless the app says), and the rules it writes above the
+  person's and the project's. A job's driver part may change them for its
+  sessions.
+- `model`: the model of every session, else the person's default.
+- `pluginDir`: the app's own Claude Code plugin, for its sessions only.
+- `settingSources` and `otherMcpServers: false`: fewer of the person's and
+  the project's settings, and none of their MCP servers.
+- `acceptOpenNetwork`: needed with a mode whose network is open, in a
+  cockpit opened beyond loopback ([security](security.md#each-modes-network)).
+- `sandbox`: the agent's sandbox, below.
+
+### The sandbox
+
+The agent's sandbox confines the commands it runs: their files and their
+network. The person may turn it on in their own settings; an app that
+needs it gives `claudeCode({ sandbox: true })`, or the sandbox's
+exceptions (`{ excludedCommands, allowUnsandboxedCommands }`). The option
+only turns the sandbox on: left out, the person's settings decide, and
+`false` is refused. A session the app asked to sandbox never runs
+unsandboxed: a launch where the sandbox's programs are missing (`bwrap`
+and `socat`, on Linux) is refused with `sandbox-unavailable`, whose `cause`
+says what to install, and an agent that finds the sandbox unavailable in
+any other way stops before it takes the prompt (the session ends `lost`).
+[Machines](machines.md#the-agents-sandbox) says what a machine needs.
+
+### Versions
+
+Each driver is tested on a range of the agent's versions.
+`cockpit.status()` gives the version last read, whether it was tested, and
+the range. Before each launch the driver reads the version of the agent
+the launch would run: a missing agent is refused with `agent-not-found`,
+one older than the range with `agent-too-old`; a newer one runs, and
+`cockpit.on('untested-version', handler)` tells the app once per version,
+so that it can warn the person. [Machines](machines.md#the-agents-tested-range)
+gives the range.
+
+### Variables
+
+Each launch starts from the server's environment. The app names its
+secrets in `createCockpit({ hiddenEnv })`, and no agent gets them; the
+driver removes Claude Code's own variables, which a server started from a
+Claude Code terminal would otherwise pass on.
 
 ## Errors
 

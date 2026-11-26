@@ -95,8 +95,18 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   in the work folder or above it, the machine's managed one). The rules are
   the tables of `test/support/real-agent/launch-rules.ts` (variables,
   options with a value, flags, settings); a settings file's `env` passes
-  only when each variable passes the rule a launch's would. A feature that
-  needs one more option or setting adds its rule there. One setting exists to keep tests
+  only when each variable passes the rule a launch's would. Among them:
+  `CLAUDE_CODE_MAX_RETRIES` (three digits at most, for a failed turn's
+  test); `disableAllHooks` only as `true`; `--setting-sources` naming only
+  `user`, `project` and `local`; `--strict-mcp-config`, the one flag (an
+  option with no value) in `FLAG_RULES`; `--plugin-dir` only for a plugin
+  of commands, the run's own (a real folder inside the run's root holding
+  `.claude-plugin/plugin.json`, which says only `name`, `description` and
+  `version`, and `commands/*.md`: no hooks, MCP servers or agents). A work
+  folder may be a link inside the root to a real folder inside it, and is
+  then checked by both its paths, since the agent reads settings above
+  either. A feature that needs one more option or setting adds its rule
+  there. One setting exists to keep tests
   off Anthropic: `skipWebFetchPreflight` passes only as `true` (WebFetch
   otherwise asks `api.anthropic.com` about each host before it fetches,
   whatever the API's address); a test whose agent fetches sets it in
@@ -112,8 +122,28 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   file passes only when nobody can write it). The shim drops every variable
   of the launch but those a test names in `passedOn`, which then reach the
   agent and are checked as the launch's: what the driver strips is seen
-  stripped at the agent (row 74). The rows of the driver's options,
-  dialogs, failed turns, compaction, tasks and version run through it.
+  stripped at the agent (row 74). `startContractCockpit({ driver, shim,
+  personsSettings, directory, appAddress })` takes the driver's options
+  (or a function of the run's folders, for a plugin's), the shim's
+  `leftOutOfRecipe` (`onboarding`, `folder-trust`, `key-approval`: each a
+  piece of the agent's `.claude.json` left out, for a test of the start-up
+  dialog it spares), its `variables` and `passedOn`, and the person's own
+  settings. The rows of the driver's options, dialogs, failed turns,
+  compaction, tasks, version, the app's sandbox and the settings files'
+  denies run through it.
+- **The rows, by file:** `starting` (1–3), `prompts` (4, 5, 7), `ending`
+  (8), `driver` (14, 29), `interrupting` (6, 22), `tasks` (15 a background
+  subagent and its `<task-notification>` turn, 62 and 73 its hooks'
+  `agent_id`), `compaction` (16), `dialogs` (37, 69 the folder's trust; 68
+  the trust dialog's answers; 70 the onboarding; 85 the warning of
+  `bypassPermissions`; 88 the API key's question, a dialog of no name),
+  `turn-failures` (64, `StopFailure`), `options` (72 `--setting-sources`,
+  74 the variables stripped, 87 `--model` and `--plugin-dir`, 91 the
+  person's `env`), `confinement` (50–55, 75–79), `network-by-mode`
+  (80–83), `version` (84, `--version`), `start-up` (86 every hook off, 89
+  a local command as the launch prompt), `sandbox-option` (90, the app's
+  sandbox and `sandbox-unavailable`), `settings-files` (92, the `Edit`
+  denies on every Claude settings file, in `bypassPermissions`).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:
@@ -164,6 +194,15 @@ its configuration folder as Claude Code does: the start-up dialogs of a
 `.claude.json` (none when the folder has no such file) and the person's
 `settings.json` (the warning of `bypassPermissions` accepted, hooks off);
 `--version` says the pinned agent's version, or `FAKE_AGENT_VERSION`'s.
+Beside a turn's tool calls and replies, a script's steps play a turn that
+fails on an API error (`fail`, with its status: `StopFailure`, as the
+agent ends a turn once its retries are spent), a compaction (`compact`, the
+person's `/compact`, a turn of its own: the only local command it plays),
+and a background subagent (`task`: its work runs once the turn ended and
+the test released tasks, then its end starts the next turn by itself with
+a `<task-notification>` prompt). A script's tool call on a path a deny
+rule of its settings names (the state roots, every Claude settings file)
+is not played: nothing tells what Claude Code answers there.
 
 The fake agent is held to the real one by
 `test/contract/fake-agent-parity.test.ts`: each scenario is played once on

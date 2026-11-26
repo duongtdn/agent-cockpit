@@ -13,8 +13,12 @@ cockpit, runs a job on a key with no session, follows the sessions live, and
 mounts a session's terminal in its page. Access is built: the cockpit serves
 the loopback by default, with a token from the app's link, and the app may
 open it beyond the machine with its own `authorize`; every session's
-settings keep the agent from the cockpit's files and the app's port. Most
-operations are still to come (resume, send, asks, the channel, activity).
+settings keep the agent from the cockpit's files, the app's port and every
+Claude Code settings file. The Claude Code driver is complete: its options
+(mode, rules, model, plugin, sources of settings, the sandbox), a job's
+own driver part, the agent's version checked before each launch, start-up
+dialogs, failed turns, background tasks and compaction. Most operations
+are still to come (resume, send, asks, the channel, activity).
 Nothing is published to npm so far.
 
 This project is not affiliated with or endorsed by Anthropic. "Claude Code"
@@ -24,9 +28,10 @@ names the agent the first driver drives.
 
 - Linux (WSL2 included), with tmux 3.2a or later.
 - Node 22 or later.
-- The coding agent, installed and logged in: Claude Code for the first driver.
-- For the agent's sandbox, which the person turns on in their own settings:
-  `bubblewrap` and `socat`, and user namespaces.
+- The coding agent, installed and logged in: Claude Code for the first
+  driver, at a version within its tested range (2.1.332 for now) or newer.
+- For the agent's sandbox, which the person turns on in their own settings
+  or the app asks for: `bubblewrap` and `socat`, and user namespaces.
 
 [docs/machines.md](docs/machines.md) has the details.
 

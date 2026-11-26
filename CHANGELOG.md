@@ -12,7 +12,7 @@ Nothing is published yet.
 
 - The package's six entry points: `.`, `./fastify`, `./claude-code`,
   `./channel`, `./client`, `./terminal`. `./channel` exports nothing yet.
-- `createCockpit({ name, directory, driver, jobs, stateDirectory?,
+- `createCockpit({ name, directory, driver, jobs, hiddenEnv?, stateDirectory?,
   agentPort?, authorize?, origins?, terminal?, port? })` from `.`, with the types `Cockpit`, `CockpitOptions`,
   `Job`, `RunResult`, `Session` and `EndReason`: checks its options
   (`invalid-options`, any other option refused) and the machine
@@ -108,15 +108,32 @@ Nothing is published yet.
   `refused`, `unreachable`). A handler that throws stops neither the other
   handlers nor the stream: what it threw goes to `console.error`.
   `invalid-options` for a `baseUrl` that is not a path or an HTTP URL.
-- `claudeCode({ permissionMode?, permissions?, acceptOpenNetwork? })` from
+- `claudeCode({ permissionMode?, permissions?, acceptOpenNetwork?, model?,
+  pluginDir?, settingSources?, otherMcpServers?, sandbox? })` from
   `./claude-code`, with the types `ClaudeCodeOptions`, `PermissionMode` and
   `PermissionRules`: the Claude Code driver, which launches `claude` with settings of its own in the
   cockpit's state folder and without the inherited `CLAUDE_CODE_*` and
   `CLAUDECODE` variables. A session in `default`, `acceptEdits` or
   `dontAsk` counts as keeping its network to the cockpit's allow-list; one
   in `plan`, `auto` or `bypassPermissions` as open, which an app opened
-  beyond loopback accepts with `acceptOpenNetwork: true`. Any other option
-  is refused with `invalid-options`.
+  beyond loopback accepts with `acceptOpenNetwork: true`. `model` is the
+  sessions' model (`--model`); `pluginDir` the app's plugin
+  (`--plugin-dir`, an existing folder); `settingSources` the only sources
+  of settings read below the session's own (`--setting-sources`);
+  `otherMcpServers: false` keeps every other MCP server out
+  (`--strict-mcp-config`). Any other option is refused with
+  `invalid-options`.
+- Every session's settings carry an `Edit` deny on every Claude Code
+  settings file (`.claude/settings.json`, `.claude/settings.local.json`
+  wherever they are, the person's own `settings.json`): in a cockpit
+  session the agent can never edit one, even when asked, so that it cannot
+  plant a hook that would run outside the sandbox at the next start.
+- `claudeCode({ sandbox: true | { excludedCommands?,
+  allowUnsandboxedCommands? } })` turns the agent's sandbox on for every
+  session, with `failIfUnavailable`; it only turns it on (`false` is
+  refused). A launch whose agent's `PATH` lacks `bwrap` or `socat` is
+  refused with `sandbox-unavailable`; an agent that stops for want of the
+  sandbox otherwise ends its session `lost`.
 - `mountTerminal(element, key, { baseUrl, theme?, fontFamily?, fontSize? })`
   from `./terminal`: a session's terminal (xterm.js) in the app's element,
   fitted to it, attached over a WebSocket with the app's token, reconnecting
@@ -140,7 +157,7 @@ Nothing is published yet.
   `ClaudeCodeSandbox` and `ClaudeCodeOptions.sandbox`.
 - The types `TurnError` and `BackgroundTask`, from `.` and `./client`; an
   `idle` session's `error` and `backgroundTasks`, an `ended` one's
-  `dialog` (not set yet).
+  `dialog`.
 - Sessions follow more of Claude Code: a turn that fails on an API error is
   `idle` with its `error` (`server`, overloads included; `rate-limit`;
   `other`) until a later turn; `idle` lists the `backgroundTasks` still
@@ -161,8 +178,22 @@ Nothing is published yet.
   is no failure there) and before each launch: no agent → `agent-not-found`,
   older than the tested range → `agent-too-old`, nothing listed; newer →
   the session runs and `on('untested-version')` tells it once per version.
-  A run resolves `waiting` at a start-up dialog, and a session left at one
-  ends `declined` with its `dialog`.
+  The agent's version is asked once per executable (its real path and
+  time of change). An agent that fails `--version` rejects the run with an
+  error that is not a `CockpitError`.
+- Until its first hook, the cockpit reads the agent's screen: a run
+  resolves `waiting` at a start-up dialog (`pending: [{ kind: 'terminal',
+  dialog }]`; a dialog of no known name, such as the question about a
+  custom API key, has no `dialog`), `starting` again once the person
+  answers it in the terminal, and a session left at one ends `declined`
+  with its `dialog`. With no dialog on screen, an agent that sends no hook
+  within 10 seconds of its launch (or of a dialog leaving the screen), or
+  within 5 seconds of showing its input box (every hook turned off), is
+  ended and refused with `unobservable`.
+- A launch prompt the agent takes without a turn (a local command such as
+  `/help` or `/clear`) is read from the screen 5 seconds after the first
+  hook: the input box back is `idle`, a panel waiting for a key is
+  `waiting` (`kind: 'terminal'`) until it closes, anything else `busy`.
 
 ### Not yet: refused or missing in this version
 
@@ -173,9 +204,6 @@ Nothing is published yet.
   `invalid-options`.
 - A run on a key that has a session, whatever its state, is refused with
   `wrong-state`: there is no resume, send, open, interrupt, end or remove.
-- A run whose agent neither reports nor shows a start-up dialog within 10
-  seconds (5 seconds once its input box shows) is ended and refused with
-  `unobservable`.
 - A key whose tmux session an earlier process of the app left cannot be run:
   the run rejects with an error that is not a `CockpitError` (500 on the
   wire, `unreachable` in the client). Such sessions are not listed, and a
