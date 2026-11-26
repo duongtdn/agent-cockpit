@@ -83,3 +83,140 @@ it("92 — In bypassPermissions, the driver's Edit denies on every Claude settin
   }
   expect(readdirSync(root).filter((name) => name.startsWith('planted-'))).toEqual([]);
 });
+
+/** What a file of MCP servers planted by the agent would hold: a server, a program that leaves a mark at each start. */
+function plantedServers(root: string, name: string): Record<string, unknown> {
+  const mark = join(root, `planted-${name}`);
+  // Each of its own name: of two servers of a name, the agent starts one.
+  return { [`planted-${name}`]: { command: '/bin/sh', args: ['-c', `touch ${mark}`] } };
+}
+
+it("96 — In bypassPermissions, the driver's Edit denies on every file that gives the agent MCP servers hold: Write on a project's .mcp.json, the configuration folder's .claude.json and the home's is refused, and no planted server runs at the next start", async () => {
+  const cockpit = await startContractCockpit({
+    driver: {
+      permissionMode: 'bypassPermissions',
+      permissions: { allow: ['Read', 'Write', 'Edit'] },
+    },
+    personsSettings: BYPASS_ACCEPTED,
+  });
+  const { root, configFolder, home } = cockpit;
+  const configuration = join(configFolder, '.claude.json');
+  const configurationBefore = readFileSync(configuration, 'utf8');
+  const written = {
+    project: {
+      file: join(cockpit.workFolder, '.mcp.json'),
+      content: { mcpServers: plantedServers(root, 'project') },
+    },
+    // The agent's own configuration, the recipe kept, so the next start shows no dialog.
+    configuration: {
+      file: configuration,
+      content: {
+        ...JSON.parse(configurationBefore),
+        mcpServers: plantedServers(root, 'configuration'),
+      },
+    },
+    // The pinned agent reads the home's when no configuration folder is named (a cockpit's
+    // launch may name none), the configuration folder's otherwise, as here: the refusal holds it.
+    home: {
+      file: join(home, '.claude.json'),
+      content: { mcpServers: plantedServers(root, 'home') },
+    },
+  };
+  const calls = Object.values(written).map(({ file, content }) =>
+    toolUse('Write', { file_path: file, content: JSON.stringify(content) }),
+  );
+  cockpit.api.script(...calls.map((call) => turn(call)), turn('Done.'), turn('Again.'));
+
+  await cockpit.say('plant the servers');
+  await cockpit.sessionIn(SAID_KEY, 'idle');
+  const results = toolResults(cockpit.api);
+  // Killed: an agent that exits saves its own configuration over the file, a planted server lost.
+  await cockpit.killAgent(SAID_KEY);
+  await cockpit.say('start again', 'again');
+  await cockpit.sessionIn('again', 'idle');
+
+  expect(results).toHaveLength(calls.length);
+  for (const refused of results) {
+    expect(refused).toMatchObject({ isError: true, text: expect.stringMatching(/denied/i) });
+  }
+  expect(existsSync(written.project.file)).toBe(false);
+  expect(existsSync(written.home.file)).toBe(false);
+  expect(JSON.parse(readFileSync(configuration, 'utf8'))).not.toHaveProperty('mcpServers');
+  expect(readdirSync(root).filter((name) => name.startsWith('planted-'))).toEqual([]);
+});
+
+/** When the person's plugin was installed: any time before the test. */
+const INSTALLED_AT = '2026-11-01T00:00:00.000Z';
+
+it("97 — In bypassPermissions, the driver's Edit deny on the person's plugins holds: Write of a hook into an enabled plugin is refused, and no planted hook runs at the next start", async () => {
+  const cockpit = await startContractCockpit({
+    driver: {
+      permissionMode: 'bypassPermissions',
+      permissions: { allow: ['Read', 'Write', 'Edit'] },
+    },
+    personsSettings: { ...BYPASS_ACCEPTED, enabledPlugins: { 'probe@local': true } },
+  });
+  const { root } = cockpit;
+  // A plugin the person installed and enabled, from a marketplace that is a folder: the agent
+  // loads it from the marketplace's folder at each start.
+  const plugins = join(cockpit.configFolder, 'plugins');
+  const marketplace = join(plugins, 'marketplaces', 'local');
+  const plugin = join(marketplace, 'probe');
+  mkdirSync(join(marketplace, '.claude-plugin'), { recursive: true });
+  mkdirSync(join(plugin, '.claude-plugin'), { recursive: true });
+  mkdirSync(join(plugin, 'commands'));
+  writeFileSync(
+    join(marketplace, '.claude-plugin', 'marketplace.json'),
+    JSON.stringify({
+      name: 'local',
+      owner: { name: 'the person' },
+      plugins: [{ name: 'probe', source: './probe', description: 'Commands.' }],
+    }),
+  );
+  writeFileSync(
+    join(plugin, '.claude-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'probe', version: '1.0.0', description: 'Commands.' }),
+  );
+  writeFileSync(join(plugin, 'commands', 'greet.md'), 'Say hello.');
+  writeFileSync(
+    join(plugins, 'known_marketplaces.json'),
+    JSON.stringify({
+      local: {
+        source: { source: 'directory', path: marketplace },
+        installLocation: marketplace,
+        lastUpdated: INSTALLED_AT,
+      },
+    }),
+  );
+  writeFileSync(
+    join(plugins, 'installed_plugins.json'),
+    JSON.stringify({
+      version: 2,
+      plugins: {
+        'probe@local': [
+          {
+            scope: 'user',
+            installPath: plugin,
+            version: '1.0.0',
+            installedAt: INSTALLED_AT,
+            lastUpdated: INSTALLED_AT,
+          },
+        ],
+      },
+    }),
+  );
+  const hooks = join(plugin, 'hooks', 'hooks.json');
+  const call = toolUse('Write', { file_path: hooks, content: planted(root, 'plugin') });
+  cockpit.api.script(turn(call), turn('Done.'), turn('Again.'));
+
+  await cockpit.say('plant the hook');
+  await cockpit.sessionIn(SAID_KEY, 'idle');
+  const results = toolResults(cockpit.api);
+  await cockpit.exitByItself(SAID_KEY, cockpit.conversationOf(SAID_KEY));
+  await cockpit.say('start again', 'again');
+  await cockpit.sessionIn('again', 'idle');
+
+  expect(results).toEqual([{ isError: true, text: expect.stringMatching(/denied/i) }]);
+  expect(existsSync(hooks)).toBe(false);
+  expect(readdirSync(root).filter((name) => name.startsWith('planted-'))).toEqual([]);
+});

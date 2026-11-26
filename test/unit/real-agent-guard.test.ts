@@ -659,19 +659,148 @@ describe('the guard of the settings files the real agent reads', () => {
     expect(check()).toThrow(/cannot be read as JSON/);
   });
 
-  it.each([
-    ['the work folder', join(folders.workFolder, '.mcp.json')],
-    ['a folder above the work folder', join(root, '.mcp.json')],
-    ["the machine's managed settings folder", join(managedSettingsFolder, 'managed-mcp.json')],
-  ])(
-    'refuses MCP servers configured in %s, whatever they are: no launch needs any yet',
-    (_where, path) => {
-      writeFile(path, JSON.stringify({ mcpServers: {} }));
+  it("refuses MCP servers configured in the machine's managed settings folder, whatever they are: an organization's", () => {
+    const path = writeFile(join(managedSettingsFolder, 'managed-mcp.json'), '{"mcpServers":{}}');
 
-      expect(check()).toThrow(/MCP servers.*no launch needs them yet/);
-      expect(check()).toThrow(path);
+    expect(check()).toThrow(/MCP servers.*an organization's/);
+    expect(check()).toThrow(path);
+  });
+
+  /** A server the agent starts as a program of the test's, as it runs a command hook. */
+  const LOCAL_SERVER = { command: '/bin/sh', args: ['-c', 'touch a-mark'] };
+  const mcpServerPlaces: [string, string, (servers: object) => object][] = [
+    [
+      "the work folder's .mcp.json",
+      join(folders.workFolder, '.mcp.json'),
+      (servers) => ({ mcpServers: servers }),
+    ],
+    ["a folder above's .mcp.json", join(root, '.mcp.json'), (servers) => ({ mcpServers: servers })],
+    [
+      "the configuration folder's .claude.json",
+      join(folders.configFolder, '.claude.json'),
+      (servers) => ({ hasCompletedOnboarding: true, mcpServers: servers }),
+    ],
+    [
+      "a project's in the configuration folder's .claude.json",
+      join(folders.configFolder, '.claude.json'),
+      (servers) => ({ projects: { [folders.workFolder]: { mcpServers: servers } } }),
+    ],
+    [
+      "the home's .claude.json",
+      join(folders.home, '.claude.json'),
+      (servers) => ({ mcpServers: servers }),
+    ],
+  ];
+
+  it.each(mcpServerPlaces)(
+    'lets MCP servers of %s pass when each is a program the agent starts, as a command hook',
+    (_where, path, holding) => {
+      writeFile(
+        path,
+        JSON.stringify(holding({ probe: LOCAL_SERVER, typed: { type: 'stdio', ...LOCAL_SERVER } })),
+      );
+
+      expect(check()).not.toThrow();
     },
   );
+
+  it.each(mcpServerPlaces)(
+    'refuses MCP servers of %s reached by an address, or saying more than their program',
+    (_where, path, holding) => {
+      for (const server of [
+        { type: 'http', url: 'https://example.com/mcp' },
+        { type: 'sse', url: 'http://127.0.0.1:1/sse' },
+        { ...LOCAL_SERVER, env: { HTTPS_PROXY: 'http://example.com' } },
+        { args: ['no', 'command'] },
+      ]) {
+        writeFile(path, JSON.stringify(holding({ remote: server })));
+        expect(check(), JSON.stringify(server)).toThrow(/the MCP server "remote"/);
+        expect(check()).toThrow(path);
+      }
+    },
+  );
+
+  it.each([join(folders.workFolder, '.mcp.json'), join(folders.configFolder, '.claude.json')])(
+    'refuses %s when it cannot be read as JSON',
+    (path) => {
+      writeFile(path, '{ "mcpServers": ');
+
+      expect(check()).toThrow(/cannot be read as JSON/);
+    },
+  );
+
+  describe("the person's plugins", () => {
+    const plugins = join(folders.configFolder, 'plugins');
+    const market = join(plugins, 'marketplaces', 'local');
+    const installed = join(plugins, 'cache', 'local', 'probe', '1.0.0');
+    const hooks = (command: unknown) => ({
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command }] }] },
+    });
+
+    function install(): void {
+      writeFile(
+        join(plugins, 'known_marketplaces.json'),
+        JSON.stringify({
+          local: { source: { source: 'directory', path: market }, installLocation: market },
+        }),
+      );
+      writeFile(
+        join(market, '.claude-plugin', 'marketplace.json'),
+        JSON.stringify({ name: 'local', plugins: [{ name: 'probe', source: './probe' }] }),
+      );
+      for (const folder of [join(market, 'probe'), installed]) {
+        writeFile(join(folder, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'probe' }));
+        writeFile(join(folder, 'commands', 'greet.md'), 'Say hello.');
+        writeFile(join(folder, 'hooks', 'hooks.json'), JSON.stringify(hooks('touch a-mark')));
+      }
+      writeFile(
+        join(plugins, 'installed_plugins.json'),
+        JSON.stringify({
+          version: 2,
+          plugins: { 'probe@local': [{ scope: 'user', installPath: installed }] },
+        }),
+      );
+    }
+
+    it('let a plugin installed from a folder of the run pass, with commands and hooks that stay local, enabled in settings', () => {
+      install();
+
+      expect(
+        check({ args: argsWith({ ...settings, enabledPlugins: { 'probe@local': true } }) }),
+      ).not.toThrow();
+    });
+
+    it('refuse a plugin whose hooks leave the loopback, or that holds anything but commands and hooks', () => {
+      install();
+      writeFile(
+        join(installed, 'hooks', 'hooks.json'),
+        JSON.stringify({
+          hooks: { Stop: [{ hooks: [{ type: 'http', url: 'https://example.com/hook' }] }] },
+        }),
+      );
+      expect(check()).toThrow(/plugin.*an http hook to "https:\/\/example.com\/hook"/);
+
+      writeFile(join(installed, 'hooks', 'hooks.json'), JSON.stringify(hooks('touch a-mark')));
+      writeFile(join(installed, '.mcp.json'), '{}');
+      expect(check()).toThrow(/a plugin holding .mcp.json/);
+    });
+
+    it('refuse a marketplace that is not a folder of the run: the agent would fetch it', () => {
+      install();
+      writeFile(
+        join(plugins, 'known_marketplaces.json'),
+        JSON.stringify({ remote: { source: { source: 'github', repo: 'someone/plugins' } } }),
+      );
+
+      expect(check()).toThrow(/the marketplace "remote"/);
+    });
+
+    it('refuse settings that enable plugins with anything but true or false', () => {
+      expect(
+        check({ args: argsWith({ ...settings, enabledPlugins: { 'probe@local': 'yes' } }) }),
+      ).toThrow(/"enabledPlugins"/);
+    });
+  });
 
   it('refuses a settings file that is a link to nowhere: what it will hold is not known', () => {
     const path = join(folders.workFolder, '.claude', 'settings.json');

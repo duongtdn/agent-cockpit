@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 export interface SettingsFolders {
   /** The agent's configuration folder: the user's settings. */
   readonly configFolder: string;
+  /** The agent's home. */
+  readonly homeFolder: string;
   /** The folder the session works in: the project's settings. */
   readonly workFolder: string;
   /** The folders the machine keeps settings in that an organization manages. */
@@ -19,6 +21,12 @@ const PROJECT_MCP_SERVERS = '.mcp.json';
 
 /** The file of a managed settings folder that gives a machine MCP servers. */
 const MANAGED_MCP_SERVERS = 'managed-mcp.json';
+
+/** The agent's configuration file: its own state, and the person's and each project's MCP servers. */
+const CONFIGURATION_FILE = '.claude.json';
+
+/** The folder of the configuration folder that holds the person's plugins. */
+const PLUGINS_FOLDER = 'plugins';
 
 /** What marks a folder as a git work tree: a folder for a repository, a file for a worktree of one elsewhere. */
 const GIT_MARKER = '.git';
@@ -59,19 +67,54 @@ export function settingsFilesOf(folders: SettingsFolders): string[] {
 }
 
 /**
- * Lists the files that would give the agent MCP servers beside its command
- * line and its own configuration file: a project's, in the work folder and
- * every folder above it, and the machine's managed one.
+ * Lists the files that give a project MCP servers: `.mcp.json` in the
+ * work folder and every folder above it.
  *
  * @param folders - Where the launch has the agent read settings.
  * @returns The paths of the files that exist, a link that leads nowhere included.
  */
-export function mcpServerFilesOf(folders: SettingsFolders): string[] {
-  const candidates = [
-    ...withFoldersAbove(folders.workFolder).map((folder) => join(folder, PROJECT_MCP_SERVERS)),
-    ...folders.managedSettingsFolders.map((folder) => join(folder, MANAGED_MCP_SERVERS)),
-  ];
-  return candidates.filter(exists);
+export function projectMcpServerFilesOf(folders: SettingsFolders): string[] {
+  return withFoldersAbove(folders.workFolder)
+    .map((folder) => join(folder, PROJECT_MCP_SERVERS))
+    .filter(exists);
+}
+
+/**
+ * Lists the files that give the machine MCP servers an organization manages.
+ *
+ * @param folders - Where the launch has the agent read settings.
+ * @returns The paths of the files that exist, a link that leads nowhere included.
+ */
+export function managedMcpServerFilesOf(folders: SettingsFolders): string[] {
+  return folders.managedSettingsFolders
+    .map((folder) => join(folder, MANAGED_MCP_SERVERS))
+    .filter(exists);
+}
+
+/**
+ * Lists the agent's configuration files, which hold the person's MCP
+ * servers and each project's: `.claude.json` in the configuration folder
+ * (which the pinned agent reads when `CLAUDE_CONFIG_DIR` is set) and in the
+ * home (which it reads otherwise).
+ *
+ * @param folders - Where the launch has the agent read settings.
+ * @returns The paths of the files that exist, a link that leads nowhere included.
+ */
+export function configurationFilesOf(folders: SettingsFolders): string[] {
+  return [folders.configFolder, folders.homeFolder]
+    .map((folder) => join(folder, CONFIGURATION_FILE))
+    .filter(exists);
+}
+
+/**
+ * Gives the folder of the person's plugins, where the agent finds the
+ * marketplaces it knows and the plugins installed from them.
+ *
+ * @param folders - Where the launch has the agent read settings.
+ * @returns Its path, whether it exists or not.
+ */
+export function pluginsFolderOf(folders: SettingsFolders): string {
+  return join(folders.configFolder, PLUGINS_FOLDER);
 }
 
 /**

@@ -47,9 +47,12 @@ describe("an example's scripted agent", () => {
     await expect(launchIn(agent)).resolves.toMatchObject({ command: 'claude' });
   });
 
-  it('refuses a launch the contract runner would refuse: a file of MCP servers the agent would read', async () => {
+  it('refuses a launch the contract runner would refuse: an MCP server the agent would reach by an address', async () => {
     agent = await startScriptedAgent('scripted-agent-test');
-    writeFileSync(join(agent.workFolder, '.mcp.json'), JSON.stringify({ mcpServers: {} }));
+    writeFileSync(
+      join(agent.workFolder, '.mcp.json'),
+      JSON.stringify({ mcpServers: { remote: { type: 'http', url: 'https://example.com/mcp' } } }),
+    );
 
     await expect(launchIn(agent)).rejects.toThrow(/The real agent is not started/);
   });

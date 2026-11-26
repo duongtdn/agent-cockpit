@@ -5,16 +5,22 @@ import { ROOT_NAME_PREFIX } from './environment.ts';
 import {
   aRealFolderInsideTheRoot,
   argumentsProblem,
+  configurationFileProblem,
   isInside,
   isRealFolder,
+  mcpServerFileProblem,
   plainLoopbackOrigin,
+  pluginsProblem,
   RULES_FILE,
   ruleIn,
   settingsInFileProblem,
   VARIABLE_RULES,
 } from './launch-rules.ts';
 import {
-  mcpServerFilesOf,
+  configurationFilesOf,
+  managedMcpServerFilesOf,
+  pluginsFolderOf,
+  projectMcpServerFilesOf,
   type SettingsFolders,
   settingsFilesOf,
   worktreeMarkerOf,
@@ -63,9 +69,13 @@ const MANAGED_SETTINGS_FOLDERS = ['/etc/claude-code', '/mnt/c/Program Files/Clau
  * A machine's managed settings are read under the same rules as any other
  * settings file: an organization's file that only adds permissions lets
  * the suite run, one that could send the agent elsewhere stops it. A file
- * that would give the agent MCP servers — a `.mcp.json` in the work folder
- * or above it, the machine's managed one — stops it whatever it holds: no
- * launch needs servers yet, so none has a rule.
+ * that gives the agent MCP servers — a `.mcp.json` in the work folder or
+ * above it, the agent's configuration file (`.claude.json`, in the
+ * configuration folder and in the home) — passes when each server is a
+ * program the agent starts, as a command hook is; the machine's managed one
+ * stops it whatever it holds. The person's plugins pass when each
+ * marketplace is a folder of the run and each plugin holds commands and
+ * hooks that stay local.
  *
  * @param launch - What the agent would be started with.
  * @param machine - The machine's temporary folder, the person's home and
@@ -80,8 +90,9 @@ const MANAGED_SETTINGS_FOLDERS = ['/etc/claude-code', '/mnt/c/Program Files/Clau
  * settings given as a file that can be written; a setting with no rule, or one its rule
  * refuses, on the command line or in any settings file the agent reads (an
  * `env` that sets `HOME`, `CLAUDE_CONFIG_DIR` or `TMPDIR` among them: the
- * files checked are the launch's folders'); a file of MCP servers the agent
- * would read.
+ * files checked are the launch's folders'); an MCP server that is no
+ * program, or any of the machine's managed ones; a plugin or a marketplace
+ * its rules refuse.
  */
 export function assertStaysLocal(launch: AgentLaunch, machine: Machine = thisMachine()): void {
   const problem =
@@ -90,7 +101,8 @@ export function assertStaysLocal(launch: AgentLaunch, machine: Machine = thisMac
     environmentProblem(launch.environment, launch.root) ??
     argumentsProblem(launch.args, launch.root) ??
     settingsFilesProblem(launch, machine) ??
-    mcpServerFilesProblem(launch, machine);
+    mcpServerFilesProblem(launch, machine) ??
+    pluginsOfProblem(launch, machine);
   if (problem !== undefined) throw new Error(`The real agent is not started: ${problem}.`);
 }
 
@@ -195,8 +207,9 @@ function worktreeProblem(workFolder: string): string | undefined {
 /** Where the agent reads settings, once for each path its work folder goes by. */
 function settingsFoldersOf(launch: AgentLaunch, machine: Machine): SettingsFolders[] {
   return workFoldersOf(launch).map((workFolder) => ({
-    // Checked before: the environment has it, a real folder inside the root.
+    // Checked before: the environment has them, real folders inside the root.
     configFolder: launch.environment.CLAUDE_CONFIG_DIR as string,
+    homeFolder: launch.environment.HOME as string,
     workFolder,
     managedSettingsFolders: machine.managedSettingsFolders,
   }));
@@ -234,11 +247,37 @@ function settingsFilesProblem(launch: AgentLaunch, machine: Machine): string | u
   return undefined;
 }
 
+/**
+ * Every file that gives the agent MCP servers passes their rules (each a
+ * program of the test's), but the machine's managed one, which stops the
+ * launch whatever it holds: an organization's servers are not the test's.
+ */
 function mcpServerFilesProblem(launch: AgentLaunch, machine: Machine): string | undefined {
-  const [file] = settingsFoldersOf(launch, machine).flatMap(mcpServerFilesOf);
-  return file === undefined
+  const folders = settingsFoldersOf(launch, machine);
+  const [managed] = folders.flatMap(managedMcpServerFilesOf);
+  if (managed !== undefined) {
+    return `the MCP servers of ${managed}, which the agent would read: an organization's, which no rule lets pass`;
+  }
+  const checks: [string, string | undefined][] = [
+    ...new Set(folders.flatMap(projectMcpServerFilesOf)),
+  ].map((file) => [file, mcpServerFileProblem(file, launch.root)]);
+  checks.push(
+    ...[...new Set(folders.flatMap(configurationFilesOf))].map(
+      (file): [string, string | undefined] => [file, configurationFileProblem(file, launch.root)],
+    ),
+  );
+  const refused = checks.find(([, problem]) => problem !== undefined);
+  return refused === undefined
     ? undefined
-    : `the MCP servers of ${file}, which the agent would read: no launch needs them yet, so no rule lets any pass`;
+    : `the MCP servers of ${refused[0]}, which the agent would read: ${refused[1]}`;
+}
+
+/** The person's plugins, which the agent loads at its start, pass their rules. */
+function pluginsOfProblem(launch: AgentLaunch, machine: Machine): string | undefined {
+  const [folders] = settingsFoldersOf(launch, machine);
+  if (folders === undefined) return undefined;
+  const problem = pluginsProblem(pluginsFolderOf(folders), launch.root);
+  return problem === undefined ? undefined : `the person's plugins: ${problem}`;
 }
 
 function describe(value: string): string {

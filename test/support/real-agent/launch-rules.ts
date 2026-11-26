@@ -1,5 +1,5 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { FAKE_API_KEY, TERMINAL_VARIABLES } from './environment.ts';
 
 /**
@@ -255,6 +255,12 @@ export const SETTINGS_RULES: Readonly<Record<string, Check<unknown>>> = {
   // Every hook off, the cockpit's too: a session then reports nothing, and calls nobody more.
   disableAllHooks: (value) => (value === true ? undefined : 'not true'),
   apiKeyHelper: refused('it would run a program for a key'),
+  // The person's plugins switched on or off: what each holds is checked where it is installed,
+  // in the configuration folder (pluginsProblem).
+  enabledPlugins: (value) =>
+    isRecord(value) && Object.values(value).every((enabled) => typeof enabled === 'boolean')
+      ? undefined
+      : 'not an object of plugins, each true or false',
 };
 
 /**
@@ -362,29 +368,76 @@ const someSettingSources: Check<string> = (value) => {
 /** What a plugin's manifest may say of it: who it is, nothing that runs or connects. */
 const PLUGIN_MANIFEST_KEYS: readonly string[] = ['name', 'description', 'version'];
 
+/** A plugin's manifest, from its folder. */
+const PLUGIN_MANIFEST = '.claude-plugin/plugin.json';
+
+/** A plugin's command: a Markdown file the agent reads as a prompt. */
+const PLUGIN_COMMAND = /^commands\/[^/]+\.md$/;
+
+/** A plugin's hooks. */
+const PLUGIN_HOOKS = 'hooks/hooks.json';
+
 /**
  * A plugin of commands only, the run's own: a real folder inside the root
  * holding its manifest, which names it and nothing more, and a folder of
  * commands, each a Markdown file the agent reads as a prompt. A plugin's
  * hooks, MCP servers, agents or anything else have no rule.
  */
-const aPluginOfCommands: Check<string> = (value, root) => {
-  const notOwn = aRealFolderInsideTheRoot(value, root);
-  if (notOwn !== undefined) return notOwn;
-  const strays = entriesIn(value).filter(
-    (entry) => entry !== '.claude-plugin/plugin.json' && !/^commands\/[^/]+\.md$/.test(entry),
-  );
-  if (strays.length > 0) return `a plugin holding ${strays.join(', ')}: only commands have a rule`;
-  let manifest: unknown;
-  try {
-    manifest = JSON.parse(readFileSync(join(value, '.claude-plugin', 'plugin.json'), 'utf8'));
-  } catch {
-    return 'a plugin whose manifest cannot be read as JSON';
-  }
+const aPluginOfCommands: Check<string> = (value, root) =>
+  aRealFolderInsideTheRoot(value, root) ??
+  pluginStraysProblem(value, (entry) => PLUGIN_COMMAND.test(entry), 'only commands') ??
+  pluginManifestProblem(value);
+
+/**
+ * A plugin the person installed, the run's own: as a plugin of commands,
+ * with hooks too, each of which stays local as the settings' hooks do.
+ */
+const aPluginOfCommandsAndHooks: Check<string> = (value, root) =>
+  aRealFolderInsideTheRoot(value, root) ??
+  pluginStraysProblem(
+    value,
+    (entry) => PLUGIN_COMMAND.test(entry) || entry === PLUGIN_HOOKS,
+    'only commands and hooks',
+  ) ??
+  pluginManifestProblem(value) ??
+  pluginHooksProblem(value, root);
+
+function pluginStraysProblem(
+  folder: string,
+  hasRule: (entry: string) => boolean,
+  what: string,
+): string | undefined {
+  const strays = entriesIn(folder).filter((entry) => entry !== PLUGIN_MANIFEST && !hasRule(entry));
+  return strays.length === 0
+    ? undefined
+    : `a plugin holding ${strays.join(', ')}: ${what} have a rule`;
+}
+
+function pluginManifestProblem(folder: string): string | undefined {
+  const manifest = readJson(join(folder, PLUGIN_MANIFEST));
+  if (manifest === undefined) return 'a plugin whose manifest cannot be read as JSON';
   if (!isRecord(manifest)) return 'a plugin whose manifest is no object';
   const other = Object.keys(manifest).find((key) => !PLUGIN_MANIFEST_KEYS.includes(key));
   return other === undefined ? undefined : `a plugin whose manifest says ${JSON.stringify(other)}`;
-};
+}
+
+function pluginHooksProblem(folder: string, root: string): string | undefined {
+  const file = join(folder, PLUGIN_HOOKS);
+  if (lstatSync(file, { throwIfNoEntry: false }) === undefined) return undefined;
+  const content = readJson(file);
+  if (!isRecord(content)) return 'a plugin whose hooks cannot be read as an object of JSON';
+  const problem = hooksThatStayLocal(content.hooks, root);
+  return problem === undefined ? undefined : `a plugin whose hooks hold ${problem}`;
+}
+
+/** Reads a file as JSON; `undefined` when it cannot be. */
+function readJson(file: string): unknown {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
 
 /** Every file and link under a folder, by its path from it: a link is not followed. */
 function entriesIn(folder: string): string[] {
@@ -480,4 +533,142 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isTextList(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+/** What an MCP server the agent may start says: the program it runs, as a command hook does. */
+const MCP_SERVER_KEYS: readonly string[] = ['type', 'command', 'args'];
+
+/**
+ * MCP servers the agent may start: each a program of the test's, run with
+ * its arguments (`type` `stdio`, or none), as a command hook is. A server
+ * reached by an address, or given variables or anything else, has no rule.
+ *
+ * @param servers - A file's `mcpServers`.
+ */
+export const mcpServersThatAreLocalPrograms: Check<unknown> = (servers) => {
+  if (!isRecord(servers)) return 'MCP servers that are no object';
+  for (const [name, server] of Object.entries(servers)) {
+    const problem = mcpServerProblem(server);
+    if (problem !== undefined) return `the MCP server ${JSON.stringify(name)}, ${problem}`;
+  }
+  return undefined;
+};
+
+function mcpServerProblem(server: unknown): string | undefined {
+  if (!isRecord(server)) return 'which is no object';
+  const other = Object.keys(server).find((key) => !MCP_SERVER_KEYS.includes(key));
+  if (other !== undefined) return `which says ${JSON.stringify(other)}: only a program has a rule`;
+  if (server.type !== undefined && server.type !== 'stdio') {
+    return `of type ${JSON.stringify(server.type)}: only a program has a rule`;
+  }
+  if (typeof server.command !== 'string' || server.command === '') return 'with no program';
+  const args = server.args ?? [];
+  return isTextList(args) ? undefined : 'whose arguments are no list of texts';
+}
+
+/**
+ * Tells why a project's `.mcp.json` is refused, or nothing when each of its
+ * servers is a program the agent may start.
+ *
+ * @param file - The file.
+ */
+export const mcpServerFileProblem: Check<string> = (file, root) => {
+  const content = readJson(file);
+  if (!isRecord(content)) return 'it cannot be read as JSON of an object';
+  const { mcpServers = {}, ...others } = content;
+  const [other] = Object.keys(others);
+  if (other !== undefined) return `it says ${JSON.stringify(other)}, which has no rule`;
+  return mcpServersThatAreLocalPrograms(mcpServers, root);
+};
+
+/**
+ * Tells why the agent's configuration file (`.claude.json`) is refused, or
+ * nothing when its MCP servers, the person's and each project's, are
+ * programs the agent may start. The rest is the agent's own state.
+ *
+ * @param file - The file.
+ */
+export const configurationFileProblem: Check<string> = (file, root) => {
+  const content = readJson(file);
+  if (!isRecord(content)) return 'it cannot be read as JSON of an object';
+  const projects = isRecord(content.projects) ? Object.values(content.projects) : [];
+  for (const servers of [content.mcpServers, ...projects.map(serversOfProject)]) {
+    if (servers === undefined) continue;
+    const problem = mcpServersThatAreLocalPrograms(servers, root);
+    if (problem !== undefined) return problem;
+  }
+  return undefined;
+};
+
+function serversOfProject(project: unknown): unknown {
+  return isRecord(project) ? project.mcpServers : undefined;
+}
+
+/** What a marketplace's list may say of a plugin: who it is and where it is, nothing that runs. */
+const MARKETPLACE_PLUGIN_KEYS: readonly string[] = ['name', 'source', 'description', 'version'];
+
+/**
+ * Tells why the person's plugins are refused, or nothing when every
+ * marketplace the agent knows is a folder of the run, every plugin it lists
+ * says only who it is and where, and every plugin folder in the plugins'
+ * folder (installed, or in a marketplace) holds commands and hooks that
+ * stay local, nothing else.
+ *
+ * @param folder - The plugins' folder of the agent's configuration folder.
+ * @param root - The temporary folder the run owns.
+ */
+export const pluginsProblem: Check<string> = (folder, root) => {
+  if (!isRealFolder(folder)) return undefined;
+  return (
+    knownMarketplacesProblem(join(folder, 'known_marketplaces.json'), root) ??
+    marketplaceListsProblem(folder) ??
+    pluginFolderProblem(folder, root)
+  );
+};
+
+function knownMarketplacesProblem(file: string, root: string): string | undefined {
+  if (lstatSync(file, { throwIfNoEntry: false }) === undefined) return undefined;
+  const marketplaces = readJson(file);
+  if (!isRecord(marketplaces)) return `${file} cannot be read as JSON of an object`;
+  for (const [name, marketplace] of Object.entries(marketplaces)) {
+    const source = isRecord(marketplace) ? marketplace.source : undefined;
+    const isOwnFolder =
+      isRecord(source) &&
+      source.source === 'directory' &&
+      typeof source.path === 'string' &&
+      aRealFolderInsideTheRoot(source.path, root) === undefined;
+    if (!isOwnFolder) {
+      return `the marketplace ${JSON.stringify(name)} is no real folder inside ${root}: the agent would fetch it`;
+    }
+  }
+  return undefined;
+}
+
+function marketplaceListsProblem(folder: string): string | undefined {
+  for (const list of entriesIn(folder).filter((entry) =>
+    entry.endsWith('.claude-plugin/marketplace.json'),
+  )) {
+    const content = readJson(join(folder, list));
+    const plugins = isRecord(content) ? content.plugins : undefined;
+    if (!Array.isArray(plugins)) return `${list} lists no plugins`;
+    for (const plugin of plugins) {
+      const other = isRecord(plugin)
+        ? Object.keys(plugin).find((key) => !MARKETPLACE_PLUGIN_KEYS.includes(key))
+        : 'what is no object';
+      if (other !== undefined) return `${list} says ${JSON.stringify(other)} of a plugin`;
+    }
+  }
+  return undefined;
+}
+
+function pluginFolderProblem(folder: string, root: string): string | undefined {
+  const plugins = entriesIn(folder)
+    .filter((entry) => entry.endsWith(PLUGIN_MANIFEST))
+    // A manifest's folder is the plugin's own .claude-plugin, inside the plugin.
+    .map((entry) => dirname(dirname(join(folder, entry))));
+  for (const plugin of plugins) {
+    const problem = aPluginOfCommandsAndHooks(plugin, root);
+    if (problem !== undefined) return `the plugin ${plugin}: ${problem}`;
+  }
+  return undefined;
 }

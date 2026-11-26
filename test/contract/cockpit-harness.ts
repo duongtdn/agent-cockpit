@@ -125,6 +125,13 @@ export interface ContractCockpit {
    * @returns The session, `ended`.
    */
   exitByItself(key: string, conversationId: string): Promise<Session>;
+  /**
+   * Ends a session's agent with SIGKILL, as a crash or a machine that
+   * stops does: the agent saves nothing on its way out.
+   *
+   * @returns The session, `ended`.
+   */
+  killAgent(key: string): Promise<Session>;
 }
 
 /** A hook's payload, as the driver read it. */
@@ -326,6 +333,12 @@ export async function startContractCockpit(
       }
     },
     conversationOf,
+    async killAgent(key) {
+      const running = await host.processOf(key);
+      if (running === undefined) throw new Error(`No agent of the key ${key} runs.`);
+      process.kill(running.pid, 'SIGKILL');
+      return following.sessionIn(key, 'ended');
+    },
     states: following.states,
     sessionIn: following.sessionIn,
     terminal,
