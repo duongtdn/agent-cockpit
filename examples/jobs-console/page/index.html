@@ -28,30 +28,14 @@
       <p id="connection" role="status">Connecting…</p>
     </header>
     <main>
-      <section aria-labelledby="run-heading">
-        <h2 id="run-heading">Explain a file</h2>
-        <form id="run-form">
-          <label>File <input name="file" required placeholder="README.md" autocomplete="off" /></label>
-          <button type="submit">Run</button>
-        </form>
-        <p id="run-result" role="status"></p>
+      <section aria-labelledby="jobs-heading">
+        <h2 id="jobs-heading">Jobs</h2>
+        <div id="launchers" class="launchers">Reading the jobs…</div>
       </section>
       <section aria-labelledby="sessions-heading">
         <h2 id="sessions-heading">Sessions</h2>
-        <p id="no-sessions" hidden>No sessions yet: run the job.</p>
-        <table id="sessions" hidden>
-          <thead>
-            <tr>
-              <th scope="col">Session</th>
-              <th scope="col">State</th>
-              <th scope="col">States seen</th>
-              <th scope="col">Since</th>
-              <th scope="col">Last answer</th>
-              <th scope="col"><span class="visually-hidden">Terminal</span></th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+        <p id="no-sessions" hidden>No sessions yet: run a job.</p>
+        <ul id="sessions" class="sessions"></ul>
       </section>
       <section id="terminal-section" aria-labelledby="terminal-heading" hidden>
         <h2 id="terminal-heading">

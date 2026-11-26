@@ -1,15 +1,17 @@
 // The jobs console: an app on Fastify that mounts the cockpit under
-// `/cockpit`, offers one job, serves its page, and prints the link to open.
+// `/cockpit`, offers its jobs (`jobs.js`), serves the page that draws a
+// launcher form for each, and prints the link to open.
 //
 //   node examples/jobs-console/server.js            the scripted agent (no model, no login)
 //   node examples/jobs-console/server.js --real     your own `claude` and its login
 //   --port <n>                                       the page's port (4310; 0 for any free one)
+//   --max-sessions <n>                               the cap on live sessions (none by default)
 //
 // See DEMO.md. It imports the package by its name, as an app does: run
 // `pnpm build` first.
 
 import { readdirSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { cp, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,33 +20,21 @@ import { createCockpit } from '@duongtdn/agent-cockpit';
 import { claudeCode } from '@duongtdn/agent-cockpit/claude-code';
 import { cockpitFastify } from '@duongtdn/agent-cockpit/fastify';
 import Fastify from 'fastify';
-import { z } from 'zod';
+import { jobsOf } from './jobs.js';
 
 /** The app's name: its tmux socket (`agent-cockpit-jobs-console`), its state folder, its lock. */
 const APP_NAME = 'jobs-console';
 
-/** One job: explain a file of the app's folder. Its key names the file, so each file has its session. */
-const explainAFile = {
-  id: 'explain',
-  title: 'Explain a file',
-  args: z.object({
-    file: z.string().regex(/[A-Za-z0-9]/, 'Name a file: at least one letter or digit.'),
-  }),
-  key: ({ file }) => `explain-${slug(file)}`,
-  prompt: ({ file }) => `Explain the file ${file} in a few sentences.`,
-};
+const here = dirname(fileURLToPath(import.meta.url));
 
-function slug(text) {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
+/** The page's own files, beside `index.html`: its style sheet and its modules. */
+const PAGE_FILES = ['page.css', 'page.js', 'launcher.js', 'sessions-list.js', 'results.js'];
 
 const { values: options } = parseArgs({
   options: {
     real: { type: 'boolean', default: false },
     port: { type: 'string', default: '4310' },
+    'max-sessions': { type: 'string' },
   },
 });
 
@@ -97,7 +87,10 @@ async function start() {
     name: APP_NAME,
     directory: agent.directory,
     driver: agent.driver(claudeCode()),
-    jobs: [explainAFile],
+    jobs: jobsOf(agent.directory),
+    ...(options['max-sessions'] === undefined
+      ? {}
+      : { maxSessions: Number(options['max-sessions']) }),
     ...(agent.stateDirectory === undefined ? {} : { stateDirectory: agent.stateDirectory }),
   });
   app = Fastify();
@@ -141,6 +134,13 @@ async function scriptedAgent() {
   // Loaded only in this mode: it is the repository's test support, run from its development install.
   const { startScriptedAgent } = await import('../../test/support/scripted-agent.ts');
   const scripted = await startScriptedAgent(APP_NAME);
+  // Something to choose in the forms: the sessions work in a copy of the sample project.
+  await cp(join(here, 'sample-project'), scripted.workFolder, { recursive: true }).catch(
+    async (error) => {
+      await scripted.close();
+      throw error;
+    },
+  );
   return {
     description: `The scripted agent: the pinned Claude Code against a fake API, in ${scripted.root}.`,
     directory: scripted.workFolder,
@@ -165,7 +165,6 @@ const CONTENT_TYPES = {
  * else is served: no bundler, no folder served as a whole.
  */
 function pageFiles() {
-  const here = dirname(fileURLToPath(import.meta.url));
   const require = createRequire(import.meta.url);
   const packageOf = (name) => dirname(require.resolve(`${name}/package.json`));
   const cockpitBuild = dirname(
@@ -181,8 +180,7 @@ function pageFiles() {
   );
   return new Map([
     ['/', join(here, 'page', 'index.html')],
-    ['/page.js', join(here, 'page', 'page.js')],
-    ['/page.css', join(here, 'page', 'page.css')],
+    ...PAGE_FILES.map((file) => [`/${file}`, join(here, 'page', file)]),
     ['/modules/xterm/xterm.mjs', join(packageOf('@xterm/xterm'), 'lib', 'xterm.mjs')],
     ['/modules/xterm/xterm.css', join(packageOf('@xterm/xterm'), 'css', 'xterm.css')],
     [

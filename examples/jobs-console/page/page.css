@@ -1,10 +1,11 @@
 :root {
   color-scheme: light dark;
   font-family: system-ui, sans-serif;
+  --rule: color-mix(in srgb, currentColor 20%, transparent);
 }
 body {
   margin: 0 auto;
-  max-width: 64rem;
+  max-width: 72rem;
   padding: 1rem;
 }
 header {
@@ -18,40 +19,99 @@ header {
   font-size: 0.9rem;
   opacity: 0.8;
 }
-form {
-  display: flex;
+h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+.launchers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 1rem;
+}
+.job,
+.session {
+  border: 1px solid var(--rule);
+  border-radius: 0.4rem;
+  padding: 0.75rem;
+}
+.description {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+.job form {
+  display: grid;
   gap: 0.5rem;
-  align-items: center;
 }
-table {
-  width: 100%;
-  border-collapse: collapse;
+.field {
+  display: grid;
+  gap: 0.15rem;
 }
-th,
-td {
-  text-align: left;
-  padding: 0.35rem 0.5rem;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-  vertical-align: top;
+.field small {
+  opacity: 0.7;
 }
-td[data-state] {
+.result {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  min-height: 1.2em;
+}
+.result[data-error] {
+  color: #b3261e;
+}
+.sessions {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+.session-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.state {
   font-weight: 600;
 }
-td[data-state="busy"],
-td[data-state="starting"] {
+.state[data-state="busy"],
+.state[data-state="starting"],
+.state[data-state="waiting"] {
   color: #b26b00;
 }
-td[data-state="idle"] {
+.state[data-state="idle"] {
   color: #1d7a36;
 }
-td[data-state="ended"] {
+.state[data-state="ended"] {
   opacity: 0.6;
 }
+.since,
+.states-seen {
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+.states-seen,
 .last-answer {
-  max-width: 20rem;
+  margin: 0.25rem 0;
+}
+.last-answer {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.actions,
+.send {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  margin-top: 0.5rem;
+}
+.send textarea {
+  flex: 1;
+  font: inherit;
+}
+.history {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
 }
 #terminal {
   height: 28rem;
@@ -61,11 +121,4 @@ td[data-state="ended"] {
 #terminal-status {
   font-weight: normal;
   opacity: 0.7;
-}
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
 }
