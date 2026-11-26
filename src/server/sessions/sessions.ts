@@ -1,19 +1,20 @@
 /**
  * The sessions core: the registry of the cockpit's sessions by key, their
- * states as the driver's events and the host tell them, the launch of a run,
- * and the list an app and the browser follow. It speaks to tmux only through
- * the session host, and to the agent only through the driver.
+ * states as the driver's events and the host tell them, their launches,
+ * the prompts typed into them and their ends, and the list an app and the
+ * browser follow. It speaks to tmux only through the session host, and to
+ * the agent only through the driver. What a run, a send or an open does
+ * in each state is the units of work's (`units-of-work.ts`), on top of it.
  *
  * @packageDocumentation
  */
 
-import { randomUUID } from 'node:crypto';
 import { CockpitError } from '../../shared/cockpit-error.js';
 import {
+  type BackgroundTask,
   type EndedSession,
   type EndReason,
   isSessionKey,
-  type RunResult,
   type Session,
 } from '../../shared/session.js';
 import type {
@@ -27,6 +28,7 @@ import type {
   HookRequest,
   LaunchCommand,
   ScreenReading,
+  TypingOutcome,
 } from '../driver.js';
 import type {
   Attachment,
@@ -35,10 +37,12 @@ import type {
   TerminalSize,
 } from '../session-host/session-host.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
+import type { TerminalHold } from '../terminal-hold.js';
 import { LivenessWatch } from './liveness-watch.js';
 import { ScreenWatch } from './screen-watch.js';
 import { courseAfter, type SessionCourse } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
+import { SessionTypingTerminal, TypingStoppedError } from './typing-terminal.js';
 
 export { SCREEN_INTERVAL_MS } from './screen-watch.js';
 export { READY_BOUND_MS, START_DEADLINE_MS } from './start-up-watch.js';
@@ -147,15 +151,31 @@ export interface SessionsOptions {
    * fails with that error.
    */
   readonly confinement: () => Promise<Confinement>;
+  /** Holds the keys of the page's terminals of a session while a prompt is typed into it. */
+  readonly holds: TerminalHold;
+  /**
+   * Sends a signal to a process: how a session's agent is asked to end
+   * gracefully. `process.kill` when left out.
+   */
+  readonly signal?: (pid: number, signal: NodeJS.Signals) => void;
 }
 
-/** What a run asks of the sessions core, the job already read. */
-export interface SessionRun {
-  /** The key of the run's unit of work. */
+/** One launch of a session's agent, what the units of work decided: which conversation, where, with what. */
+export interface SessionLaunch {
+  /** The key of the session's unit of work. */
   readonly key: string;
   /** The folder the agent works in: an absolute path. */
   readonly directory: string;
-  /** The first prompt; absent for a job for typing, which starts at `idle`. */
+  /** The conversation the agent works in: one it keeps, resumed, or a new one under this id. */
+  readonly conversationId: string;
+  /** Whether the conversation is resumed; a new one is started when left out. */
+  readonly resume?: boolean;
+  /**
+   * The first prompt; absent for a launch to type in, which starts at
+   * `idle`. One the driver cannot pass on the agent's command line is
+   * typed once the agent is ready: the session stays `starting` until the
+   * agent takes it.
+   */
   readonly prompt?: string;
   /** The job's driver part, checked, laid over the app's options at launch; none when it has none. */
   readonly part?: DriverPart;
@@ -167,24 +187,25 @@ export interface SessionRun {
  */
 export interface Sessions {
   /**
-   * Runs a job's prompt on its key. On a key with no session, launches the
-   * agent and resolves once the session leaves `starting`.
+   * Launches the agent of a key with no live session, and resolves once
+   * the session leaves `starting`. An `ended` session of the key is
+   * replaced by the new one.
    *
-   * @param run - See {@link SessionRun}.
-   * @returns `{ action: 'started' }` with the state the session left
-   * `starting` for: `busy` (the prompt taken), `idle` (no prompt, or one
-   * the agent took without a turn), `waiting` (a dialog in the terminal,
-   * which a person must answer), or `ended` (the agent was gone before it
-   * reported: `declined` when it left a dialog).
+   * @param launch - See {@link SessionLaunch}.
+   * @returns The session as it left `starting`: `busy` (the prompt taken),
+   * `idle` (no prompt, or one the agent took without a turn), `waiting` (a
+   * dialog in the terminal, which a person must answer), or `ended` (the
+   * agent was gone before it reported: `declined` when it left a dialog).
    * @throws `TypeError` for a key that is no session key.
-   * @throws `CockpitError` `wrong-state` when the key has a session, whatever
-   * its state, for now; `unobservable` when the agent reported nothing and
-   * showed no dialog by {@link START_DEADLINE_MS}, or within
-   * {@link READY_BOUND_MS} of showing its input box: the session was ended.
-   * What the agent's admission rejects with (`agent-not-found`,
-   * `agent-too-old`), and what the driver's launch rejects with (such as
-   * `sandbox-unavailable`).
-   * @throws `SessionsClosedError` when the core is closed before the run
+   * @throws `CockpitError` `wrong-state` when the key has a live session;
+   * `unobservable` when the agent reported nothing and showed no dialog by
+   * {@link START_DEADLINE_MS}, or within {@link READY_BOUND_MS} of showing
+   * its input box: the session was ended. For a first prompt typed after
+   * the start, what a send fails with (`prompt-not-taken`, `wrong-state`):
+   * the session is then `idle`. What the agent's admission rejects with
+   * (`agent-not-found`, `agent-too-old`), and what the driver's launch
+   * rejects with (such as `sandbox-unavailable`).
+   * @throws `SessionsClosedError` when the core is closed before the launch
    * settles, or was closed before it: a launch not yet on the host stops,
    * one already there goes on, unwatched.
    * @throws `SessionHostError` `session-exists` when a session of the key
@@ -192,7 +213,71 @@ export interface Sessions {
    * process of the app: nothing is written for it, and it is not listed.
    * Other `SessionHostError`s when the host fails.
    */
-  run(run: SessionRun): Promise<RunResult>;
+  launch(launch: SessionLaunch): Promise<Session>;
+  /**
+   * Types a prompt into an `idle` session, the keys of the page's
+   * terminals held meanwhile, and resolves once the agent took it.
+   *
+   * @param key - The session's key.
+   * @param prompt - The prompt.
+   * @returns The session once the agent took the prompt.
+   * @throws `CockpitError` `wrong-state` with the state the session is in
+   * when it is not `idle`, or when the typing found anything but the input
+   * box, or the hooks told of anything but the prompt's own turn;
+   * `prompt-not-taken` when the agent did not take it, the box cleared and
+   * the person's draft put back. What the host fails with.
+   */
+  send(key: string, prompt: string): Promise<Session>;
+  /**
+   * Ends a live session gracefully: its agent is sent the driver's signal
+   * and given the driver's bound to exit, keeping its conversation, then
+   * killed on the host. The session is `ended` for the reason given.
+   *
+   * @param key - The session's key.
+   * @param reason - Why the cockpit ends it.
+   * @returns The background tasks the `idle` session listed, stopped with
+   * it; none for a session in another state, or with no live session.
+   * @throws `SessionHostError` when the host cannot kill a session that
+   * outlived the bound.
+   */
+  end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]>;
+  /**
+   * The session of a key, as it is now.
+   *
+   * @param key - The key.
+   * @returns The session; `undefined` when this core launched none for the key.
+   */
+  session(key: string): Session | undefined;
+  /**
+   * The conversation a key's session works in now: the one launched, or one
+   * the agent moved to.
+   *
+   * @param key - The key.
+   * @returns Its id; `undefined` when this core launched no session for the key.
+   */
+  conversationOf(key: string): string | undefined;
+  /**
+   * Tells each move of a session's agent to another conversation (Claude
+   * Code's `/clear`).
+   *
+   * @param listener - Called with the key and the new conversation's id.
+   * @returns A function that stops telling it.
+   */
+  onConversation(listener: (key: string, conversationId: string) => void): () => void;
+  /**
+   * The keys whose session lives, or is being launched or ended.
+   *
+   * @returns The keys, in the order they were first launched.
+   */
+  liveKeys(): string[];
+  /**
+   * Counts the terminals attached to a session: the page's and a person's
+   * own `tmux attach`.
+   *
+   * @param key - The session's key.
+   * @throws `SessionHostError` when the host fails.
+   */
+  terminalsAttached(key: string): Promise<number>;
   /**
    * Takes a request of a session's hooks, already proved to come from its
    * agent: the driver reads it, and the session's state follows. A request
@@ -213,7 +298,7 @@ export interface Sessions {
    */
   attach(key: string, size: TerminalSize): Promise<Attachment | undefined>;
   /**
-   * Lists the sessions, in the order their keys were first run.
+   * Lists the sessions, in the order their keys were first launched.
    *
    * @returns Each session as it is now.
    */
@@ -228,7 +313,7 @@ export interface Sessions {
   follow(listener: (sessions: readonly Session[]) => void): () => void;
   /**
    * Stops watching: no timer of the core runs any more, and none starts.
-   * Every run still pending settles with `SessionsClosedError`; a launch
+   * Every launch still pending settles with `SessionsClosedError`; a launch
    * not yet on the host goes no further. The sessions themselves go on, on
    * the host: nothing is killed.
    */
@@ -270,6 +355,20 @@ interface Departure {
   reject(error: unknown): void;
 }
 
+/** A promise settled by hand, once. */
+interface Settled {
+  readonly promise: Promise<void>;
+  settle(): void;
+}
+
+function settled(): Settled {
+  let settle = () => {};
+  const promise = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  return { promise, settle };
+}
+
 function departure(): Departure {
   let resolve: (session: Session) => void = () => {};
   let reject: (error: unknown) => void = () => {};
@@ -290,8 +389,17 @@ interface Entry {
   readonly environment: Readonly<Record<string, string>>;
   /** The conversation the agent works in: the one launched, until the agent names another. */
   conversationId: string;
+  /** Whether the session has a first prompt: on the command line, or typed once the agent is ready. */
   readonly launchedWithPrompt: boolean;
+  /** A first prompt too long for the command line, to type once the agent is ready; gone once begun. */
+  promptToType?: string;
   readonly departure: Departure;
+  /** Settled once the session ended: what a graceful end waits for. */
+  readonly ending: Settled;
+  /** The terminal a prompt is being typed through, which hears the session's hooks. */
+  typing?: SessionTypingTerminal;
+  /** The ended session of the key this launch replaces: listed until the launch is, and back if it fails. */
+  readonly replaces?: Entry;
   session: Session;
   /** What a compaction begun while `idle` returns the session to. */
   compactingFrom?: SessionCourse['compactingFrom'];
@@ -331,6 +439,7 @@ class SessionRegistry implements Sessions {
   readonly #options: SessionsOptions;
   readonly #entries = new Map<string, Entry>();
   readonly #followers = new Set<(sessions: readonly Session[]) => void>();
+  readonly #conversationListeners = new Set<(key: string, conversationId: string) => void>();
   readonly #watch: LivenessWatch;
   #closed = false;
 
@@ -343,16 +452,138 @@ class SessionRegistry implements Sessions {
     });
   }
 
-  async run({ key, directory, prompt, part }: SessionRun): Promise<RunResult> {
+  async launch(launch: SessionLaunch): Promise<Session> {
+    const { key, prompt } = launch;
     if (!isSessionKey(key)) throw new TypeError(`${JSON.stringify(key)} is no session key.`);
     if (this.#closed) throw new SessionsClosedError(key);
     const existing = this.#entries.get(key);
-    if (existing) throw wrongState(existing.session);
+    if (existing !== undefined && existing.phase !== 'ended') throw wrongState(existing.session);
 
-    const entry = this.#reserve(key, directory, prompt !== undefined);
+    const onCommandLine =
+      prompt === undefined || this.#options.driver.promptFitsLaunch(prompt) ? prompt : undefined;
+    const entry = this.#reserve(launch, prompt, existing);
     await this.#refuseLeftOver(entry);
-    await this.#launch(entry, { prompt, part });
+    await this.#launch(entry, { ...launch, prompt: onCommandLine });
     return this.#outcome(entry);
+  }
+
+  async send(key: string, prompt: string): Promise<Session> {
+    const entry = this.#entries.get(key);
+    if (entry === undefined) {
+      throw new CockpitError('wrong-state', `The key ${key} has no session.`, {
+        key,
+        state: 'ended',
+      });
+    }
+    if (!isListened(entry) || entry.session.state !== 'idle') throw wrongState(entry.session);
+    const outcome = await this.#type(entry, prompt);
+    if (outcome !== 'taken') throw typingFailure(outcome, entry.session);
+    return entry.session;
+  }
+
+  async end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]> {
+    const entry = this.#entries.get(key);
+    if (entry?.phase !== 'live') return [];
+    const { session } = entry;
+    const stopped = session.state === 'idle' ? (session.backgroundTasks ?? []) : [];
+    entry.endedBecause = reason;
+    const { signal, boundMs } = this.#options.driver.ending;
+    await this.#signal(key, signal);
+    if (!(await within(entry.ending.promise, boundMs))) {
+      entry.phase = 'killing';
+      await this.#options.host.kill(key);
+      await this.#gone(key);
+    }
+    return stopped;
+  }
+
+  session(key: string): Session | undefined {
+    const entry = this.#entries.get(key);
+    if (entry?.phase !== 'reserved') return entry?.session;
+    return entry.replaces?.session;
+  }
+
+  conversationOf(key: string): string | undefined {
+    return this.#entries.get(key)?.conversationId;
+  }
+
+  onConversation(listener: (key: string, conversationId: string) => void): () => void {
+    const own = (key: string, conversationId: string) => listener(key, conversationId);
+    this.#conversationListeners.add(own);
+    return () => void this.#conversationListeners.delete(own);
+  }
+
+  liveKeys(): string[] {
+    return [...this.#entries.values()]
+      .filter((entry) => entry.phase !== 'ended')
+      .map((entry) => entry.key);
+  }
+
+  terminalsAttached(key: string): Promise<number> {
+    return this.#options.host.countAttached(key);
+  }
+
+  /** Asks the session's agent to end: its process sent the signal, if it still has one. */
+  async #signal(key: string, signal: NodeJS.Signals): Promise<void> {
+    const agent = await this.#options.host.processOf(key).catch(() => undefined);
+    if (agent === undefined) return;
+    try {
+      (this.#options.signal ?? process.kill)(agent.pid, signal);
+    } catch {
+      // Gone already: the watch tells its end.
+    }
+  }
+
+  /**
+   * Types a prompt into a live session through its checked terminal, the
+   * page's terminals' keys held meanwhile.
+   *
+   * @returns What became of it; a write the terminal refused is
+   * `no-input-box`: the session showed or told something else.
+   */
+  async #type(entry: Entry, prompt: string): Promise<TypingOutcome> {
+    const terminal = new SessionTypingTerminal({
+      key: entry.key,
+      host: this.#options.host,
+      readInputBox: (text) => this.#options.driver.readInputBox(text),
+      session: () => (isListened(entry) && !this.#closed ? entry.session : undefined),
+    });
+    entry.typing = terminal;
+    const release = this.#options.holds.hold(entry.key);
+    try {
+      return await this.#options.driver.typePrompt(prompt, terminal);
+    } catch (error) {
+      if (error instanceof TypingStoppedError) return 'no-input-box';
+      throw error;
+    } finally {
+      terminal.close();
+      if (entry.typing === terminal) delete entry.typing;
+      release();
+    }
+  }
+
+  /**
+   * Types a first prompt too long for the command line, once the agent is
+   * ready: the session stays `starting` until the agent takes it, which
+   * the launch then resolves on. Not taken, the session is `idle`, and the
+   * launch fails as a send does.
+   */
+  async #typeFirstPrompt(entry: Entry, prompt: string): Promise<void> {
+    let failure: unknown;
+    try {
+      const outcome = await this.#type(entry, prompt);
+      if (outcome === 'taken') return;
+      failure = outcome;
+    } catch (error) {
+      failure = error;
+    }
+    if (!isListened(entry) || entry.session.state !== 'starting') {
+      entry.departure.reject(asError(failure, entry.session));
+      return;
+    }
+    const idle: Session = { key: entry.key, state: 'idle', since: now() };
+    entry.departure.reject(asError(failure, idle));
+    this.#update(entry, idle);
   }
 
   receive({ key, path, body }: HookRequest): void {
@@ -378,6 +609,7 @@ class SessionRegistry implements Sessions {
       course = courseAfter(course, event, entry.launchedWithPrompt, at);
     }
     this.#take(entry, course);
+    entry.typing?.heard(events);
     if (events.some((event) => event.type === 'ready')) this.#awaitPrompt(entry);
   }
 
@@ -431,6 +663,7 @@ class SessionRegistry implements Sessions {
   #moveTo(entry: Entry, conversationId: string): void {
     if (conversationId === entry.conversationId) return;
     entry.conversationId = conversationId;
+    for (const listener of this.#conversationListeners) listener(entry.key, conversationId);
     // Not followed yet, during the launch: the following starts on the new one.
     if (entry.stopFollowing === undefined) return;
     // An Esc and then a `/clear` within a poll of the driver's leave the
@@ -461,9 +694,10 @@ class SessionRegistry implements Sessions {
   }
 
   list(): Session[] {
-    return [...this.#entries.values()]
-      .filter((entry) => entry.phase !== 'reserved')
-      .map((entry) => entry.session);
+    return [...this.#entries.values()].flatMap((entry) => {
+      if (entry.phase !== 'reserved') return [entry.session];
+      return entry.replaces === undefined ? [] : [entry.replaces.session];
+    });
   }
 
   follow(listener: (sessions: readonly Session[]) => void): () => void {
@@ -478,6 +712,7 @@ class SessionRegistry implements Sessions {
     this.#closed = true;
     this.#watch.close();
     for (const entry of this.#entries.values()) {
+      entry.typing?.close();
       stopReadingTheScreen(entry);
       this.#stopWatchingTheCompaction(entry);
       stopFollowingEveryConversation(entry);
@@ -485,22 +720,37 @@ class SessionRegistry implements Sessions {
     }
   }
 
-  /** Takes the key at once, so that a second run of it is refused before any wait. */
-  #reserve(key: string, directory: string, launchedWithPrompt: boolean): Entry {
+  /** Takes the key at once, so that a second launch of it is refused before any wait. */
+  #reserve(
+    { key, directory, conversationId }: SessionLaunch,
+    prompt: string | undefined,
+    replaces: Entry | undefined,
+  ): Entry {
+    const typed = prompt !== undefined && !this.#options.driver.promptFitsLaunch(prompt);
     const entry: Entry = {
       key,
       directory,
       environment: this.#options.environment(),
-      conversationId: randomUUID(),
-      launchedWithPrompt,
+      conversationId,
+      launchedWithPrompt: prompt !== undefined,
+      ...(typed ? { promptToType: prompt } : {}),
       departure: departure(),
+      ending: settled(),
       session: { key, state: 'starting', since: now() },
       phase: 'reserved',
       heard: false,
       stopFollowingLeft: [],
+      ...(replaces === undefined ? {} : { replaces }),
     };
     this.#entries.set(key, entry);
     return entry;
+  }
+
+  /** Gives the key back to what it held before a launch that failed: its ended session, or nothing. */
+  #unreserve(entry: Entry): void {
+    if (this.#entries.get(entry.key) !== entry) return;
+    if (entry.replaces === undefined) this.#entries.delete(entry.key);
+    else this.#entries.set(entry.key, entry.replaces);
   }
 
   /**
@@ -510,11 +760,11 @@ class SessionRegistry implements Sessions {
    */
   async #refuseLeftOver(entry: Entry): Promise<void> {
     const leftOver = await this.#options.host.isLive(entry.key).catch((error: unknown) => {
-      this.#entries.delete(entry.key);
+      this.#unreserve(entry);
       throw error;
     });
     if (leftOver) {
-      this.#entries.delete(entry.key);
+      this.#unreserve(entry);
       throw new SessionHostError(
         'session-exists',
         `A session of the key ${entry.key} lives on the host, left by an earlier run.`,
@@ -524,7 +774,7 @@ class SessionRegistry implements Sessions {
 
   async #launch(
     entry: Entry,
-    { prompt, part }: { prompt: string | undefined; part: DriverPart | undefined },
+    { prompt, part, resume }: Omit<SessionLaunch, 'prompt'> & { prompt: string | undefined },
   ): Promise<void> {
     const { host, driver, hooks, folders } = this.#options;
     let granted = false;
@@ -543,6 +793,7 @@ class SessionRegistry implements Sessions {
       const command = await driver.launch({
         key: entry.key,
         conversationId: entry.conversationId,
+        ...(resume === true ? { resume: true } : {}),
         directory: entry.directory,
         files,
         hooks: address,
@@ -563,7 +814,7 @@ class SessionRegistry implements Sessions {
     } catch (error) {
       if (granted) hooks.revoke(entry.key);
       const listed = entry.phase !== 'reserved';
-      this.#entries.delete(entry.key);
+      this.#unreserve(entry);
       if (listed) this.#notify();
       throw error;
     }
@@ -596,7 +847,7 @@ class SessionRegistry implements Sessions {
    */
   #hear(entry: Entry): void {
     entry.heard = true;
-    delete entry.endedBecause;
+    if (entry.endedBecause === 'unobservable') delete entry.endedBecause;
     stopReadingTheScreen(entry);
   }
 
@@ -617,6 +868,12 @@ class SessionRegistry implements Sessions {
    */
   #awaitPrompt(entry: Entry): void {
     if (!entry.launchedWithPrompt || entry.session.state !== 'starting') return;
+    const { promptToType } = entry;
+    if (promptToType !== undefined) {
+      delete entry.promptToType;
+      void this.#typeFirstPrompt(entry, promptToType);
+      return;
+    }
     entry.promptBound = setTimeout(() => this.#watchForPrompt(entry), PROMPT_BOUND_MS);
   }
 
@@ -680,7 +937,7 @@ class SessionRegistry implements Sessions {
     if (this.#closed) throw new SessionsClosedError(entry.key);
   }
 
-  async #outcome(entry: Entry): Promise<RunResult> {
+  async #outcome(entry: Entry): Promise<Session> {
     const session = await entry.departure.promise;
     if (session.state === 'ended' && session.reason === 'unobservable') {
       throw new CockpitError('unobservable', 'The agent reported nothing; its session was ended.', {
@@ -688,7 +945,7 @@ class SessionRegistry implements Sessions {
         cause: this.#options.driver.silentStartCause,
       });
     }
-    return { action: 'started', state: session.state };
+    return session;
   }
 
   /** Ends a session whose agent never reported: the cockpit keeps none it cannot observe. */
@@ -732,6 +989,7 @@ class SessionRegistry implements Sessions {
       .catch(() => false);
     entry.phase = 'ended';
     this.#update(entry, { key, state: 'ended', since: now(), canResume, ...endOf(entry) });
+    entry.ending.settle();
   }
 
   #setPhase(entry: Entry, phase: Phase): void {
@@ -814,11 +1072,55 @@ function courseOf(entry: Entry): SessionCourse {
   };
 }
 
-function wrongState(session: Session): CockpitError<'wrong-state'> {
+/**
+ * The refusal of an operation the session's state does not allow: on a
+ * `waiting` session, with everything it waits for.
+ *
+ * @param session - The session as it is.
+ * @returns The error.
+ */
+export function wrongState(session: Session): CockpitError<'wrong-state'> {
   return new CockpitError('wrong-state', `The session ${session.key} is ${session.state}.`, {
     key: session.key,
     state: session.state,
+    ...(session.state === 'waiting' ? { pending: session.pending } : {}),
   });
+}
+
+/** Why a prompt typed was not taken: the agent did not take it, or no input box took it. */
+function typingFailure(
+  outcome: Exclude<TypingOutcome, 'taken'>,
+  session: Session,
+): CockpitError<'wrong-state' | 'prompt-not-taken'> {
+  if (outcome === 'no-input-box') return wrongState(session);
+  return new CockpitError(
+    'prompt-not-taken',
+    `The session ${session.key} did not take the prompt.`,
+    {
+      key: session.key,
+      state: session.state,
+    },
+  );
+}
+
+/** A first prompt's typing that failed, as the launch fails: what a send fails with, or what was thrown. */
+function asError(failure: unknown, session: Session): unknown {
+  return failure === 'not-taken' || failure === 'no-input-box'
+    ? typingFailure(failure, session)
+    : failure;
+}
+
+/** Whether the promise settles within the time, in milliseconds. */
+async function within(promise: Promise<void>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([promise.then(() => true), timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

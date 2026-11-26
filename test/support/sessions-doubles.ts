@@ -3,9 +3,12 @@ import type {
   Driver,
   DriverEvent,
   HookRequest,
+  InputBox,
   Launch,
   LaunchCommand,
   ScreenReading,
+  TypingOutcome,
+  TypingTerminal,
 } from '../../src/server/driver.ts';
 import type {
   Attachment,
@@ -15,6 +18,7 @@ import type {
 } from '../../src/server/session-host/session-host.ts';
 import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import type { HookAccess, SessionFolders } from '../../src/server/sessions/sessions.ts';
+import type { RecordStore, UnitRecord } from '../../src/server/state/records.ts';
 import type { StartupDialog } from '../../src/shared/session.ts';
 import { DRIVER_DEFAULTS } from './driver-defaults.ts';
 
@@ -79,6 +83,12 @@ export interface FakeHost extends SessionHost {
   readonly attachments: FakeAttachment[];
   /** How many times a screen was read. */
   readonly screenReads: number;
+  /** Every write into a session, in order: `<name> text:<text>`, or `<name> ` and the keys pressed joined by spaces. */
+  readonly writes: string[];
+  /** The process id of a live session, as `processOf` gives it. */
+  pidOf(name: string): number | undefined;
+  /** Makes the session count this many terminals attached: none until then. */
+  attachTerminals(name: string, count: number): void;
   /** Makes a session's screen show the text from now on: blank until then. */
   show(name: string, text: string): void;
   /** Makes the session's screen read as scrolled back by a person, or not. */
@@ -112,6 +122,12 @@ export function createFakeHost(): FakeHost {
   const attachments: FakeAttachment[] = [];
   let listings = 0;
   let screenReads = 0;
+  const writes: string[] = [];
+  const pids = new Map<string, number>();
+  const attached = new Map<string, number>();
+  const refuseWriteUnlessLive = (name: string) => {
+    if (!live.has(name)) throw new SessionHostError('no-session', `${name} does not live.`);
+  };
   const screens = new Map<string, string>();
   const scrolled = new Set<string>();
   let nextStart: { error?: unknown; gate?: Gate } = {};
@@ -127,6 +143,9 @@ export function createFakeHost(): FakeHost {
     starts,
     kills,
     attachments,
+    writes,
+    pidOf: (name) => (live.has(name) ? pids.get(name) : undefined),
+    attachTerminals: (name, count) => void attached.set(name, count),
     get listings() {
       return listings;
     },
@@ -177,6 +196,7 @@ export function createFakeHost(): FakeHost {
         throw new SessionHostError('session-exists', `${options.name} lives.`);
       }
       live.add(options.name);
+      pids.set(options.name, 1000 + starts.length);
     },
     async list() {
       listings += 1;
@@ -191,9 +211,18 @@ export function createFakeHost(): FakeHost {
       if (isLiveFails) throw new SessionHostError('host-failed', 'tmux failed.');
       return live.has(name);
     },
-    processOf: unused,
-    sendText: unused,
-    sendKeys: unused,
+    async processOf(name) {
+      const pid = live.has(name) ? pids.get(name) : undefined;
+      return pid === undefined ? undefined : { pid };
+    },
+    async sendText(name, text) {
+      refuseWriteUnlessLive(name);
+      writes.push(`${name} text:${text}`);
+    },
+    async sendKeys(name, keys) {
+      refuseWriteUnlessLive(name);
+      writes.push(`${name} ${keys.join(' ')}`);
+    },
     sendBytes: unused,
     async readScreen(name) {
       screenReads += 1;
@@ -213,7 +242,7 @@ export function createFakeHost(): FakeHost {
       attachments.push(attachment);
       return attachment;
     },
-    countAttached: unused,
+    countAttached: async (name) => attached.get(name) ?? 0,
     async kill(name) {
       const error = nextKillError;
       nextKillError = undefined;
@@ -260,6 +289,36 @@ export const CONVERSATION_PATH = '/conversation/';
 export function stubScreen(reading: 'ready' | 'dialog' | StartupDialog): string {
   return reading === 'ready' || reading === 'dialog' ? reading : `dialog:${reading}`;
 }
+
+/**
+ * The start of the path of a stub hook that tells a prompt taken, with its
+ * text: the text follows it.
+ */
+export const PROMPT_PATH = '/prompt:';
+
+/** The input box a stub driver reads: on the `ready` screen, empty. */
+function readStubInputBox(text: string): InputBox | undefined {
+  return text === 'ready' ? { text: '' } : undefined;
+}
+
+/**
+ * Types a prompt as a driver does, in a stub's few writes: a kill, the
+ * text, Enter, then the wait for the agent to take it, and the restore.
+ */
+export async function typeAsADriverDoes(
+  prompt: string,
+  terminal: TypingTerminal,
+): Promise<TypingOutcome> {
+  await terminal.pressKeys(['C-u']);
+  await terminal.typeText(prompt);
+  await terminal.pressKeys(['Enter']);
+  const taken = await terminal.promptTaken(prompt, TYPING_PATIENCE_MS);
+  await terminal.pressKeys(['C-y']);
+  return taken ? 'taken' : 'not-taken';
+}
+
+/** How long {@link typeAsADriverDoes} waits for the agent to take the prompt. */
+export const TYPING_PATIENCE_MS = 3000;
 
 function readStubScreen(text: string): ScreenReading {
   if (text === 'ready') return { shows: 'ready' };
@@ -316,6 +375,8 @@ export function createStubDriver(): StubDriver {
     silentStartCause: 'The stub agent sent no hook.',
     ...DRIVER_DEFAULTS,
     readScreen: readStubScreen,
+    readInputBox: readStubInputBox,
+    typePrompt: typeAsADriverDoes,
     failNextLaunch(error) {
       nextLaunchError = error;
     },
@@ -332,6 +393,11 @@ export function createStubDriver(): StubDriver {
         : undefined;
       if (conversationId !== undefined) {
         return { events: [{ type: 'conversation', conversationId }] };
+      }
+      if (request.path.startsWith(PROMPT_PATH)) {
+        return {
+          events: [{ type: 'prompt-taken', prompt: request.path.slice(PROMPT_PATH.length) }],
+        };
       }
       return { events: STUB_EVENTS[request.path] ?? [] };
     },
@@ -373,4 +439,29 @@ export function createRecordingHookAccess(url = 'http://127.0.0.1:4000'): Record
 /** Session folders under a fixed root, created nowhere. */
 export function stubFolders(root = '/state/sessions'): SessionFolders {
   return { prepare: async (key) => `${root}/${key}` };
+}
+
+/** A record store in memory: what was put, read back as a copy, in the order keys were first put. */
+export interface MemoryRecords extends RecordStore {
+  /** How many records were put, in all. */
+  readonly puts: number;
+}
+
+export function createMemoryRecords(initial: readonly UnitRecord[] = []): MemoryRecords {
+  const records = new Map<string, UnitRecord>(initial.map((record) => [record.key, record]));
+  let puts = 0;
+  return {
+    get puts() {
+      return puts;
+    },
+    list: () => [...records.values()],
+    get: (key) => records.get(key),
+    async put(record) {
+      puts += 1;
+      records.set(record.key, structuredClone(record));
+    },
+    async remove(key) {
+      records.delete(key);
+    },
+  };
 }

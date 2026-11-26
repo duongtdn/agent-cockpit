@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { CockpitError } from '../shared/cockpit-error.js';
@@ -31,7 +32,7 @@ import { carriesAppToken, type RequestHeaders } from './http/request-token.js';
 import { type Job, jobOf, launchOfJob } from './jobs.js';
 import type { SessionHost } from './session-host/session-host.js';
 import { createTmuxSessionHost } from './session-host/tmux-session-host.js';
-import { createSessions, type Sessions } from './sessions/sessions.js';
+import { createSessions, type Sessions, wrongState } from './sessions/sessions.js';
 import { openAppToken } from './state/app-token.js';
 import { takeAppLock } from './state/lock.js';
 import { UntrustedStateError } from './state/own-files.js';
@@ -315,6 +316,8 @@ async function openCockpit(
       reportFailure: (cause) => failures.report('agent-listener', cause),
     });
     const appPorts = createAppPorts(checked.ports);
+    // The core holds a key while it types a prompt; the pty bridge's terminals join it.
+    const holds = createTerminalHolds();
     const sessions = createSessions({
       host,
       driver: checked.driver,
@@ -328,6 +331,7 @@ async function openCockpit(
         appPorts: appPorts.current,
         listener: { host: '127.0.0.1', port: listener.port },
       }),
+      holds,
     });
     receiver.sessions = sessions;
     const jobs = new Map<string, Job>(checked.jobs.map((job) => [job.id, job]));
@@ -338,10 +342,13 @@ async function openCockpit(
         const job = jobOf(jobs, jobId);
         const launch = launchOfJob(job, args);
         refuseUnfitPart(checked, job);
-        return sessions.run({ ...launch, directory: checked.directory });
+        const existing = sessions.session(launch.key);
+        if (existing !== undefined) throw wrongState(existing);
+        const { args: _args, ...given } = launch;
+        return sessions
+          .launch({ ...given, directory: checked.directory, conversationId: randomUUID() })
+          .then((session): RunResult => ({ action: 'started', state: session.state }));
       });
-    // The core holds a key while it types a prompt; the pty bridge's terminals join it.
-    const holds = createTerminalHolds();
     const handler = createHandler({
       tokenMatches: appToken.matches,
       run,

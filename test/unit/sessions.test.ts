@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Confinement } from '../../src/server/driver.ts';
 import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
@@ -7,12 +8,14 @@ import {
   PROMPT_BOUND_MS,
   READY_BOUND_MS,
   SCREEN_INTERVAL_MS,
+  type SessionLaunch,
   type Sessions,
   SessionsClosedError,
   START_DEADLINE_MS,
 } from '../../src/server/sessions/sessions.ts';
+import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
 import { CockpitError, isCockpitError } from '../../src/shared/cockpit-error.ts';
-import type { RunResult, Session } from '../../src/shared/session.ts';
+import type { Session } from '../../src/shared/session.ts';
 import {
   CONVERSATION_PATH,
   createFakeHost,
@@ -60,6 +63,7 @@ beforeEach(() => {
     environment: () => ENVIRONMENT,
     admitAgent: (environment) => admitAgent(environment),
     confinement: () => confinement(),
+    holds: createTerminalHolds(),
   });
 });
 
@@ -73,12 +77,19 @@ function hook(path: string, key = KEY): void {
   sessions.receive({ key, path, body: {} });
 }
 
+/** Launches a session, in a new conversation unless the test names one. */
+function launch(
+  given: Omit<SessionLaunch, 'conversationId'> & { conversationId?: string },
+): Promise<Session> {
+  return sessions.launch({ conversationId: randomUUID(), ...given });
+}
+
 /** Lets every pending promise settle, the clock unmoved. */
 const settle = () => vi.advanceTimersByTimeAsync(0);
 
 /** Runs a job's prompt on a key and waits until the agent is launched on the host. */
 async function launched(key = KEY, prompt: { prompt?: string } = { prompt: 'Explain README.md' }) {
-  const result = sessions.run({ key, directory: DIRECTORY, ...prompt });
+  const result = launch({ key, directory: DIRECTORY, ...prompt });
   // A run that fails early must not fail the test before it looks.
   result.catch(() => {});
   await settle();
@@ -131,12 +142,20 @@ describe('a run on a key with no session', () => {
     expect(remove).not.toContain('STUB_AGENT');
   });
 
-  it('mints a new conversation id at each launch', async () => {
-    await launched('one');
-    await launched('two');
+  it('launches the conversation given, new unless it is resumed', async () => {
+    const launches = [
+      sessions.launch({ key: 'one', directory: DIRECTORY, conversationId: 'c-1' }),
+      sessions.launch({ key: 'two', directory: DIRECTORY, conversationId: 'c-2', resume: true }),
+    ];
+    for (const launching of launches) launching.catch(() => {});
+    await settle();
 
-    const [first, second] = driver.launches;
-    expect(first?.conversationId).not.toBe(second?.conversationId);
+    expect(
+      driver.launches.map(({ conversationId, resume }) => ({ conversationId, resume })),
+    ).toEqual([
+      { conversationId: 'c-1', resume: undefined },
+      { conversationId: 'c-2', resume: true },
+    ]);
   });
 
   it('lists the session `starting` from the launch, since then', async () => {
@@ -147,7 +166,7 @@ describe('a run on a key with no session', () => {
 
   it('resolves when the session leaves `starting`: `busy`, the prompt taken', async () => {
     const { result } = await launched();
-    let settled: RunResult | undefined;
+    let settled: Session | undefined;
     void result.then((value) => {
       settled = value;
     });
@@ -160,7 +179,7 @@ describe('a run on a key with no session', () => {
     vi.advanceTimersByTime(1500);
     hook('/prompt-taken');
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+    await expect(result).resolves.toMatchObject({ state: 'busy' });
     expect(sessionOf()).toEqual({
       key: KEY,
       state: 'busy',
@@ -173,7 +192,7 @@ describe('a run on a key with no session', () => {
 
     hook('/ready');
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'idle' });
+    await expect(result).resolves.toMatchObject({ state: 'idle' });
     expect(driver.launches[0]).not.toHaveProperty('prompt');
   });
 
@@ -182,13 +201,11 @@ describe('a run on a key with no session', () => {
 
     hook('/start-and-take');
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+    await expect(result).resolves.toMatchObject({ state: 'busy' });
   });
 
   it('refuses a text that is no session key, launching nothing', async () => {
-    await expect(sessions.run({ key: 'Not a key', directory: DIRECTORY })).rejects.toThrow(
-      TypeError,
-    );
+    await expect(launch({ key: 'Not a key', directory: DIRECTORY })).rejects.toThrow(TypeError);
     expect(driver.launches).toEqual([]);
   });
 });
@@ -202,31 +219,49 @@ describe('a run on a key that has a session', () => {
     await launched();
     for (const path of hooks) hook(path);
 
-    const refusal = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Again' });
+    const refusal = launch({ key: KEY, directory: DIRECTORY, prompt: 'Again' });
 
     await expect(refusal).rejects.toSatisfy((error) => isCockpitError(error, 'wrong-state'));
     await expect(refusal).rejects.toMatchObject({ key: KEY, state });
     expect(driver.launches).toHaveLength(1);
   });
 
-  it('is refused on `ended` with `wrong-state`, until a run resumes', async () => {
+  it('replaces an `ended` session: listed until the new one is, which is `starting`', async () => {
     await launched();
     host.exit(KEY);
     await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    const listed: string[] = [];
+    sessions.follow((list) => listed.push(list.map((session) => session.state).join()));
 
-    await expect(
-      sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Again' }),
-    ).rejects.toMatchObject({ code: 'wrong-state', key: KEY, state: 'ended' });
+    const again = launch({ key: KEY, directory: DIRECTORY, prompt: 'Again' });
+    expect(sessionOf()?.state).toBe('ended');
+    await settle();
+    hook('/start-and-take');
+
+    await expect(again).resolves.toMatchObject({ state: 'busy' });
+    expect(listed).toEqual(['ended', 'starting', 'busy']);
+    expect(host.starts).toHaveLength(2);
+  });
+
+  it('gives the key back to its `ended` session when the launch that replaced it fails', async () => {
+    await launched();
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    const failure = new Error('No launch.');
+    driver.failNextLaunch(failure);
+
+    await expect(launch({ key: KEY, directory: DIRECTORY, prompt: 'Again' })).rejects.toBe(failure);
+    expect(sessions.list()).toMatchObject([{ key: KEY, state: 'ended' }]);
   });
 
   it('is refused for a second run of the same key at once, before the first launched', async () => {
-    const first = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'One' });
-    const second = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Two' });
+    const first = launch({ key: KEY, directory: DIRECTORY, prompt: 'One' });
+    const second = launch({ key: KEY, directory: DIRECTORY, prompt: 'Two' });
 
     await expect(second).rejects.toMatchObject({ code: 'wrong-state', state: 'starting' });
     await settle();
     hook('/prompt-taken');
-    await expect(first).resolves.toEqual({ action: 'started', state: 'busy' });
+    await expect(first).resolves.toMatchObject({ state: 'busy' });
     expect(host.starts).toHaveLength(1);
   });
 });
@@ -235,7 +270,7 @@ describe('a session that an earlier run left on the host', () => {
   it('is refused with `session-exists`: nothing is written for it, nothing listed', async () => {
     host.leave(KEY);
 
-    const refusal = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hello' });
+    const refusal = launch({ key: KEY, directory: DIRECTORY, prompt: 'Hello' });
 
     await expect(refusal).rejects.toBeInstanceOf(SessionHostError);
     await expect(refusal).rejects.toMatchObject({ reason: 'session-exists' });
@@ -249,9 +284,9 @@ describe('a launch that fails', () => {
   it('rejects when the host cannot tell whether an earlier session holds the key; the key stays free', async () => {
     host.failIsLive(true);
 
-    await expect(
-      sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' }),
-    ).rejects.toMatchObject({ reason: 'host-failed' });
+    await expect(launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toMatchObject({
+      reason: 'host-failed',
+    });
     expect(sessions.list()).toEqual([]);
 
     host.failIsLive(false);
@@ -265,9 +300,7 @@ describe('a launch that fails', () => {
     const seen: Session[][] = [];
     sessions.follow((list) => seen.push([...list]));
 
-    await expect(sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(
-      failure,
-    );
+    await expect(launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(failure);
 
     expect(sessions.list()).toEqual([]);
     expect(access.revoked).toEqual([KEY]);
@@ -284,9 +317,7 @@ describe('a launch that fails', () => {
       throw failure;
     };
 
-    await expect(sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(
-      failure,
-    );
+    await expect(launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(failure);
     expect(access.granted).toEqual([]);
     expect(driver.launches).toEqual([]);
     expect(host.starts).toEqual([]);
@@ -316,9 +347,7 @@ describe('a launch that fails', () => {
     const seen: (readonly Session[])[] = [];
     sessions.follow((list) => seen.push(list));
 
-    await expect(sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(
-      refusal,
-    );
+    await expect(launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(refusal);
     expect(access.granted).toEqual([]);
     expect(driver.launches).toEqual([]);
     expect(host.starts).toEqual([]);
@@ -327,7 +356,7 @@ describe('a launch that fails', () => {
 
   it("hands the job's driver part to the driver's launch", async () => {
     const part = { permissionMode: 'acceptEdits' };
-    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi', part });
+    const result = launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi', part });
     result.catch(() => {});
     await settle();
 
@@ -338,21 +367,19 @@ describe('a launch that fails', () => {
     const failure = new CockpitError('agent-not-found', 'No agent.', { command: 'claude' });
     driver.failNextLaunch(failure);
 
-    await expect(sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(
-      failure,
-    );
+    await expect(launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toBe(failure);
     expect(host.starts).toEqual([]);
     expect(sessions.list()).toEqual([]);
   });
 
   it('may be run again afterwards', async () => {
     host.failNextStart(new SessionHostError('host-failed', 'tmux failed.'));
-    await expect(sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toThrow();
+    await expect(launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' })).rejects.toThrow();
 
     const { result: again } = await launched();
     hook('/prompt-taken');
 
-    await expect(again).resolves.toEqual({ action: 'started', state: 'busy' });
+    await expect(again).resolves.toMatchObject({ state: 'busy' });
   });
 });
 
@@ -379,7 +406,7 @@ describe('a launch whose agent never reports', () => {
 
   it('counts the wait from the start on the host, not from the run', async () => {
     const held = host.holdNextStart();
-    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    const result = launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
     result.catch(() => {});
     await vi.advanceTimersByTimeAsync(5000);
     held.open();
@@ -439,7 +466,7 @@ describe("a launch's screen, read until its agent's first hook", () => {
 
     await nextRead();
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'waiting' });
+    await expect(result).resolves.toMatchObject({ state: 'waiting' });
     expect(sessionOf()).toEqual({
       key: KEY,
       state: 'waiting',
@@ -454,7 +481,7 @@ describe("a launch's screen, read until its agent's first hook", () => {
 
     await nextRead();
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'waiting' });
+    await expect(result).resolves.toMatchObject({ state: 'waiting' });
     expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'terminal' }] });
   });
 
@@ -680,7 +707,7 @@ describe("a launch's deadline", () => {
 });
 
 describe('a launch prompt that no hook says was taken', () => {
-  async function ready(): Promise<{ result: Promise<RunResult> }> {
+  async function ready(): Promise<{ result: Promise<Session> }> {
     const launch = await launched();
     hook('/ready');
     return launch;
@@ -695,7 +722,7 @@ describe('a launch prompt that no hook says was taken', () => {
     expect(host.screenReads).toBe(0);
     await vi.advanceTimersByTimeAsync(1);
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'idle' });
+    await expect(result).resolves.toMatchObject({ state: 'idle' });
     expect(sessionOf()).toEqual({ key: KEY, state: 'idle', since: at(PROMPT_BOUND_MS) });
   });
 
@@ -703,7 +730,7 @@ describe('a launch prompt that no hook says was taken', () => {
     const { result } = await ready();
     host.show(KEY, stubScreen('dialog'));
     await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS);
-    await expect(result).resolves.toEqual({ action: 'started', state: 'waiting' });
+    await expect(result).resolves.toMatchObject({ state: 'waiting' });
     expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'terminal' }] });
 
     host.show(KEY, stubScreen('ready'));
@@ -730,7 +757,7 @@ describe('a launch prompt that no hook says was taken', () => {
     host.show(KEY, stubScreen('ready'));
     await nextRead();
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'idle' });
+    await expect(result).resolves.toMatchObject({ state: 'idle' });
     const reads = host.screenReads;
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
     expect(host.screenReads).toBe(reads);
@@ -742,7 +769,7 @@ describe('a launch prompt that no hook says was taken', () => {
 
     hook('/prompt-taken');
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+    await expect(result).resolves.toMatchObject({ state: 'busy' });
     const reads = host.screenReads;
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
     expect(host.screenReads).toBe(reads);
@@ -758,7 +785,7 @@ describe('a launch prompt that no hook says was taken', () => {
     host.scrollBack(KEY, false);
     await nextRead();
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'idle' });
+    await expect(result).resolves.toMatchObject({ state: 'idle' });
   });
 
   it('is not read when the prompt is taken in time', async () => {
@@ -767,7 +794,7 @@ describe('a launch prompt that no hook says was taken', () => {
 
     await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS * 2);
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+    await expect(result).resolves.toMatchObject({ state: 'busy' });
     expect(host.screenReads).toBe(0);
   });
 
@@ -796,8 +823,8 @@ describe('a launch prompt that no hook says was taken', () => {
 describe('a hook that arrives while the agent is being started on the host', () => {
   it('is heard: the run resolves once the start is done, and the session is never ended silent', async () => {
     const held = host.holdNextStart();
-    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
-    let settled: RunResult | undefined;
+    const result = launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    let settled: Session | undefined;
     void result.then((value) => {
       settled = value;
     });
@@ -809,7 +836,7 @@ describe('a hook that arrives while the agent is being started on the host', () 
     expect(settled).toBeUndefined();
 
     held.open();
-    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+    await expect(result).resolves.toMatchObject({ state: 'busy' });
     await vi.advanceTimersByTimeAsync(START_DEADLINE_MS * 2);
     expect(host.kills).toEqual([]);
   });
@@ -817,7 +844,7 @@ describe('a hook that arrives while the agent is being started on the host', () 
   it('leaves the launch’s failure to the run when the start then fails', async () => {
     const failure = new SessionHostError('host-failed', 'tmux failed.');
     const held = host.holdNextStart();
-    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    const result = launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
     result.catch(() => {});
     await settle();
 
@@ -870,7 +897,7 @@ describe('a hook that arrives while the cockpit ends a silent session', () => {
 });
 
 describe('closing the sessions core', () => {
-  async function closedRun(result: Promise<RunResult>): Promise<void> {
+  async function closedRun(result: Promise<Session>): Promise<void> {
     await expect(result).rejects.toThrow(SessionsClosedError);
     await expect(result).rejects.toSatisfy((error) => !isCockpitError(error));
   }
@@ -888,7 +915,7 @@ describe('closing the sessions core', () => {
 
   it('settles a run still being started on the host, and then starts no timer and no watch', async () => {
     const held = host.holdNextStart();
-    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    const result = launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
     result.catch(() => {});
     await settle();
 
@@ -903,7 +930,7 @@ describe('closing the sessions core', () => {
   });
 
   it('stops a run that has not reached the host: nothing is launched, its token revoked', async () => {
-    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    const result = launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
     result.catch(() => {});
     sessions.close();
 
@@ -916,7 +943,7 @@ describe('closing the sessions core', () => {
   it('refuses a run asked afterwards, launching nothing', async () => {
     sessions.close();
 
-    await closedRun(sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' }));
+    await closedRun(launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' }));
     expect(driver.launches).toEqual([]);
   });
 
@@ -937,7 +964,7 @@ describe('closing the sessions core', () => {
   it('leaves a run that already resolved as it was', async () => {
     const { result } = await launched();
     hook('/prompt-taken');
-    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+    await expect(result).resolves.toMatchObject({ state: 'busy' });
 
     sessions.close();
 
@@ -1328,7 +1355,7 @@ describe('the end of a session', () => {
     host.exit(KEY);
     await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'ended' });
+    await expect(result).resolves.toMatchObject({ state: 'ended' });
     expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'lost' });
   });
 
@@ -1480,7 +1507,7 @@ describe('a terminal attached to a session', () => {
 
   it('is nothing while the session is not yet on the host', async () => {
     const held = host.holdNextStart();
-    const result = sessions.run({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
+    const result = launch({ key: KEY, directory: DIRECTORY, prompt: 'Hi' });
     result.catch(() => {});
     await settle();
 

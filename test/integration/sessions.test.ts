@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +13,7 @@ import {
   READY_BOUND_MS,
   type Sessions,
 } from '../../src/server/sessions/sessions.ts';
+import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
 import type { Session } from '../../src/shared/session.ts';
 import { DRIVER_DEFAULTS } from '../support/driver-defaults.ts';
 import { eventually } from '../support/eventually.ts';
@@ -65,6 +67,7 @@ function sessionsWith(driver: Driver): Sessions {
       appAddresses: [],
       listener: { host: '127.0.0.1', port: 0 },
     }),
+    holds: createTerminalHolds(),
   });
 }
 
@@ -81,7 +84,7 @@ afterAll(async () => {
 
 function run(key: string, script: readonly Turn[], prompt = 'Explain README.md') {
   writeScript(directory, script);
-  return sessions.run({ key, directory, prompt });
+  return sessions.launch({ key, directory, prompt, conversationId: randomUUID() });
 }
 
 function stateOf(key: string): Session | undefined {
@@ -110,7 +113,7 @@ describe('the sessions core, with the fake agent in tmux', () => {
       [{ do: 'exit' }],
     ]);
 
-    expect(result).toEqual({ action: 'started', state: 'busy' });
+    expect(result).toMatchObject({ state: 'busy' });
     expect(await inState('explain-readme', 'idle')).toMatchObject({ lastMessage: 'Done.' });
 
     await host.sendText('explain-readme', 'bye', pacing);
@@ -187,9 +190,14 @@ describe("the sessions core, reading Claude Code's start-up screens in tmux", ()
   it('waits in the terminal at the trust dialog, then ends `declined` when the person leaves it', async () => {
     const dialogs = sessionsWith(savedScreenDriver('s1-trust-0'));
     try {
-      const result = await dialogs.run({ key: 'untrusted', directory, prompt: 'Hello' });
+      const result = await dialogs.launch({
+        key: 'untrusted',
+        directory,
+        prompt: 'Hello',
+        conversationId: randomUUID(),
+      });
 
-      expect(result).toEqual({ action: 'started', state: 'waiting' });
+      expect(result).toMatchObject({ state: 'waiting' });
       expect(dialogs.list()).toMatchObject([
         { state: 'waiting', pending: [{ kind: 'terminal', dialog: 'trust-folder' }] },
       ]);
@@ -211,7 +219,12 @@ describe("the sessions core, reading Claude Code's start-up screens in tmux", ()
     async () => {
       const silent = sessionsWith(savedScreenDriver('s1-hooksoff-0'));
       try {
-        const run = silent.run({ key: 'hooks-off', directory, prompt: 'Hello' });
+        const run = silent.launch({
+          key: 'hooks-off',
+          directory,
+          prompt: 'Hello',
+          conversationId: randomUUID(),
+        });
 
         await expect(run).rejects.toMatchObject({ code: 'unobservable', key: 'hooks-off' });
         expect(silent.list()).toMatchObject([{ state: 'ended', reason: 'unobservable' }]);
