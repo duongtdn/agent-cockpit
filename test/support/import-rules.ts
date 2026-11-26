@@ -40,6 +40,9 @@ export interface FolderRule {
  *   so they import neither, and no Node built-in.
  * - A browser bundle never pulls server code, a Node built-in or a package it
  *   does not need: the client takes none, the terminal only xterm.js.
+ * - The terminal keeps the app's token and reaches the server as the client
+ *   does, so it imports the client rather than repeat it; the client stays
+ *   free of xterm.js, so it never imports the terminal.
  */
 export const IMPORT_RULES: Readonly<Record<string, FolderRule>> = {
   server: {
@@ -53,7 +56,7 @@ export const IMPORT_RULES: Readonly<Record<string, FolderRule>> = {
   channel: { folders: ['shared'], packages: ['zod'], nodeBuiltins: false },
   shared: { folders: [], packages: [], nodeBuiltins: false },
   client: { folders: ['shared'], packages: [], nodeBuiltins: false },
-  terminal: { folders: ['shared'], packages: ['@xterm/*'], nodeBuiltins: false },
+  terminal: { folders: ['client', 'shared'], packages: ['@xterm/*'], nodeBuiltins: false },
 };
 
 const TYPESCRIPT_SOURCE = /\.(ts|tsx|mts|cts)$/;

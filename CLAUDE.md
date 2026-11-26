@@ -36,11 +36,11 @@ Import rules, checked by a test, as an allow-list: a folder imports only
 what is named here. Folders: `server/` imports `channel-server/`, `channel/`
 and `shared/` (no driver, no adapter); `fastify/` and `claude-code/` import
 `server/` and `shared/`; `channel-server/` imports `channel/` and `shared/`,
-and only `server/` imports it; `channel/`, `client/` and `terminal/` import
-`shared/`; `shared/` imports nothing. Packages: `server/` `node-pty`, `ws`
-and `zod`; `fastify/` `fastify`; `channel-server/` and `channel/` `zod`;
-`terminal/` `@xterm/*`; `claude-code/`, `client/` and `shared/` none. Node
-built-ins: `server/`, `fastify/`, `claude-code/` and `channel-server/` only.
+and only `server/` imports it; `channel/` and `client/` import `shared/`;
+`terminal/` imports `client/` and `shared/`; `shared/` imports nothing.
+Packages: `server/` `node-pty`, `ws` and `zod`; `fastify/` `fastify`;
+`channel-server/` and `channel/` `zod`; `terminal/` `@xterm/*`;
+`claude-code/`, `client/` and `shared/` none. Node built-ins: `server/`, `fastify/`, `claude-code/` and `channel-server/` only.
 
 ## Commands
 

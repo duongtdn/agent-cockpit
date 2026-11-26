@@ -17,7 +17,7 @@ const FORBIDDEN_FOLDERS: Record<string, readonly string[]> = {
   channel: ['server', 'fastify', 'claude-code', 'channel-server', 'client', 'terminal'],
   shared: ['server', 'fastify', 'claude-code', 'channel-server', 'channel', 'client', 'terminal'],
   client: ['server', 'fastify', 'claude-code', 'channel-server', 'channel', 'terminal'],
-  terminal: ['server', 'fastify', 'claude-code', 'channel-server', 'channel', 'client'],
+  terminal: ['server', 'fastify', 'claude-code', 'channel-server', 'channel'],
 };
 
 let root: string;
@@ -148,7 +148,11 @@ describe('the import rules, on planted files', () => {
     plant('client/x.ts', "import { W } from '../shared/wire.js';\nimport { c } from './c.js';\n");
     plant(
       'terminal/x.ts',
-      "import { Terminal } from '@xterm/xterm';\nimport { W } from '../shared/wire.js';\n",
+      [
+        "import { Terminal } from '@xterm/xterm';",
+        "import { W } from '../shared/wire.js';",
+        "import { readToken } from '../client/token.js';",
+      ].join('\n'),
     );
     plant(
       'claude-code/x.ts',
