@@ -19,11 +19,12 @@ import type { ErrorResponse } from '../../shared/wire.js';
  * - 403: the request checks refuse it whatever it carries;
  * - 404: it names nothing the cockpit has (a job, a key, an id);
  * - 409: the state of the unit of work refuses it;
- * - 502: the agent, or the model's API, failed to do it;
+ * - 502: the agent, or the model's API, failed to do it (the one-shot
+ *   call's failures included);
  * - 503: the machine cannot run it now (no agent, the cap reached);
  * - 504: the agent did not confirm it in time;
- * - 500: a code no request can raise (creating the cockpit, the one-shot
- *   call, the client's own), should one ever reach the wire.
+ * - 500: a code no request can raise (creating the cockpit, the
+ *   client's own), should one ever reach the wire.
  *
  * A record over every code, so that a new code cannot be left out.
  */
