@@ -30,6 +30,21 @@ export interface ParityAgent extends DrivenAgent {
    * its subagent waits, on either agent, as one whose model has not answered.
    */
   releaseTask(): Promise<void>;
+  /**
+   * Keeps what the scenario saw of the agent beside its hooks, to compare
+   * with what it saw of the other: what the driver reads of a screen, what
+   * a transcript records.
+   *
+   * @param what - What it is, the same on both agents.
+   * @param value - What was seen.
+   */
+  observe(what: string, value: unknown): void;
+}
+
+/** One thing a scenario saw of an agent beside its hooks. */
+export interface Observation {
+  readonly what: string;
+  readonly value: unknown;
 }
 
 /** Something to play once on each agent, for what their hooks said to be compared. */
@@ -54,10 +69,16 @@ export interface Scenario {
   play(agent: ParityAgent): Promise<void>;
 }
 
-/** What a receiver got of each agent, made comparable: the two agree when the lists are equal. */
-export interface BothAgentsHooks {
-  readonly real: ObservedHook[];
-  readonly fake: ObservedHook[];
+/** What a scenario saw of one agent: its hooks, made comparable, and what it observed besides. */
+export interface Played {
+  readonly hooks: ObservedHook[];
+  readonly observed: Observation[];
+}
+
+/** What a scenario saw of each agent: the two agree when they are equal. */
+export interface BothAgentsPlayed {
+  readonly real: Played;
+  readonly fake: Played;
 }
 
 /**
@@ -68,7 +89,8 @@ export interface BothAgentsHooks {
  * @param scenario - See {@link Scenario}.
  * @param whenFinished - Registers the test's end: the test's own, since scenarios are played alongside each other.
  * @param meta - The test's own metadata, for the same reason.
- * @returns What each agent's hooks said, for `expect(fake).toEqual(real)`.
+ * @returns What each agent's hooks said, and what the scenario observed of
+ * it, for `expect(fake).toEqual(real)`.
  * @throws Error as every wait of the contract suite's, when an agent does
  * not do what the scenario awaits: for the fake agent, with the reason it
  * shows on its last screen.
@@ -77,19 +99,20 @@ export async function hooksOfBothAgents(
   scenario: Scenario,
   whenFinished: WhenFinished,
   meta: TaskMeta,
-): Promise<BothAgentsHooks> {
+): Promise<BothAgentsPlayed> {
   const real = await realAgent(scenario, whenFinished, meta);
   // The fake agent is told the real one's API, which a failure names: it never calls it.
   const fake = await fakeAgent(scenario, real.api.baseUrl, whenFinished, meta);
-  const [realHooks, fakeHooks] = await Promise.all([
+  const [realPlayed, fakePlayed] = await Promise.all([
     played(scenario, real),
     played(scenario, fake),
   ]);
-  return { real: realHooks, fake: fakeHooks };
+  return { real: realPlayed, fake: fakePlayed };
 }
 
-/** Plays a scenario on an agent, and gives what its receiver got since. */
-async function played(scenario: Scenario, agent: ParityAgent): Promise<ObservedHook[]> {
+/** Plays a scenario on an agent, and gives what its receiver got since and what the scenario observed. */
+async function played(scenario: Scenario, agent: UnplayedAgent): Promise<Played> {
+  const observed: Observation[] = [];
   const launched: AgentSession[] = [];
   const remembered = async (launching: Promise<AgentSession>) => {
     const session = await launching;
@@ -98,12 +121,14 @@ async function played(scenario: Scenario, agent: ParityAgent): Promise<ObservedH
   };
   await scenario.play({
     ...agent,
+    observe: (what, value) => void observed.push({ what, value }),
     startNew: (options) => remembered(agent.startNew(options)),
     resume: (sessionId, options) => remembered(agent.resume(sessionId, options)),
   });
   if (launched.length === 0) throw new Error('The scenario launched no session.');
   const sessionIds = [...new Set(launched.map((session) => session.id))];
-  return comparable(agent.hooks.received, { sessionIds, workFolder: agent.workFolder });
+  const hooks = comparable(agent.hooks.received, { sessionIds, workFolder: agent.workFolder });
+  return { hooks, observed };
 }
 
 /**
@@ -113,11 +138,14 @@ async function played(scenario: Scenario, agent: ParityAgent): Promise<ObservedH
  */
 const NO_RETRIES = { CLAUDE_CODE_MAX_RETRIES: '0' };
 
+/** An agent as made, before a play gives it somewhere to keep what is observed. */
+type UnplayedAgent = Omit<ParityAgent, 'observe'>;
+
 async function realAgent(
   scenario: Scenario,
   whenFinished: WhenFinished,
   meta: TaskMeta,
-): Promise<ParityAgent & { readonly api: FakeApi }> {
+): Promise<UnplayedAgent & { readonly api: FakeApi }> {
   const agent = await startContractAgent({
     ...permissionsOf(scenario),
     runner: { leftOutOfRecipe: scenario.leftOutOfRecipe ?? [], variables: NO_RETRIES },
@@ -149,7 +177,7 @@ async function fakeAgent(
   apiBaseUrl: string,
   whenFinished: WhenFinished,
   meta: TaskMeta,
-): Promise<ParityAgent> {
+): Promise<UnplayedAgent> {
   // Closed last started first: the sessions end while their hooks still have somewhere to go.
   const closers: (() => Promise<void>)[] = [];
   whenFinished(() => runAll(closers.reverse()));

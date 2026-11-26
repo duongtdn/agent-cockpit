@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
+import { readScreen } from '../../src/claude-code/screen-reading.ts';
 import type { AgentSession } from '../support/agent-session.ts';
 import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import type { Question, ReplyStep, ToolStep } from '../support/fake-agent/script.ts';
@@ -60,9 +61,21 @@ async function terminated(agent: ParityAgent, session: AgentSession): Promise<vo
   await agent.hook('SessionEnd');
 }
 
-/** Waits until a session shows a text, a start-up dialog's among them. */
+/**
+ * Waits until a session shows a start-up dialog, by a text of it, and
+ * observes what the driver reads of the screen then: the two agents' must
+ * be read alike.
+ */
 async function shows(agent: ParityAgent, session: AgentSession, text: string): Promise<void> {
-  await agent.eventually(async () => expect(await session.screen()).toContain(text));
+  const screen = await agent.eventually(async () => {
+    const shown = await session.screen();
+    expect(shown).toContain(text);
+    return shown;
+  });
+  agent.observe(
+    `the screen that shows ${JSON.stringify(text)}, as the driver reads it`,
+    readScreen(screen),
+  );
 }
 
 const TRUST_DIALOG = 'Accessing workspace:';
@@ -172,6 +185,9 @@ agreeOn('Esc during a turn that has run a tool, then a prompt', {
     // The barrier: a hook of the interrupted turn would come before this prompt's own.
     await submitPrompt(agent, session, 'go on');
     await turnEnded(agent);
+    // The marker, among the transcript's other texts of the person's side.
+    await agent.eventually(() => expect(userTexts(session)).toContain('go on'));
+    agent.observe('the texts of the transcript', userTexts(session));
     await terminated(agent, session);
   },
 });
