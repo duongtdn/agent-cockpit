@@ -302,7 +302,11 @@ why, `canResume` whether its conversation is still kept). Each state carries
 `since`, when it began. A turn the person interrupts in the terminal ends
 `idle`; a background task's work never makes the session `busy`, but the
 turn the agent starts itself when a task finishes does; a compaction begun
-while `idle` is `busy`, then the same `idle` again, its `since` kept. `cockpit.sessions.follow` and the client's
+while `idle` is `busy`, then the same `idle` again, its `since` kept, also
+when it fails or the person interrupts it (the screen tells, since no hook
+does). A conversation the agent moves to (Claude Code's `/clear` starts one
+under a new id) is the one the session follows from then on, and the one
+an ended session's `canResume` tells of, and a resume will take up. `cockpit.sessions.follow` and the client's
 `sessions.follow` give the whole list at once, then at every change.
 
 So far a session is `waiting` only for something in the terminal
@@ -322,8 +326,10 @@ it with none. Built so far: a run on a key with no session, which launches
 the agent with the job's prompt and resolves once the session leaves
 `starting`: `busy`; `idle` for a job without a prompt, or one the agent
 takes without a turn (a local command such as `/clear`); `waiting` at a
-start-up dialog; `ended` when the agent was gone first. A launch is refused
-when the agent is missing (`agent-not-found`), older than the driver was
+start-up dialog; `ended` when the agent was gone first. A launch prompt no
+hook says was taken leaves the session `starting` until its screen or a
+hook tells what became of it. A launch is refused
+when the agent is missing or cannot be run (`agent-not-found`), older than the driver was
 tested on (`agent-too-old`), or cannot be sandboxed as the app asked
 (`sandbox-unavailable`), and ended with `unobservable` when the agent
 neither reports nor shows a dialog in time. A run on a key
@@ -375,7 +381,9 @@ switch (`terminal-off`), it stays `closed` and stops trying.
 launches `claude` from the server's `PATH` in a tmux session, with settings
 of its own: the hooks that report to the cockpit, the app's rules, and the
 lines that keep the agent from the cockpit's files, the app's port and
-every Claude Code settings file ([security](security.md#keeping-the-agent-out)).
+every file that starts code at its next launch: its settings, its
+configuration files and `.mcp.json`, the person's plugins
+([security](security.md#keeping-the-agent-out)).
 The person's own Claude Code settings still load below them, unless the app
 narrows them. Its options ([reference](api.md#claudecodeoptions)):
 
@@ -400,9 +408,11 @@ exceptions (`{ excludedCommands, allowUnsandboxedCommands }`). The option
 only turns the sandbox on: left out, the person's settings decide, and
 `false` is refused. A session the app asked to sandbox never runs
 unsandboxed: a launch where the sandbox's programs are missing (`bwrap`
-and `socat`, on Linux) is refused with `sandbox-unavailable`, whose `cause`
-says what to install, and an agent that finds the sandbox unavailable in
-any other way stops before it takes the prompt (the session ends `lost`).
+and `socat`, on Linux), or where `bwrap` cannot make the nested namespace
+the sandbox needs (an AppArmor-confined one, probed once), is refused with
+`sandbox-unavailable`, whose `cause` says what to install or allow, and an
+agent that finds the sandbox unavailable in any other way stops before it
+takes the prompt (the session ends `lost`).
 [Machines](machines.md#the-agents-sandbox) says what a machine needs.
 
 ### Versions
@@ -410,8 +420,10 @@ any other way stops before it takes the prompt (the session ends `lost`).
 Each driver is tested on a range of the agent's versions.
 `cockpit.status()` gives the version last read, whether it was tested, and
 the range. Before each launch the driver reads the version of the agent
-the launch would run: a missing agent is refused with `agent-not-found`,
-one older than the range with `agent-too-old`; a newer one runs, and
+the launch would run: a missing agent, or one that fails, hangs (10
+seconds) or prints no version to `--version`, is refused with
+`agent-not-found`, one older than the range with `agent-too-old`; a newer
+one, or a build with a suffix (`2.1.340-beta`), runs, and
 `cockpit.on('untested-version', handler)` tells the app once per version,
 so that it can warn the person. [Machines](machines.md#the-agents-tested-range)
 gives the range.
@@ -419,9 +431,15 @@ gives the range.
 ### Variables
 
 Each launch starts from the server's environment. The app names its
-secrets in `createCockpit({ hiddenEnv })`, and no agent gets them; the
-driver removes Claude Code's own variables, which a server started from a
-Claude Code terminal would otherwise pass on.
+secrets in `createCockpit({ hiddenEnv })`, and no agent gets them, nor the
+app's tmux server; the driver removes Claude Code's own variables, which a
+server started from a Claude Code terminal would otherwise pass on. Hiding
+is hygiene, not a boundary: a process of the app's user, the agent among
+them, can read the server's own environment
+([security](security.md#the-variables-an-app-hides)). A `CLAUDE_CONFIG_DIR`
+or a `HOME` that is relative, or whose path holds a character a permission
+rule reads as its own, is refused with `invalid-options`: the rules that
+keep the agent from its own configuration could miss it.
 
 ## Errors
 

@@ -91,11 +91,22 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   read, needs a rule that lets it pass. Two things are refused whatever
   they hold, since no rule could check them: a work folder in a git
   worktree (the agent would read the settings of the repository it belongs
-  to, elsewhere), and a file that gives the agent MCP servers (`.mcp.json`
-  in the work folder or above it, the machine's managed one). The rules are
+  to, elsewhere), and the machine's managed MCP servers (an
+  organization's). The MCP servers of a `.mcp.json` in the work folder or
+  above it and of the agent's `.claude.json` (in the configuration folder
+  and in the home, the person's and each project's) pass when each is a
+  program the agent starts (`type` `stdio` or none, `command`, `args`,
+  nothing else), as a command hook is. The person's plugins (`plugins` in
+  the configuration folder) pass when each marketplace is a real folder
+  inside the run's root, each marketplace list says only who a plugin is
+  and where, and each plugin holds only its manifest, `commands/*.md` and
+  hooks that stay local. The rules are
   the tables of `test/support/real-agent/launch-rules.ts` (variables,
   options with a value, flags, settings); a settings file's `env` passes
-  only when each variable passes the rule a launch's would. Among them:
+  only when each variable passes the rule a launch's would, and never sets
+  `HOME`, `CLAUDE_CONFIG_DIR` or `TMPDIR` (it would move the agent to
+  files the guard never checked). `enabledPlugins` passes as an object of
+  `true` and `false`. Among them:
   `CLAUDE_CODE_MAX_RETRIES` (three digits at most, for a failed turn's
   test); `disableAllHooks` only as `true`; `--setting-sources` naming only
   `user`, `project` and `local`; `--strict-mcp-config`, the one flag (an
@@ -129,12 +140,15 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   piece of the agent's `.claude.json` left out, for a test of the start-up
   dialog it spares), its `variables` and `passedOn`, and the person's own
   settings. The rows of the driver's options, dialogs, failed turns,
-  compaction, tasks, version, the app's sandbox and the settings files'
-  denies run through it.
+  compaction, `/clear`, interruptions, tasks, version, the app's sandbox
+  and the settings files' denies run through it.
 - **The rows, by file:** `starting` (1–3), `prompts` (4, 5, 7), `ending`
-  (8), `driver` (14, 29), `interrupting` (6, 22), `tasks` (15 a background
+  (8), `driver` (14, 29), `interrupting` (6, 22, 95 an interruption
+  recorded before the next prompt), `clear` (93, `/clear`'s new
+  conversation followed), `tasks` (15 a background
   subagent and its `<task-notification>` turn, 62 and 73 its hooks'
-  `agent_id`), `compaction` (16), `dialogs` (37, 69 the folder's trust; 68
+  `agent_id`), `compaction` (16, 94 an interrupted `/compact` read on
+  screen), `dialogs` (37, 69 the folder's trust; 68
   the trust dialog's answers; 70 the onboarding; 85 the warning of
   `bypassPermissions`; 88 the API key's question, a dialog of no name),
   `turn-failures` (64, `StopFailure`), `options` (72 `--setting-sources`,
@@ -142,8 +156,9 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   person's `env`), `confinement` (50–55, 75–79), `network-by-mode`
   (80–83), `version` (84, `--version`), `start-up` (86 every hook off, 89
   a local command as the launch prompt), `sandbox-option` (90, the app's
-  sandbox and `sandbox-unavailable`), `settings-files` (92, the `Edit`
-  denies on every Claude settings file, in `bypassPermissions`).
+  sandbox and `sandbox-unavailable`), `settings-files` (92 the `Edit`
+  denies on every Claude settings file, 96 on every file that gives MCP
+  servers, 97 on the person's plugins, in `bypassPermissions`).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:
@@ -201,8 +216,8 @@ person's `/compact`, a turn of its own: the only local command it plays),
 and a background subagent (`task`: its work runs once the turn ended and
 the test released tasks, then its end starts the next turn by itself with
 a `<task-notification>` prompt). A script's tool call on a path a deny
-rule of its settings names (the state roots, every Claude settings file)
-is not played: nothing tells what Claude Code answers there.
+rule of its settings names (the state roots, every file that starts code
+at the next launch) is not played: nothing tells what Claude Code answers there.
 
 The fake agent is held to the real one by
 `test/contract/fake-agent-parity.test.ts`: each scenario is played once on

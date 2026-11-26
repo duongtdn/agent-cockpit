@@ -123,17 +123,27 @@ Nothing is published yet.
   `otherMcpServers: false` keeps every other MCP server out
   (`--strict-mcp-config`). Any other option is refused with
   `invalid-options`.
-- Every session's settings carry an `Edit` deny on every Claude Code
-  settings file (`.claude/settings.json`, `.claude/settings.local.json`
-  wherever they are, the person's own `settings.json`): in a cockpit
-  session the agent can never edit one, even when asked, so that it cannot
-  plant a hook that would run outside the sandbox at the next start.
+- Every session's settings carry an `Edit` deny on every file that starts
+  code at the agent's next launch: `.claude/settings.json`,
+  `.claude/settings.local.json` and `.mcp.json` wherever they are; the
+  person's own `settings.json` and `.claude.json` in the agent's
+  configuration folder, `.claude.json` in the home, and their plugins
+  folder. In a cockpit session the agent can never edit one, even when
+  asked, so that it cannot plant a hook, an MCP server or a plugin that
+  would run outside the sandbox at the next start (a project's `.mcp.json`
+  runs with no one asked in `bypassPermissions`). A `CLAUDE_CONFIG_DIR` or
+  a `HOME` those denies could miss (relative, or holding a character a
+  permission rule reads as its own) is refused with `invalid-options`
+  (issues with an empty path), by `createCockpit` and again by each launch.
 - `claudeCode({ sandbox: true | { excludedCommands?,
   allowUnsandboxedCommands? } })` turns the agent's sandbox on for every
   session, with `failIfUnavailable`; it only turns it on (`false` is
-  refused). A launch whose agent's `PATH` lacks `bwrap` or `socat` is
-  refused with `sandbox-unavailable`; an agent that stops for want of the
-  sandbox otherwise ends its session `lost`.
+  refused). A launch whose agent's `PATH` lacks `bwrap` or `socat`, or
+  whose `bwrap` cannot make the nested user namespace the agent's sandbox
+  makes (an AppArmor-confined one; probed once per `bwrap` while it
+  passes, bounded to 10 seconds), is refused with `sandbox-unavailable`;
+  an agent that stops for want of the sandbox otherwise ends its session
+  `lost`.
 - `mountTerminal(element, key, { baseUrl, theme?, fontFamily?, fontSize? })`
   from `./terminal`: a session's terminal (xterm.js) in the app's element,
   fitted to it, attached over a WebSocket with the app's token, reconnecting
@@ -169,18 +179,23 @@ Nothing is published yet.
   `SubagentStart` and `SubagentStop`.
 - The error code `sandbox-unavailable` (`cause`, 503).
 - `createCockpit({ hiddenEnv })`: the names of the server's variables no
-  session's agent gets. A job's `driver` part (`claudeCode.job(…)`),
+  session's agent gets, nor the app's tmux server (each launch removes
+  them from a server's global environment that had them). Hygiene, not a
+  boundary: a process of the app's user can read the server's own
+  environment. A job's `driver` part (`claudeCode.job(…)`),
   checked at `createCockpit` and again at each run (`invalid-options`),
   its mode, rules and model laid over the driver's at launch; a part that
   opens the network of a cockpit opened beyond loopback, unaccepted, is
   refused naming the job.
 - The agent's version is read at `createCockpit` (for `status()`; no agent
-  is no failure there) and before each launch: no agent → `agent-not-found`,
-  older than the tested range → `agent-too-old`, nothing listed; newer →
-  the session runs and `on('untested-version')` tells it once per version.
+  is no failure there) and before each launch: no agent, or one that
+  fails, hangs (10 seconds) or prints no version to `--version` →
+  `agent-not-found` (the message says why, `cause` what it printed);
+  older than the tested range → `agent-too-old`, nothing listed; newer, or
+  a build with a suffix (`2.1.340-beta`) not older than the range → the
+  session runs and `on('untested-version')` tells it once per version.
   The agent's version is asked once per executable (its real path and
-  time of change). An agent that fails `--version` rejects the run with an
-  error that is not a `CockpitError`.
+  time of change); a failure is not kept.
 - Until its first hook, the cockpit reads the agent's screen: a run
   resolves `waiting` at a start-up dialog (`pending: [{ kind: 'terminal',
   dialog }]`; a dialog of no known name, such as the question about a
@@ -191,9 +206,18 @@ Nothing is published yet.
   within 5 seconds of showing its input box (every hook turned off), is
   ended and refused with `unobservable`.
 - A launch prompt the agent takes without a turn (a local command such as
-  `/help` or `/clear`) is read from the screen 5 seconds after the first
-  hook: the input box back is `idle`, a panel waiting for a key is
-  `waiting` (`kind: 'terminal'`) until it closes, anything else `busy`.
+  `/help` or `/clear`) is read from the screen from 5 seconds after the
+  first hook until the screen or a hook tells: the input box back is
+  `idle`, a panel waiting for a key is `waiting` (`kind: 'terminal'`)
+  until it closes; anything else leaves the session `starting` until the
+  next hook, never guessed `busy`.
+- A session follows the conversation the agent moves to: Claude Code's
+  `/clear` starts one under a new id, and what the cockpit reads outside
+  the hooks, and an ended session's `canResume`, follow it. A compaction
+  begun `idle` that fails or is interrupted (no hook ends it) is read on
+  the screen and returns the session to the `idle` it left; an
+  interruption the agent recorded before the next prompt was taken leaves
+  the new turn `busy`.
 
 ### Not yet: refused or missing in this version
 

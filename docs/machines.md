@@ -143,8 +143,11 @@ makes the agent stop where the sandbox cannot run, rather than run
 unsandboxed: the person sets it in their own settings, and the app's
 `sandbox` option writes it into every session. With that option, the driver
 also looks for `bwrap` and `socat` on the agent's `PATH` before each launch,
-and refuses one that lacks either with `sandbox-unavailable`; the nested
-check above is the person's to run. The cockpit's own tests run the sandbox
+then runs the nested check above with that `bwrap` (bounded to 10 seconds,
+once per `bwrap` while it passes), and refuses a launch that fails either
+with `sandbox-unavailable`, whose `cause` says what is missing or what
+`bwrap` said, and what would fix it. Without the option, the check is the
+person's to run. The cockpit's own tests run the sandbox
 on these programs, on CI too.
 
 ## The agent's tested range
@@ -167,10 +170,14 @@ failure, since no session runs yet.
   `agent-not-found` (`command: 'claude'`), and nothing starts.
 - **Older** than the oldest tested: the launch is refused with
   `agent-too-old` (`found`, `oldestTested`). Update the agent.
-- **Newer** than the newest tested: the session runs.
+- **Newer** than the newest tested, or a build with a suffix (`2.1.340-beta`,
+  `2.1.332+local`) not older than the oldest tested: the session runs.
   `cockpit.on('untested-version', handler)` tells the app the first time a
   launch runs such a version, once per version, and `status()` says
   `tested: false`. What the driver relies on was not tested on that
   version.
-- An agent that fails `claude --version`, or prints no version, rejects the
-  run with an error that is not a `CockpitError`.
+- **An agent that cannot be run**: one that fails `claude --version`, hangs
+  on it for 10 seconds, or prints no version, is refused with
+  `agent-not-found` too, its message saying why and its `cause` holding
+  what it printed (the server's alone: it never reaches the browser).
+  Nothing starts; it is asked again at the next launch.

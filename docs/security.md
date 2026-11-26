@@ -5,8 +5,8 @@ What the cockpit defends, against whom, and what is left to the app.
 **Status:** everything this document describes is built: the request checks
 and the app's opening beyond loopback, the link's token and its renewal, the
 agent-facing listener, the lines that keep the agent away from the
-cockpit's own files, the app's port and every Claude Code settings file,
-the sandbox an app asks for, the variables an app hides, the state
+cockpit's own files, the app's port and every file that would start code
+at the agent's next launch, the sandbox an app asks for, the variables an app hides, the state
 folder's trust, and the terminal's clipboard. Each limit is stated where it applies, and the last
 section gathers them.
 
@@ -28,8 +28,8 @@ It runs sessions on a person's own machine, for that person. It keeps out:
   programs that do not hold the link: refused without the app's token;
 - the agent itself, within what its permission rules and its sandbox
   allow: the cockpit writes into every session the lines that keep it from
-  the cockpit's files, the app's port and the settings files that would
-  run code at its next start (see "Keeping the agent out").
+  the cockpit's files, the app's port and the files that would start
+  code at its next launch (see "Keeping the agent out").
 
 It does not defend against another process of the person's own account,
 which can do whatever the person can, nor against an agent left free to run
@@ -246,7 +246,9 @@ The agent runs on the person's machine, with the person's own settings for
 it still loaded. The Claude Code driver writes into every session's
 settings, whatever the app sets, the lines that keep the agent from the
 cockpit's state (the app's token, the sessions' tokens and settings), from
-the app's browser-facing server, and from every Claude Code settings file.
+the app's browser-facing server, and from every file that starts code at
+its next launch (its settings, its configuration files and `.mcp.json`,
+the person's plugins).
 The agent's sandbox is on when the person turns it on in their own Claude
 Code settings (`"sandbox": { "enabled": true }`), or when the app asks for
 it ([below](#the-sandbox-an-app-asks-for)). Without it, the sandbox's lines
@@ -258,14 +260,14 @@ every app's state folder) and the app's `stateDirectory` when it names one,
 each by the path given and, when it differs, the path the system resolves
 it to.
 
-| Line                                                                                                                                                                                                                                    | Without the sandbox                                                                                                                                                                                                                          | With the sandbox                                                                                                                                                                                                                                             |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| A `Read` deny on each state root                                                                                                                                                                                                        | Keeps out Claude Code's `Read` tool and the file commands it recognizes (`cat`, `grep`). Not code an allowed command runs: a script in Python or Node reads the folder.                                                                      | Enforced on every process the sandbox runs: the folder's files look absent, in `default` and `bypassPermissions` alike.                                                                                                                                      |
-| An `Edit` deny on each state root                                                                                                                                                                                                       | Keeps out the `Write` and `Edit` tools and the shell's plain writes (`echo >`, `cp`, `mv`, `rm`), in `default` and `bypassPermissions` alike, so the agent cannot plant a token or a session's settings there. Not code in another language. | As without the sandbox.                                                                                                                                                                                                                                      |
-| The app's ports denied on every local address and loopback name (`sandbox.network.deniedDomains`)                                                                                                                                       | Changes nothing: a command reaches the app's port. It still needs the token, which the denies above keep from Claude Code's own tools.                                                                                                       | A sandboxed command cannot reach the app's port by `localhost`, `127.0.0.1`, `0.0.0.0`, `[::1]`, `[::]`, their other spellings (`127.1`, `2130706433`, `[::ffff:127.0.0.1]`) or any address of the machine's own, in every mode; other ports are left alone. |
-| The agent-facing listener allowed (`sandbox.network.allowedDomains`, `127.0.0.1:<port>`)                                                                                                                                                | Changes nothing.                                                                                                                                                                                                                             | The hooks reach the cockpit; the listener still asks each request for a session's token.                                                                                                                                                                     |
-| No command outside the sandbox (`sandbox.allowUnsandboxedCommands: false`)                                                                                                                                                              | Changes nothing.                                                                                                                                                                                                                             | A command cannot ask to leave the sandbox, in `bypassPermissions` too, whatever the project's settings say; unless the app's own `sandbox` gives `allowUnsandboxedCommands: true`.                                                                           |
-| An `Edit` deny on every Claude Code settings file: `.claude/settings.json` and `.claude/settings.local.json` wherever they are, and the person's own `settings.json` in the agent's configuration folder, by its path and its real path | Keeps the `Write` and `Edit` tools and the shell commands Claude Code recognizes from them, in every mode, `bypassPermissions` included. Not code in another language.                                                                       | As without the sandbox: those tools run in the agent's own process, outside the sandbox.                                                                                                                                                                     |
+| Line                                                                                                                                                                                                                                                                                                                                                                                                               | Without the sandbox                                                                                                                                                                                                                          | With the sandbox                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A `Read` deny on each state root                                                                                                                                                                                                                                                                                                                                                                                   | Keeps out Claude Code's `Read` tool and the file commands it recognizes (`cat`, `grep`). Not code an allowed command runs: a script in Python or Node reads the folder.                                                                      | Enforced on every process the sandbox runs: the folder's files look absent, in `default` and `bypassPermissions` alike.                                                                                                                                      |
+| An `Edit` deny on each state root                                                                                                                                                                                                                                                                                                                                                                                  | Keeps out the `Write` and `Edit` tools and the shell's plain writes (`echo >`, `cp`, `mv`, `rm`), in `default` and `bypassPermissions` alike, so the agent cannot plant a token or a session's settings there. Not code in another language. | As without the sandbox.                                                                                                                                                                                                                                      |
+| The app's ports denied on every local address and loopback name (`sandbox.network.deniedDomains`)                                                                                                                                                                                                                                                                                                                  | Changes nothing: a command reaches the app's port. It still needs the token, which the denies above keep from Claude Code's own tools.                                                                                                       | A sandboxed command cannot reach the app's port by `localhost`, `127.0.0.1`, `0.0.0.0`, `[::1]`, `[::]`, their other spellings (`127.1`, `2130706433`, `[::ffff:127.0.0.1]`) or any address of the machine's own, in every mode; other ports are left alone. |
+| The agent-facing listener allowed (`sandbox.network.allowedDomains`, `127.0.0.1:<port>`)                                                                                                                                                                                                                                                                                                                           | Changes nothing.                                                                                                                                                                                                                             | The hooks reach the cockpit; the listener still asks each request for a session's token.                                                                                                                                                                     |
+| No command outside the sandbox (`sandbox.allowUnsandboxedCommands: false`)                                                                                                                                                                                                                                                                                                                                         | Changes nothing.                                                                                                                                                                                                                             | A command cannot ask to leave the sandbox, in `bypassPermissions` too, whatever the project's settings say; unless the app's own `sandbox` gives `allowUnsandboxedCommands: true`.                                                                           |
+| An `Edit` deny on every file that starts code at the agent's next launch: `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json` wherever they are; the person's own `settings.json` and `.claude.json` in the agent's configuration folder, `.claude.json` in the home, and every file of the person's plugins folder (`plugins` in the configuration folder), each by its path and its real path | Keeps the `Write` and `Edit` tools and the shell commands Claude Code recognizes from them, in every mode, `bypassPermissions` included. Not code in another language.                                                                       | As without the sandbox: those tools run in the agent's own process, outside the sandbox.                                                                                                                                                                     |
 
 The app's ports are those its browser-facing server listens on: the
 Fastify adapter reads them from the server at each launch; with the neutral
@@ -275,20 +277,31 @@ app. The machine's addresses are read at each launch too. A state root
 whose path holds a character a permission rule reads as its own (a
 pattern's `*`, `?`, `[`, `]`, `{`, `}`; the rule's brackets `(`, `)`; its
 escape `\`; a control character) could be missed by its denies:
-`createCockpit` refuses it (`invalid-options`).
+`createCockpit` refuses it (`invalid-options`). So it is with the agent's
+configuration folder and home, which the denies of the person's files
+name: a `CLAUDE_CONFIG_DIR` or a `HOME` that is relative (the agent would
+resolve it against the folder it runs in, which no rule names) or whose
+path, as given or resolved, holds such a character is refused with
+`invalid-options` (each issue with an empty path), by `createCockpit` for
+the server's environment and again by each launch, which reads it anew.
 
 Another `127.x` address of the app's port is refused by the handler itself
 (`local-address`), with the sandbox or without it.
 
-### Settings files: the agent can never edit one
+### Files that start code: the agent can never edit one
 
-In a cockpit session the agent cannot edit a Claude Code settings file,
-even when the person or a job asks it to: the person edits them by hand,
-or in a session of their own outside the cockpit. The reason: the agent's
-`Write` and `Edit` tools run in its own process, not in the sandbox, and a
-settings file can hold a command hook, which Claude Code runs at the next
-start outside the sandbox and outside the permission rules, able to read
-the cockpit's state and its tokens. In `bypassPermissions` nothing asks
+In a cockpit session the agent cannot edit a file that starts code at its
+next launch, even when the person or a job asks it to: a Claude Code
+settings file, its configuration file (`.claude.json`, in the
+configuration folder and in the home), any `.mcp.json`, or anything in the
+person's plugins folder. The person edits them by hand, or in a session of
+their own outside the cockpit. The reason: the agent's `Write` and `Edit`
+tools run in its own process, not in the sandbox, and each of these files
+starts code at the next launch outside the sandbox and outside the
+permission rules, able to read the cockpit's state and its tokens: a
+settings file's or a plugin's command hook, an MCP server of a
+configuration file or a `.mcp.json` (a project's `.mcp.json` runs with no
+one asked in `bypassPermissions`). In `bypassPermissions` nothing asks
 before such a write, with the sandbox on or off; the denies stop it in
 every mode. Code the agent runs outside the sandbox, in a language whose
 file access Claude Code does not recognize, can still write them, as it
@@ -310,10 +323,15 @@ reports its start, then exits before it sends the launch prompt or runs a
 command, and the session ends (`reason: 'lost'`: nothing tells the cockpit
 why). So that this is seldom the way an app learns it, the driver first
 looks on the agent's `PATH` for what the sandbox needs (on Linux, `bwrap`
-and `socat`) and refuses a launch that lacks one with
-`sandbox-unavailable`, its `cause` naming what is missing; nothing starts.
-What it cannot see (user namespaces, an AppArmor profile:
-[machines](machines.md#the-agents-sandbox)) is left to `failIfUnavailable`.
+and `socat`), then, on Linux, has `bwrap` make what the agent's sandbox
+makes (a user namespace nested in its own: the check of
+[machines](machines.md#the-agents-sandbox), bounded to 10 seconds), which
+an AppArmor-confined `bwrap` refuses. A launch that fails either is
+refused with `sandbox-unavailable`, its `cause` naming what is missing or
+what `bwrap` said, and what would fix it; nothing starts. A probe that
+passed is kept for that `bwrap` (by its real path) for the driver's life;
+one that failed is made again at the next launch. What neither sees is
+left to `failIfUnavailable`.
 
 The exceptions loosen the sandbox, and the app answers for them:
 `excludedCommands` run outside it, the cockpit's sandbox lines included,
@@ -327,9 +345,17 @@ A launch starts from the server's environment, read at that moment.
 `createCockpit({ hiddenEnv: ['STRIPE_KEY', …] })` names the app's secrets,
 which no session's agent gets; the driver then removes Claude Code's own
 (`CLAUDE_CODE_*`, `CLAUDECODE`), so a server started from a Claude Code
-terminal hands that session's socket and token to no agent. The `env` of
-the person's own Claude Code settings still reaches the agent: those
-variables are the person's.
+terminal hands that session's socket and token to no agent. The app's tmux
+server is not given the hidden variables either, and each launch removes
+them from the global environment of a server that had them (one another
+process started). The `env` of the person's own Claude Code settings still
+reaches the agent: those variables are the person's.
+
+This is hygiene, not a boundary: the agent runs as the app's user, and any
+process of that user can read the app server's own environment
+(`/proc/<pid>/environ`), the hidden variables included, and that of a tmux
+server started with them. A secret the agent must never reach is kept out
+of the server's environment, not only hidden.
 
 ### Each mode's network
 
@@ -462,8 +488,11 @@ must do itself:
 - a command excluded from the sandbox by the person's or the project's
   settings, or the app's `sandbox` (`excludedCommands`): it runs
   unconfined;
-- code the agent runs outside the sandbox, which can still write a Claude
-  Code settings file, and plant a hook there for the next start;
+- code the agent runs outside the sandbox, which can still write a file
+  that starts code at the next launch (a settings file's hook, an MCP
+  server, a plugin);
+- a hidden variable, which a process of the app's user can still read in
+  the server's own environment (above);
 - a tool of the person's that drives their browser (a browser automation
   server, an extension the agent can reach): the browser holds the token;
 - what the app's own routes serve: the cockpit checks only the requests it
