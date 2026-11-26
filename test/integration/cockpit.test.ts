@@ -3,13 +3,14 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,7 +19,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { z } from 'zod';
 import { claudeCode } from '../../src/claude-code/index.ts';
 import { cockpitFastify } from '../../src/fastify/index.ts';
-import { type Cockpit, createCockpit, type Job } from '../../src/server/index.ts';
+import {
+  type Cockpit,
+  type CockpitOptions,
+  createCockpit,
+  type Job,
+} from '../../src/server/index.ts';
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
 import { SessionsClosedError } from '../../src/server/sessions/sessions.ts';
 import type { Session } from '../../src/shared/session.ts';
@@ -26,6 +32,7 @@ import { SESSION_ENDED_CLOSE_CODE } from '../../src/shared/wire.ts';
 import { writeAgentShim } from '../support/agent-shim.ts';
 import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import { type Turn, writeScript } from '../support/fake-agent/script.ts';
+import { startNodeHttpApp } from '../support/node-http-app.ts';
 import {
   baseUrlOf,
   call,
@@ -56,27 +63,9 @@ type Mount = (cockpit: Cockpit, address: string) => Promise<Mounted>;
 
 /** A plain `node:http` server that serves the cockpit under its prefix, as the guide shows. */
 const onNodeHttp: Mount = async (cockpit, address) => {
-  const under = (url: string | undefined) =>
-    url === MOUNT || url?.startsWith(`${MOUNT}/`) || url?.startsWith(`${MOUNT}?`);
-  const server: Server = createServer((request, response) => {
-    if (!under(request.url)) return void response.writeHead(404).end('the app’s own');
-    request.url = request.url?.slice(MOUNT.length) || '/';
-    cockpit.handle(request, response);
-  });
-  server.on('upgrade', (request, socket, head) => {
-    if (!under(request.url)) return void socket.destroy();
-    request.url = request.url?.slice(MOUNT.length) || '/';
-    cockpit.upgrade(request, socket, head);
-  });
-  await new Promise<void>((resolve) => server.listen(0, address, resolve));
-  return {
-    base: `${baseUrlOf(server.address() as AddressInfo)}${MOUNT}`,
-    close: () =>
-      new Promise((resolve) => {
-        server.closeAllConnections();
-        server.close(() => resolve());
-      }),
-  };
+  const app = await startNodeHttpApp(address, MOUNT);
+  app.serve(cockpit);
+  return app;
 };
 
 /** A Fastify app with routes of its own, the cockpit registered under its prefix. */
@@ -122,24 +111,31 @@ afterAll(() => {
 /** A cockpit of an app of its own, in folders of its own; ended, with its tmux server, after the test. */
 async function newCockpit(
   jobs: readonly Job[] = [explain as unknown as Job],
-): Promise<{ cockpit: Cockpit; token: string; directory: string }> {
+  options: Partial<CockpitOptions> = {},
+): Promise<{ cockpit: Cockpit; token: string; directory: string; stateDirectory: string }> {
   made += 1;
   const name = `assembly-${process.pid}-${made}`;
   const directory = join(root, `work-${made}`);
   mkdirSync(directory);
+  const stateDirectory = join(root, `state-${made}`);
   const cockpit = await createCockpit({
     name,
     directory,
     driver: claudeCode(),
     jobs,
-    stateDirectory: join(root, `state-${made}`),
+    stateDirectory,
+    ...options,
   });
   cleanups.push(async () => {
     await cockpit.close();
     await createTmuxSessionHost({ appName: name }).shutDown();
   });
-  const token = new URL(cockpit.link('http://127.0.0.1:8765/')).hash.replace('#cockpit=', '');
-  return { cockpit, token, directory };
+  return { cockpit, token: tokenOf(cockpit), directory, stateDirectory };
+}
+
+/** The token the cockpit's link carries now. */
+function tokenOf(cockpit: Cockpit): string {
+  return new URL(cockpit.link('http://127.0.0.1:8765/')).hash.replace('#cockpit=', '');
 }
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -186,13 +182,55 @@ function sessionIn(follower: OpenSocket, key: string, state: string): Promise<Se
     );
 }
 
+/** An app's cockpit, mounted on the loopback as the app mounts it on a server of one kind. */
+interface Started {
+  readonly cockpit: Cockpit;
+  readonly token: string;
+  readonly directory: string;
+  readonly stateDirectory: string;
+  readonly base: string;
+  /** The port the app's server listens on. */
+  readonly port: number;
+}
+
+type Start = (jobs?: readonly Job[], options?: Partial<CockpitOptions>) => Promise<Started>;
+
+/** On a `node:http` server the app listens first, then gives the cockpit its port. */
+const startOnNodeHttp: Start = async (jobs, options) => {
+  const app = await startNodeHttpApp('127.0.0.1', MOUNT);
+  cleanups.push(() => app.close());
+  const made = await newCockpit(jobs, { port: app.port, ...options });
+  app.serve(made.cockpit);
+  return { ...made, base: app.base, port: app.port };
+};
+
+/** On Fastify the app gives no port: the adapter reads it from the listening server. */
+const startOnFastify: Start = async (jobs, options) => {
+  const made = await newCockpit(jobs, options);
+  const { base } = await mount(onFastify, made.cockpit);
+  return { ...made, base, port: Number(new URL(base).port) };
+};
+
+/** The domains a session's settings deny its sandboxed commands. */
+function deniedDomainsOf(stateDirectory: string, key: string): string[] {
+  const settings = JSON.parse(
+    readFileSync(join(stateDirectory, 'sessions', key, 'settings.json'), 'utf8'),
+  ) as { sandbox: { network: { deniedDomains: string[] } } };
+  return settings.sandbox.network.deniedDomains;
+}
+
+/**
+ * The port an app that runs its jobs in-process gives: the one its
+ * browser-facing server would listen on.
+ */
+const APP_PORT = 4310;
+
 describe.each([
-  ['a node:http server', onNodeHttp],
-  ['Fastify', onFastify],
-])('a cockpit mounted on %s', (_server, on) => {
+  ['a node:http server', onNodeHttp, startOnNodeHttp],
+  ['Fastify', onFastify, startOnFastify],
+])('a cockpit mounted on %s', (_server, on, start) => {
   it('runs a job, follows it through starting, busy and idle, and bridges its terminal to the end', async () => {
-    const { cockpit, token, directory } = await newCockpit();
-    const { base } = await mount(on, cockpit);
+    const { cockpit, token, directory, base } = await start();
     const script: Turn[] = [[{ do: 'reply', text: 'Explained.' }], [{ do: 'exit' }]];
     writeScript(directory, script);
     const follower = await openedSocket(ws(base, '/follow/sessions'), { token });
@@ -234,8 +272,7 @@ describe.each([
   });
 
   it('answers a run’s refusals with their errors', async () => {
-    const { cockpit, token } = await newCockpit();
-    const { base } = await mount(on, cockpit);
+    const { token, base } = await start();
 
     const unknown = await post(`${base}/run`, { jobId: 'nothing', args: {} }, { token });
     const invalid = await post(`${base}/run`, { jobId: 'explain', args: { file: '' } }, { token });
@@ -250,8 +287,7 @@ describe.each([
   });
 
   it('closes a terminal of a key with no session with 4000, and answers 404 under the mount', async () => {
-    const { cockpit, token } = await newCockpit();
-    const { base } = await mount(on, cockpit);
+    const { token, base } = await start();
 
     const terminal = await openedSocket(ws(base, '/terminal/nothing'), { token });
     terminal.socket.send(JSON.stringify({ type: 'resize', columns: 80, rows: 24 }));
@@ -260,6 +296,108 @@ describe.each([
     expect((await call(`${base}/nothing`, { token })).status).toBe(404);
     expect(await openSocket(ws(base, '/nothing'), { token })).toMatchObject({
       refused: { status: 404 },
+    });
+  });
+
+  it("keeps every session's sandbox from the app's port", async () => {
+    const { cockpit, directory, stateDirectory, port } = await start();
+    writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
+
+    await cockpit.run('explain', { file: 'a' });
+
+    expect(deniedDomainsOf(stateDirectory, 'explain-a')).toEqual(
+      expect.arrayContaining([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]),
+    );
+  });
+
+  it('renews the app’s token: the old one refused at once, every socket closed, the new link served', async () => {
+    const { cockpit, token, directory, stateDirectory, base } = await start();
+    writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
+    await cockpit.run('explain', { file: 'a' });
+    const follower = await openedSocket(ws(base, '/follow/sessions'), { token });
+    const terminal = await openedSocket(ws(base, '/terminal/explain-a'), { token });
+    terminal.socket.send(JSON.stringify({ type: 'resize', columns: 80, rows: 24 }));
+    await terminal.next(() => true);
+
+    await cockpit.renewToken();
+
+    expect(await follower.closed).toBe(1006);
+    expect(await terminal.closed).toBe(1006);
+    const renewed = tokenOf(cockpit);
+    expect(renewed).not.toBe(token);
+    expect(readFileSync(join(stateDirectory, 'app-token'), 'utf8')).toBe(renewed);
+    expect(statSync(join(stateDirectory, 'app-token')).mode & 0o777).toBe(0o600);
+    const old = await call(`${base}/sessions`, { token });
+    expect(old.status).toBe(401);
+    expect(errorOf(old.body)).toMatchObject({ code: 'no-token' });
+    expect(await openSocket(ws(base, '/follow/sessions'), { token })).toMatchObject({
+      refused: { status: 401 },
+    });
+    expect((await call(`${base}/sessions`, { token: renewed })).status).toBe(200);
+    const again = await openedSocket(ws(base, '/terminal/explain-a'), { token: renewed });
+    again.socket.close();
+  });
+
+  describe('opened by the app, through the mount', () => {
+    const forwarded = { 'x-forwarded-for': '192.0.2.1' };
+
+    it('serves a remote request authorize accepts, without the token, on HTTP and upgrades; refuses one it does not', async () => {
+      const { base } = await start(undefined, {
+        authorize: (request) => request.headers['x-app-password'] === 'open',
+      });
+      const accepted = { ...forwarded, 'x-app-password': 'open' };
+
+      expect((await call(`${base}/sessions`, { headers: accepted })).status).toBe(200);
+      (await openedSocket(ws(base, '/follow/sessions'), { headers: accepted })).socket.close();
+      const http = await call(`${base}/sessions`, { headers: forwarded });
+      const upgrade = await openSocket(ws(base, '/follow/sessions'), { headers: forwarded });
+      for (const answer of [http, 'refused' in upgrade ? upgrade.refused : undefined]) {
+        expect(answer?.status).toBe(403);
+        expect(errorOf(answer?.body ?? '')).toMatchObject({ code: 'refused', cause: 'forwarded' });
+      }
+    });
+
+    it('admits an origin the app allowed, and a Host naming it', async () => {
+      const { token, base } = await start(undefined, { origins: ['http://app.example:8080'] });
+      const headers = { origin: 'http://app.example:8080', host: 'app.example:8080' };
+
+      expect((await call(`${base}/sessions`, { token, headers })).status).toBe(200);
+      (await openedSocket(ws(base, '/follow/sessions'), { token, headers })).socket.close();
+    });
+
+    it('keeps a loopback terminal from a remote request authorize accepted, its probe too; serves a local one', async () => {
+      const { token, base } = await start(undefined, {
+        authorize: () => true,
+        terminal: 'loopback',
+      });
+
+      const probe = await call(`${base}/terminal/nothing`, { headers: forwarded });
+      const upgrade = await openSocket(ws(base, '/terminal/nothing'), { headers: forwarded });
+      for (const answer of [probe, 'refused' in upgrade ? upgrade.refused : undefined]) {
+        expect(answer?.status).toBe(403);
+        expect(errorOf(answer?.body ?? '')).toMatchObject({
+          code: 'refused',
+          cause: 'terminal-off',
+        });
+      }
+      expect((await call(`${base}/terminal/nothing`, { token })).status).toBe(426);
+      (await openedSocket(ws(base, '/terminal/nothing'), { token })).socket.close();
+      expect((await call(`${base}/sessions`, { headers: forwarded })).status).toBe(200);
+    });
+
+    it('refuses every terminal request when the terminal is off, a local one with the token too', async () => {
+      const { token, base } = await start(undefined, { terminal: 'off' });
+
+      const probe = await call(`${base}/terminal/nothing`, { token });
+      const upgrade = await openSocket(ws(base, '/terminal/nothing'), { token });
+      for (const answer of [probe, 'refused' in upgrade ? upgrade.refused : undefined]) {
+        expect(answer?.status).toBe(403);
+        expect(errorOf(answer?.body ?? '')).toMatchObject({
+          code: 'refused',
+          cause: 'terminal-off',
+        });
+      }
+      expect((await call(`${base}/sessions`, { token })).status).toBe(200);
     });
   });
 
@@ -353,7 +491,92 @@ describe.each([
   });
 });
 
+describe("the app's port with the neutral handler", () => {
+  it('refuses a run while the app gave none: no-app-port, 503, nothing launched', async () => {
+    const { cockpit, token } = await newCockpit();
+    const { base } = await mount(onNodeHttp, cockpit);
+
+    const refused = await post(`${base}/run`, { jobId: 'explain', args: { file: 'a' } }, { token });
+
+    expect(refused.status).toBe(503);
+    expect(errorOf(refused.body)).toMatchObject({ code: 'no-app-port' });
+    await expect(cockpit.run('explain', { file: 'a' })).rejects.toMatchObject({
+      code: 'no-app-port',
+    });
+    expect(cockpit.sessions.list()).toEqual([]);
+  });
+
+  it('keeps the sessions from every port the app gave', async () => {
+    const { cockpit, directory, stateDirectory } = await newCockpit(undefined, {
+      port: [APP_PORT, 8443],
+    });
+    writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
+
+    await cockpit.run('explain', { file: 'a' });
+
+    expect(deniedDomainsOf(stateDirectory, 'explain-a')).toEqual(
+      expect.arrayContaining([`127.0.0.1:${APP_PORT}`, '127.0.0.1:8443']),
+    );
+  });
+});
+
 describe('the Fastify adapter', () => {
+  it('learns the port once the server listens: a run before is refused, no-app-port', async () => {
+    const { cockpit, directory, stateDirectory } = await newCockpit();
+    const app = Fastify();
+    await app.register(cockpitFastify(cockpit), { prefix: MOUNT });
+    cleanups.push(() => app.close());
+
+    await expect(cockpit.run('explain', { file: 'a' })).rejects.toMatchObject({
+      code: 'no-app-port',
+    });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+    writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
+    await cockpit.run('explain', { file: 'a' });
+
+    expect(deniedDomainsOf(stateDirectory, 'explain-a')).toContain(`127.0.0.1:${port}`);
+  });
+
+  it('learns the port of a server that listened outside Fastify’s listen', async () => {
+    const { cockpit, directory, stateDirectory } = await newCockpit();
+    const app = Fastify();
+    await app.register(cockpitFastify(cockpit), { prefix: MOUNT });
+    await app.ready();
+    await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => app.close());
+    const { port } = app.server.address() as AddressInfo;
+    writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
+
+    await cockpit.run('explain', { file: 'a' });
+
+    expect(deniedDomainsOf(stateDirectory, 'explain-a')).toContain(`127.0.0.1:${port}`);
+  });
+
+  it('joins the ports the app gave to the one it learns', async () => {
+    const { cockpit, directory, stateDirectory } = await newCockpit(undefined, { port: APP_PORT });
+    const { base } = await mount(onFastify, cockpit);
+    writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
+
+    await cockpit.run('explain', { file: 'a' });
+
+    expect(deniedDomainsOf(stateDirectory, 'explain-a')).toEqual(
+      expect.arrayContaining([`127.0.0.1:${APP_PORT}`, `127.0.0.1:${new URL(base).port}`]),
+    );
+  });
+
+  it('forgets the server once Fastify closes', async () => {
+    const { cockpit } = await newCockpit();
+    const app = Fastify();
+    await app.register(cockpitFastify(cockpit), { prefix: MOUNT });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    await app.close();
+
+    await expect(cockpit.run('explain', { file: 'a' })).rejects.toMatchObject({
+      code: 'no-app-port',
+    });
+  });
+
   it('leaves the app’s own routes, and their bodies, to the app', async () => {
     const { cockpit } = await newCockpit();
     const { base } = await mount(onFastify, cockpit);
@@ -474,6 +697,15 @@ describe('creating and closing the cockpit', () => {
     expect(link).toMatch(/^http:\/\/127\.0\.0\.1:8765\/#cockpit=[A-Za-z0-9_-]{43}$/);
   });
 
+  it('renews no token once closed: the lock is released, the file another process’s', async () => {
+    const { cockpit, stateDirectory } = await newCockpit();
+    const kept = readFileSync(join(stateDirectory, 'app-token'), 'utf8');
+    await cockpit.close();
+
+    await expect(cockpit.renewToken()).rejects.toThrow('closed');
+    expect(readFileSync(join(stateDirectory, 'app-token'), 'utf8')).toBe(kept);
+  });
+
   describe('the state folder, the cockpit’s own', () => {
     function optionsIn(stateDirectory?: string) {
       made += 1;
@@ -485,6 +717,47 @@ describe('creating and closing the cockpit', () => {
         ...(stateDirectory === undefined ? {} : { stateDirectory }),
       };
     }
+
+    it.each(['*', '?', '[', ']', '{', '}'])(
+      'refuses a folder the app named whose path holds %s, which a deny rule reads as a pattern, before it writes anything',
+      async (character) => {
+        const stateDirectory = join(root, `glob-${character}-${made}`);
+        await expect(createCockpit(optionsIn(stateDirectory))).rejects.toMatchObject({
+          code: 'invalid-options',
+          issues: [{ path: ['stateDirectory'], message: expect.stringContaining(stateDirectory) }],
+        });
+        expect(existsSync(stateDirectory)).toBe(false);
+      },
+    );
+
+    it('refuses a folder the app named whose real path holds a pattern character, under a linked folder', async () => {
+      const real = join(root, `real-[${made}]`);
+      mkdirSync(real);
+      const linked = join(root, `linked-plain-${made}`);
+      symlinkSync(real, linked);
+      await expect(createCockpit(optionsIn(join(linked, 'state')))).rejects.toMatchObject({
+        code: 'invalid-options',
+        issues: [
+          { path: ['stateDirectory'], message: expect.stringContaining(join(real, 'state')) },
+        ],
+      });
+      expect(existsSync(join(real, 'state'))).toBe(false);
+    });
+
+    it('refuses a default state root whose path holds a pattern character, saying it is the default', async () => {
+      const before = process.env.XDG_STATE_HOME;
+      const xdg = join(root, `xdg-{${made}}`);
+      vi.stubEnv('XDG_STATE_HOME', xdg);
+      try {
+        await expect(createCockpit(optionsIn())).rejects.toMatchObject({
+          code: 'invalid-options',
+          issues: [{ path: [], message: expect.stringContaining(join(xdg, 'agent-cockpit')) }],
+        });
+        expect(existsSync(xdg)).toBe(false);
+      } finally {
+        vi.stubEnv('XDG_STATE_HOME', before);
+      }
+    });
 
     it('narrows a folder the app named that its group could write, and keeps it so', async () => {
       const stateDirectory = join(root, `shared-${made}`);
@@ -556,7 +829,7 @@ describe('creating and closing the cockpit', () => {
   });
 
   it('settles a run still pending when it is closed, and launches nothing more', async () => {
-    const { cockpit, directory } = await newCockpit();
+    const { cockpit, directory } = await newCockpit(undefined, { port: APP_PORT });
     writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
 
     const pending = cockpit.run('explain', { file: 'a.txt' });
@@ -567,7 +840,7 @@ describe('creating and closing the cockpit', () => {
   });
 
   it('runs a job in-process, as the browser does', async () => {
-    const { cockpit, directory } = await newCockpit();
+    const { cockpit, directory } = await newCockpit(undefined, { port: APP_PORT });
     writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
     const seen: string[] = [];
     const stop = cockpit.sessions.follow((sessions) => {

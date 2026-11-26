@@ -45,6 +45,30 @@ describe("a launch's confinement", () => {
     );
   });
 
+  it('names a state root not made yet by the real path it will have, under a linked folder', async () => {
+    const real = join(folder, 'real-parent');
+    mkdirSync(real);
+    const linked = join(folder, 'linked-parent');
+    symlinkSync(real, linked);
+
+    const read = confinementReader({
+      stateRoots: [join(linked, 'agent-cockpit')],
+      appPorts: () => [8765],
+      listener: LISTENER,
+    });
+
+    expect((await read()).stateRoots).toEqual([
+      join(linked, 'agent-cockpit'),
+      join(real, 'agent-cockpit'),
+    ]);
+  });
+
+  it("refuses a launch while no port of the app's is known: no-app-port", async () => {
+    const read = confinementReader({ stateRoots: [], appPorts: () => [], listener: LISTENER });
+
+    await expect(read()).rejects.toMatchObject({ code: 'no-app-port' });
+  });
+
   it('gives the listener as it is', async () => {
     const read = confinementReader({ stateRoots: [], appPorts: () => [8765], listener: LISTENER });
 

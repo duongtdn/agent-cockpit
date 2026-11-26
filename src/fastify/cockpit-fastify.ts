@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
+import { APP_PORT_SOURCE, learnsAppPorts } from '../server/app-ports.js';
 import type { Cockpit } from '../server/create-cockpit.js';
 
 /**
@@ -11,13 +12,21 @@ import type { Cockpit } from '../server/create-cockpit.js';
  * under the prefix to `cockpit.upgrade`, the prefix removed from the URL
  * for both. Upgrades elsewhere are left to the app's own upgrade handling;
  * when the app has none, they are ended, as Node ends every upgrade of a
- * server that listens to none.
+ * server that listens to none. The cockpit learns the ports the server
+ * listens on, every address of it, read at each launch, so that every
+ * session's sandbox is kept from them; until the server listens, a launch
+ * is refused (`no-app-port`), and once Fastify closes the server is
+ * forgotten.
  *
  * @param cockpit - The cockpit, as `createCockpit` gave it.
  * @returns The plugin to register.
  */
-export function cockpitFastify(cockpit: Pick<Cockpit, 'handle' | 'upgrade'>): FastifyPluginAsync {
+export function cockpitFastify(cockpit: Cockpit): FastifyPluginAsync {
   return async (fastify) => {
+    if (learnsAppPorts(cockpit)) {
+      const forget = cockpit[APP_PORT_SOURCE](() => listeningPorts(fastify));
+      fastify.addHook('onClose', async () => forget());
+    }
     const { prefix } = fastify;
     // The handler reads the body itself: no parser of Fastify's may take it first.
     fastify.removeAllContentTypeParsers();
@@ -47,6 +56,13 @@ export function cockpitFastify(cockpit: Pick<Cockpit, 'handle' | 'upgrade'>): Fa
       fastify.server.off('upgrade', upgrade);
     });
   };
+}
+
+/** The ports of every address the Fastify server listens on now; none before it listens. */
+function listeningPorts(fastify: FastifyInstance): number[] {
+  return fastify
+    .addresses()
+    .flatMap((address) => (typeof address === 'object' ? [address.port] : []));
 }
 
 /**

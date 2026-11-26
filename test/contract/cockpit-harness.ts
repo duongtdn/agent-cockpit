@@ -8,6 +8,7 @@ import { createTmuxSessionHost } from '../../src/server/session-host/tmux-sessio
 import type { Session, SessionState } from '../../src/shared/session.ts';
 import { type AgentSession, sessionOf } from '../support/agent-session.ts';
 import { type FakeApi, startFakeApi } from '../support/fake-api/index.ts';
+import { startNodeHttpApp } from '../support/node-http-app.ts';
 import { agentFoldersOutside, tearDownRun } from '../support/real-agent/run-root.ts';
 import { type RealAgentShim, startRealAgentShim } from '../support/real-agent/shim.ts';
 import { runAll } from '../support/run-all.ts';
@@ -121,6 +122,10 @@ export async function startContractCockpit(permissions?: {
   const name = `contract-cockpit-${randomUUID()}`;
   const host = createTmuxSessionHost({ appName: name });
   const processIds: number[] = [];
+  // The app's browser-facing server, on the neutral handler: it listens
+  // first, then gives the cockpit its port, as an app does.
+  const app = await startNodeHttpApp('127.0.0.1');
+  closers.push(() => app.close());
   const cockpit = await createCockpit({
     name,
     directory: shim.workFolder,
@@ -130,7 +135,9 @@ export async function startContractCockpit(permissions?: {
     }),
     jobs: [SAY],
     stateDirectory: shim.stateFolder,
+    port: app.port,
   });
+  app.serve(cockpit);
   closers.push(() =>
     tearDownRun({
       endSessions: async () => {

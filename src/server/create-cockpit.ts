@@ -3,12 +3,13 @@ import type { Duplex } from 'node:stream';
 import { CockpitError } from '../shared/cockpit-error.js';
 import type { RunResult, Session } from '../shared/session.js';
 import { openAgentListener } from './agent-listener/agent-listener.js';
+import { APP_PORT_SOURCE, createAppPorts, type LearnsAppPorts } from './app-ports.js';
 import {
   type CheckedCockpitOptions,
   type CockpitOptions,
   checkCockpitOptions,
 } from './cockpit-options.js';
-import { confinementReader } from './confinement.js';
+import { confinementReader, givenAndRealPaths, holdsPatternCharacter } from './confinement.js';
 import { createFailureReport, type InternalFailure } from './failures.js';
 import { createHandler } from './http/handler.js';
 import { carriesAppToken, type RequestHeaders } from './http/request-token.js';
@@ -97,6 +98,20 @@ export interface Cockpit {
    */
   on(event: 'error', handler: (error: InternalFailure) => void): () => void;
   /**
+   * Renews the app's token: a new one is written to the state folder and
+   * put in force, and the one before is refused at once (`no-token`). Every
+   * browser-facing WebSocket is closed, the terminals' among them, so that
+   * each page that reconnects is checked again: pages need the new link,
+   * which `link` then gives.
+   *
+   * @returns A promise fulfilled once the new token is in force and every
+   * socket closed.
+   * @throws The file system's error when the new token cannot be written:
+   * the token in force then stays, and no socket is closed. An `Error` with
+   * no code once the cockpit is closed.
+   */
+  renewToken(): Promise<void>;
+  /**
    * Serves an HTTP request of the browser's, mounted: the app gives it the
    * requests under its prefix, the prefix removed from `req.url`.
    */
@@ -124,7 +139,10 @@ export interface Cockpit {
  * or with one issue when the state folder, or a file the cockpit reads in
  * it, is not the cockpit's own (a symbolic link, not a folder or a regular
  * file, another user's) — on `stateDirectory` when the app named the
- * folder; `unsupported-machine` when the machine is not Linux, or its tmux is
+ * folder; with an issue for each state root whose path, as given or as
+ * the system resolves it, holds a character a permission rule reads as a
+ * pattern (`*`, `?`, `[`, `]`, `{`, `}`), whose deny rules could miss it;
+ * `unsupported-machine` when the machine is not Linux, or its tmux is
  * missing or too old; `cockpit-locked` when another process of the app runs
  * a cockpit.
  */
@@ -134,6 +152,7 @@ export async function createCockpit(options: CockpitOptions): Promise<Cockpit> {
   const host = createTmuxSessionHost({ appName: checked.name });
   await host.checkMachine();
   const statePath = stateFolderPath(checked.name, checked.stateDirectory);
+  await refusePatternedStateRoots(checked, statePath);
   try {
     return await openCockpit(checked, host, statePath);
   } catch (error) {
@@ -147,7 +166,7 @@ async function openCockpit(
   checked: CheckedCockpitOptions,
   host: SessionHost,
   statePath: string,
-): Promise<Cockpit> {
+): Promise<Cockpit & LearnsAppPorts> {
   const folder = await openStateFolder(statePath);
   const lock = await takeAppLock(folder.path);
   try {
@@ -162,6 +181,7 @@ async function openCockpit(
       receive: (request) => receiver.sessions?.receive(request),
       reportFailure: (cause) => failures.report('agent-listener', cause),
     });
+    const appPorts = createAppPorts(checked.ports);
     const sessions = createSessions({
       host,
       driver: checked.driver,
@@ -170,7 +190,7 @@ async function openCockpit(
       environment: serverEnvironment,
       confinement: confinementReader({
         stateRoots: stateRootsOf(checked, folder.path),
-        appPorts: () => checked.ports,
+        appPorts: appPorts.current,
         listener: { host: '127.0.0.1', port: listener.port },
       }),
     });
@@ -195,16 +215,31 @@ async function openCockpit(
       reportFailure: failures.report,
     });
     let closing: Promise<void> | undefined;
+    let renewing: Promise<void> = Promise.resolve();
+    const renewToken = async (): Promise<void> => {
+      // Once closed the lock is another process's to take, and the token's file with it.
+      if (closing !== undefined) throw new Error('The cockpit is closed: it renews no token.');
+      await appToken.renew();
+      await handler.closeAllSockets();
+    };
     return {
       run,
       sessions: { list: () => sessions.list(), follow: (handler) => sessions.follow(handler) },
       link: (pageUrl) => linkTo(pageUrl, appToken.value),
       verify: (request) => carriesAppToken(request, appToken.matches),
       on: (_event, handler) => failures.on(handler),
+      renewToken() {
+        const renewal = renewToken();
+        renewing = Promise.all([renewing, renewal.catch(() => undefined)]).then(() => undefined);
+        return renewal;
+      },
+      [APP_PORT_SOURCE]: appPorts.addSource,
       handle: handler.handle,
       upgrade: handler.upgrade,
       close() {
         closing ??= (async () => {
+          // A renewal under way writes the token's file: it ends before the lock is released.
+          await renewing;
           await handler.close();
           sessions.close();
           await listener.close();
@@ -217,6 +252,37 @@ async function openCockpit(
     await lock.release();
     throw error;
   }
+}
+
+/**
+ * Refuses a state root whose path, as given or as the system resolves it
+ * (the folder made if missing), holds a character a deny rule reads as a
+ * pattern: its rules could miss the folder. Checked before anything is
+ * written.
+ */
+async function refusePatternedStateRoots(
+  checked: CheckedCockpitOptions,
+  statePath: string,
+): Promise<void> {
+  const roots = [
+    { root: cockpitStateRoot(), issuePath: [] as string[], what: 'The default state root' },
+  ];
+  if (checked.stateDirectory !== undefined) {
+    roots.push({ root: statePath, issuePath: ['stateDirectory'], what: 'The state folder' });
+  }
+  const issues = [];
+  for (const { root, issuePath, what } of roots) {
+    for (const path of await givenAndRealPaths([root])) {
+      if (!holdsPatternCharacter(path)) continue;
+      issues.push({
+        path: issuePath,
+        message: `${what} ${path} holds a character a permission rule reads as a pattern (* ? [ ] { }), so the rule keeping the agent out of it could miss it.`,
+      });
+    }
+  }
+  if (issues.length === 0) return;
+  const message = "The cockpit's state folder cannot be kept from the agent.";
+  throw new CockpitError('invalid-options', message, { issues });
 }
 
 /**
