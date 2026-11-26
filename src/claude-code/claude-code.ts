@@ -52,8 +52,9 @@ const OPEN_NETWORK_REASON =
  * Creates the Claude Code driver, which `createCockpit` takes as its
  * `driver`. It launches `claude` from the `PATH` of the server's
  * environment, in the session's folder, with settings of its own written in
- * the cockpit's state folder: the hooks that report to the cockpit and the
- * app's permission rules.
+ * the cockpit's state folder: the hooks that report to the cockpit, the
+ * app's permission rules, and the lines that keep the agent from the
+ * cockpit's state and the app's ports.
  *
  * @param options - The permission mode every session is launched in
  * (`default` when left out), the permission rules its settings carry, and
@@ -93,6 +94,7 @@ async function launchSession(launch: Launch, options: CheckedOptions): Promise<L
         token: address.token,
         sessionStartCommand: sessionStartCommand(addressFile),
         permissions: options.permissions,
+        confinement: launch.confinement,
       }),
     ),
   );

@@ -206,15 +206,19 @@ describe('the settings of a launch', () => {
     });
   });
 
-  it("carry the app's permission rules, and none when it gives none", async () => {
+  it("carry the app's permission rules, the confinement's denies after them", async () => {
     const permissions = { allow: ['Read'], deny: ['WebFetch'] };
 
     expect(
       settingsOf((await claudeCode({ permissions }).launch(launchOf())).args).permissions,
-    ).toEqual(permissions);
-    expect(settingsOf((await claudeCode().launch(launchOf())).args)).not.toHaveProperty(
-      'permissions',
-    );
+    ).toEqual({
+      allow: ['Read'],
+      deny: [
+        'WebFetch',
+        'Read(//home/someone/.local/state/agent-cockpit/**)',
+        'Edit(//home/someone/.local/state/agent-cockpit/**)',
+      ],
+    });
   });
 });
 

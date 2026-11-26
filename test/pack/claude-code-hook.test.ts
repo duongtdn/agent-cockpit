@@ -22,6 +22,11 @@ describe('the built Claude Code driver', () => {
       files,
       hooks: { url: 'http://127.0.0.1:4100', token: 't' },
       environment: {},
+      confinement: {
+        stateRoots: [files],
+        appAddresses: [{ host: '127.0.0.1', port: 8765 }],
+        listener: { host: '127.0.0.1', port: 4100 },
+      },
     });
     const settings = JSON.parse(readFileSync(args[args.indexOf('--settings') + 1], 'utf8'));
     const command: string = settings.hooks.SessionStart[0].hooks[0].command;
