@@ -1,0 +1,85 @@
+{
+  "name": "@duongtdn/agent-cockpit",
+  "version": "0.0.0",
+  "description": "Drive coding agents, in their real terminal UI, from your app's own web UI.",
+  "license": "MIT",
+  "author": "duongtdn",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/duongtdn/agent-cockpit.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.33.4",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./fastify": {
+      "types": "./dist/fastify/index.d.ts",
+      "import": "./dist/fastify/index.js"
+    },
+    "./claude-code": {
+      "types": "./dist/claude-code/index.d.ts",
+      "import": "./dist/claude-code/index.js"
+    },
+    "./channel": {
+      "types": "./dist/channel/index.d.ts",
+      "import": "./dist/channel/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    },
+    "./terminal": {
+      "types": "./dist/terminal/index.d.ts",
+      "import": "./dist/terminal/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.browser.json && tsc -p tsconfig.json",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "vitest run --project unit --coverage",
+    "test:integration": "vitest run --project integration --passWithNoTests",
+    "test:contract": "vitest run --project contract --passWithNoTests",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:integration && pnpm build && pnpm test:pack",
+    "test:pack": "vitest run --project pack"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "node-pty": "1.1.0",
+    "ws": "8.23.0"
+  },
+  "peerDependenciesMeta": {
+    "fastify": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.9",
+    "@types/node": "22.20.7",
+    "@vitest/coverage-v8": "5.1.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.2"
+  },
+  "peerDependencies": {
+    "fastify": "^5",
+    "zod": "^4"
+  }
+}

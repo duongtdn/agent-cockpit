@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": [
+    "src/server",
+    "src/fastify",
+    "src/claude-code",
+    "src/channel-server",
+    "src/channel",
+    "src/shared"
+  ]
+}

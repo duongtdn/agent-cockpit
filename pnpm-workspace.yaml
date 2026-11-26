@@ -1,0 +1,3 @@
+# node-pty ships no prebuilt binary for Linux: its install script compiles it.
+onlyBuiltDependencies:
+  - node-pty
