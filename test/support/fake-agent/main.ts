@@ -70,8 +70,7 @@ interface PlayedSettings extends PlayedPermissions {
 }
 
 function settingsOf(commandLine: CommandLine): PlayedSettings {
-  if (commandLine.settingsFile === undefined)
-    return { hooks: {}, allowRules: [], deniedFolders: [] };
+  if (commandLine.settingsFile === undefined) return { hooks: {}, allowRules: [], deniedPaths: [] };
   try {
     const text = readFileSync(commandLine.settingsFile, 'utf8');
     return { hooks: parseHookSettings(text), ...parsePermissions(text) };
@@ -116,7 +115,7 @@ const agent = createFakeAgent({
   secondsSinceLastResponse: secondsSinceLastResponse(transcriptPath, new Date()),
   workFolder: cwd,
   allowRules: settings.allowRules,
-  deniedFolders: settings.deniedFolders,
+  deniedPaths: settings.deniedPaths,
   startReleased: () => startReleased(cwd),
   readScript: () => readScript(cwd),
   show,

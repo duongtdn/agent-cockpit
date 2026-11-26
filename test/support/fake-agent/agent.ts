@@ -20,7 +20,7 @@ import {
 import type { HookRunner } from './hook-runner.ts';
 import { createInputBox } from './input-box.ts';
 import type { Key } from './keys.ts';
-import { allowsEveryCallOf, deniedFolderNamedBy } from './permission-settings.ts';
+import { allowsEveryCallOf, deniedPathNamedBy } from './permission-settings.ts';
 import type { AgentState, Dialog, ScreenView } from './screen.ts';
 import { type Step, type Turn, turnAt } from './script.ts';
 import { DENIED_BY_HOOK, deniedInDontAsk, type PlannedCall, planCall } from './tool-calls.ts';
@@ -42,8 +42,12 @@ export interface AgentSurroundings {
   readonly workFolder: string;
   /** The rules the settings allow tool calls by, with no ask. */
   readonly allowRules: readonly string[];
-  /** The folders the settings deny to `Read` and `Edit`: a call that names one is not played. */
-  readonly deniedFolders: readonly string[];
+  /**
+   * The paths the settings deny: folders to `Read` and `Edit`, files to
+   * `Edit`, each absolute or the end of one. A call that names one is not
+   * played.
+   */
+  readonly deniedPaths: readonly string[];
   /** Waits until the test lets the session get ready; at once when nothing holds it. */
   startReleased(): Promise<void>;
   /**
@@ -362,10 +366,10 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   /**
    * Plays a call of the script.
    *
-   * @throws `Error` for a call that names a folder the settings deny.
+   * @throws `Error` for a call that names a path the settings deny.
    */
   async function playCall(planned: PlannedCall, running: RunningTurn): Promise<void> {
-    const denied = deniedFolderNamedBy(planned.input, surroundings.deniedFolders);
+    const denied = deniedPathNamedBy(planned.input, surroundings.deniedPaths);
     if (denied !== undefined) {
       throw new Error(
         `the script calls ${planned.name} on ${denied}, which the settings deny: nothing tells what Claude Code answers there`,

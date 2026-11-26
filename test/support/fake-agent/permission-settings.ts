@@ -2,27 +2,40 @@
 export interface PlayedPermissions {
   /** The rules that allow tool calls with no ask, as written. */
   readonly allowRules: readonly string[];
-  /** The folders denied to `Read` and to `Edit`, each an absolute path. */
-  readonly deniedFolders: readonly string[];
+  /**
+   * The paths denied: folders to `Read` and to `Edit`, and files to `Edit`,
+   * each absolute or, for a file denied under every folder, the end of its
+   * path (`.claude/settings.json`).
+   */
+  readonly deniedPaths: readonly string[];
 }
 
-/** A rule that denies a folder by its absolute path, as the cockpit's confinement writes it. */
-const FOLDER_DENY = /^(?:Read|Edit)\(\/(\/.+)\/\*\*\)$/;
+/**
+ * The deny rules the cockpit's confinement writes, each with the path it
+ * denies: a folder to `Read` or `Edit` (`Read(//abs/**)`), a file to `Edit`
+ * under every folder (`Edit(//**\/.claude/settings.json)`) or at one path
+ * (`Edit(//abs/settings.json)`).
+ */
+const PATH_DENIES: readonly RegExp[] = [
+  /^(?:Read|Edit)\(\/(\/.+)\/\*\*\)$/,
+  /^Edit\(\/\/\*\*\/([^*]+)\)$/,
+  /^Edit\(\/(\/[^*]+)\)$/,
+];
 
 /**
  * Reads the permissions a settings file plays: the rules of its `allow`,
- * and the folders of its `deny`.
+ * and the paths of its `deny`.
  *
  * @param text - The file's content, as JSON.
  * @returns What it plays; nothing when the file has no permissions.
  * @throws `Error` beginning "the fake agent cannot play" for what is no
  * JSON, for permissions beyond a list of rules to allow and a list of
- * folders to deny (a list of asks, a mode), and for a deny rule other than
- * a folder's to `Read` or `Edit` (`Read(//abs/**)`).
+ * paths to deny (a list of asks, a mode), and for a deny rule other than
+ * one of {@link PATH_DENIES}.
  */
 export function parsePermissions(text: string): PlayedPermissions {
   const permissions = permissionsIn(text);
-  if (permissions === undefined) return { allowRules: [], deniedFolders: [] };
+  if (permissions === undefined) return { allowRules: [], deniedPaths: [] };
   if (!isRecord(permissions)) throw cannotPlay('permissions that are no object');
   const { allow = [], deny = [], ...others } = permissions;
   const [unplayed] = Object.keys(others);
@@ -33,34 +46,31 @@ export function parsePermissions(text: string): PlayedPermissions {
   }
   if (!isRuleList(allow)) throw cannotPlay('an "allow" that is no list of rules');
   if (!isRuleList(deny)) throw cannotPlay('a "deny" that is no list of rules');
-  return { allowRules: allow, deniedFolders: [...new Set(deny.map(deniedFolderOf))] };
+  return { allowRules: allow, deniedPaths: [...new Set(deny.map(deniedPathOf))] };
 }
 
-function deniedFolderOf(rule: string): string {
-  const folder = FOLDER_DENY.exec(rule)?.[1];
-  if (folder === undefined) {
+function deniedPathOf(rule: string): string {
+  const path = PATH_DENIES.map((deny) => deny.exec(rule)?.[1]).find((found) => found !== undefined);
+  if (path === undefined) {
     throw cannotPlay(
-      `the deny rule ${JSON.stringify(rule)}: it plays a folder denied to Read or Edit only`,
+      `the deny rule ${JSON.stringify(rule)}: it plays a folder denied to Read or Edit, and a file denied to Edit, only`,
     );
   }
-  return folder;
+  return path;
 }
 
 /**
- * Tells which denied folder a call names, in any text of its input: what
+ * Tells which denied path a call names, in any text of its input: what
  * Claude Code answers such a call depends on the tool and on the sandbox,
  * which the fake agent does not play.
  *
  * @param input - The call's input.
- * @param folders - The denied folders, from {@link parsePermissions}.
- * @returns The first folder named; `undefined` when the call names none.
+ * @param paths - The denied paths, from {@link parsePermissions}.
+ * @returns The first path named; `undefined` when the call names none.
  */
-export function deniedFolderNamedBy(
-  input: unknown,
-  folders: readonly string[],
-): string | undefined {
+export function deniedPathNamedBy(input: unknown, paths: readonly string[]): string | undefined {
   const texts = textsIn(input);
-  return folders.find((folder) => texts.some((text) => text.includes(folder)));
+  return paths.find((path) => texts.some((text) => text.includes(path)));
 }
 
 function textsIn(value: unknown): string[] {

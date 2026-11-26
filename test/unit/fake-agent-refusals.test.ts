@@ -309,7 +309,7 @@ describe('the fake agent, asked to play what it has no evidence for', () => {
 
   it('fails on a call that names a folder the settings deny', async () => {
     const readToken = { ...touch, input: { command: 'cat /state/root/token' } };
-    const played = await start({ script: [[readToken, reply]], deniedFolders: ['/state/root'] });
+    const played = await start({ script: [[readToken, reply]], deniedPaths: ['/state/root'] });
 
     submit(played, 'read it');
 
