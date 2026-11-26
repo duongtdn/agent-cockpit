@@ -142,13 +142,25 @@ export const VARIABLE_RULES: Readonly<Record<string, VariableRule>> = {
 };
 
 /**
+ * The variables that name the folders whose files the guard checks: the
+ * settings and the MCP servers under the launch's configuration folder and
+ * home. Settings that set one would move the agent to files never checked,
+ * whatever folder they name, the launch's own included.
+ */
+const CHECKED_FOLDER_VARIABLES: readonly string[] = ['HOME', 'CLAUDE_CONFIG_DIR', 'TMPDIR'];
+
+/**
  * Variables given in settings (`env`), which the agent applies over the
  * ones it was launched with: each must have a rule that a launch may give,
- * and pass it, as if the launch gave it.
+ * and pass it, as if the launch gave it; none may name a folder the guard
+ * checked.
  */
 const variablesThatPassTheirRules: Check<unknown> = (variables, root) => {
   if (!isRecord(variables)) return 'variables that are no object';
   for (const [name, value] of Object.entries(variables)) {
+    if (CHECKED_FOLDER_VARIABLES.includes(name)) {
+      return `the variable ${name}, which would move the agent from the folders whose files the guard checked: only a launch gives it`;
+    }
     const rule = ruleIn(VARIABLE_RULES, name);
     if (rule === undefined || rule.given === 'by the terminal') {
       return `the variable ${name}, which has no rule a launch may give in VARIABLE_RULES (${RULES_FILE})`;

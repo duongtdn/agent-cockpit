@@ -78,8 +78,10 @@ const MANAGED_SETTINGS_FOLDERS = ['/etc/claude-code', '/mnt/c/Program Files/Clau
  * anything but a loopback origin, `HOME`, `CLAUDE_CONFIG_DIR` or `TMPDIR`
  * anything but a real folder inside the root; an argument with no rule, or
  * settings given as a file that can be written; a setting with no rule, or one its rule
- * refuses, on the command line or in any settings file the agent reads; a
- * file of MCP servers the agent would read.
+ * refuses, on the command line or in any settings file the agent reads (an
+ * `env` that sets `HOME`, `CLAUDE_CONFIG_DIR` or `TMPDIR` among them: the
+ * files checked are the launch's folders'); a file of MCP servers the agent
+ * would read.
  */
 export function assertStaysLocal(launch: AgentLaunch, machine: Machine = thisMachine()): void {
   const problem =

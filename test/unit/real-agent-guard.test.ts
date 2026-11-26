@@ -302,6 +302,25 @@ describe("the guard of the real agent's settings", () => {
     expect(withSettings({ ...settings, env: [] })).toThrow(/variables that are no object/);
   });
 
+  it.each([
+    ['HOME', folders.home],
+    ['CLAUDE_CONFIG_DIR', folders.configFolder],
+    ['TMPDIR', folders.temporaryFolder],
+  ])(
+    'refuses settings that set %s, even to the launch’s own folder: the guard checked the files under the launch’s',
+    (name, folder) => {
+      const another = join(root, `another-${name}`);
+      mkdirSync(another);
+      made.push(another);
+
+      for (const value of [another, folder]) {
+        expect(withSettings({ ...settings, env: { [name]: value } })).toThrow(
+          new RegExp(`settings.*"env", the variable ${name}, .*the folders whose files`),
+        );
+      }
+    },
+  );
+
   it('lets settings give the agent variables that pass the rules a launch passes', () => {
     expect(
       withSettings({
