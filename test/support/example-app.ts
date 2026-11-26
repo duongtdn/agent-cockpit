@@ -35,6 +35,13 @@ export interface ExampleApp {
    */
   nextLine(pattern: RegExp): Promise<RegExpExecArray>;
   /**
+   * Sends it a signal and returns at once, as a person presses Ctrl+C
+   * (`SIGINT`) without waiting for what it does.
+   *
+   * @param signal - The signal it is sent.
+   */
+  signal(signal: NodeJS.Signals): void;
+  /**
    * Stops it with a signal, by default as a person does with Ctrl+C
    * (`SIGINT`), and waits for it to exit. Safe to call twice: the first
    * call's signal is the one sent.
@@ -112,6 +119,9 @@ export async function startExampleApp(name: string, args: readonly string[]): Pr
     printed: () => output,
     temporaryRoot: () => temporaryRootIn(output),
     nextLine,
+    signal: (signal) => {
+      child.kill(signal);
+    },
     stop: (signal = 'SIGINT') => {
       stopped ??= stopChild(child, signal, exited, () => output);
       return stopped;

@@ -7,13 +7,20 @@ A small app on Fastify that shows who may reach its cockpit, and how:
   (`/api/whoami`, `/api/renew-token`) checks the same token:
   the page sends `cockpitHeaders()`, the app calls `cockpit.verify`. The
   pages themselves are served to anyone: a navigation carries no header.
+  Renewing the token takes the token itself, never a sign-in.
 - **From the network**, the cockpit refuses every page (`remote`), and every
   request a proxy forwarded (`forwarded`), unless the app opens it. With
   `--open`, the app gives the cockpit an `authorize` that checks the app's
   own sign-in: a page of the network signs in with a password the server
   prints, and gets a cookie (a browser sends it on WebSocket handshakes too,
-  where a page can set no header). `origins` lists the machine's network
-  addresses at the app's port, and any `--origin` you add.
+  where a page can set no header) that lasts 8 hours, or until the page
+  signs out. `origins` lists the addresses the app listens on at its port
+  (with `--host ::`, the machine's IPv6 ones too), and any `--origin` you
+  add.
+- **The app's routes that change something** (`/api/renew-token`,
+  `/api/sign-in`, `/api/sign-out`) refuse a page of another origin than the
+  app's own, port included: a cookie is sent to every port of its host, so
+  a page of another server on this machine would carry the sign-in.
 - **The terminal** is a shell on this machine: `terminal: 'loopback'` keeps
   it from every page of the network, opened or not (`terminal-off`).
 - **Renewing the token** (a button on the page): the old link stops working
@@ -82,7 +89,16 @@ Open http://127.0.0.1:4320/#cockpit=…
 
    It answers `403`, `"code":"refused"`, `"cause":"forwarded"`. Without the
    `X-Forwarded-For` line it answers the sessions; without the token,
-   `401` and `no-token`.
+   `401` and `no-token`. A page of another server on this machine cannot
+   change the app either, the token with it:
+
+   ```sh
+   curl -i -X POST -H 'cockpit-token: <token>' -H 'Origin: http://127.0.0.1:8080' \
+     http://127.0.0.1:4320/api/renew-token
+   ```
+
+   answers `403` and `"error":"wrong-origin"` (with the page's own origin,
+   `http://127.0.0.1:4320`, it would renew the token).
 5. **A page of the network is refused.** Stop the server (Ctrl+C) and
    start it listening on every address, not opened:
 
@@ -102,6 +118,10 @@ Open http://127.0.0.1:4320/#cockpit=…
    started without --open". Under WSL2 the address printed is the Linux
    side's: another device reaches it only once Windows forwards a port to
    it; this machine's own browser reaches it as it is.
+
+   With `--host <one address of the machine>` it listens there only, and
+   the link it prints is on that address (refused there too, `remote`);
+   with `--host localhost` the link is on `127.0.0.1`.
 6. **Open it with `--open`.** Stop the server and start it again:
 
    ```sh
@@ -114,12 +134,15 @@ Open http://127.0.0.1:4320/#cockpit=…
    sign in: a wrong password gets "That is not the password the app
    printed."; the right one reloads the page, which now shows "Following
    the sessions." and "The app's API knows this page by its sign-in, from
-   <its address>." The page can say hello and sees the sessions. Press
+   <its address>." The sign-in lasts 8 hours. The page can say hello and
+   sees the sessions; _Renew the token_ gets "The app refused to renew the
+   token (401).": only a page with the token renews it. Press
    _Terminal_ on a row: "The terminal stays on the app's machine (refused ·
    terminal-off).", and the terminal `(closed)`; it does not retry. On
    this machine, open the link this start printed in a new tab (the
    scripted agent's state, the token in it, is new at every start): there
-   the same _Terminal_ opens.
+   the same _Terminal_ opens. Back on the page of the network, _Sign out_
+   ends its sign-in: the page reloads, refused (`remote`) again.
 
    A name for this machine (`http://my-box.local:4320`) is refused
    (`host`) until you add it: `--origin http://my-box.local:4320`.
@@ -133,14 +156,18 @@ Open http://127.0.0.1:4320/#cockpit=…
    the link the server printed.", its terminal too. The old link gets the
    same. Open the new link in a new tab: it works, and within a few
    seconds the page you renewed from follows the sessions again by itself
-   (a page reads the token its origin keeps at each try). A link pasted
-   into a tab that already shows the page changes only what follows `#`,
-   which does not reload it: reload it then. The page of the network,
-   signed in, goes on: its proof is the app's sign-in, not the token.
+   (a page reads the token its origin keeps at each try). Or paste the new
+   link into the tab you renewed from: it takes the token at once, clears
+   it from the address bar, and follows again, its terminal `(open)`. A
+   page of the network that is signed in goes on: its proof is the app's
+   sign-in, not the token.
 8. **Stop the server** with Ctrl+C (or close its terminal). It prints
-   "Stopped.", ends the sessions and their tmux server, stops the fake API
-   and removes its folder; one that cannot start (its port taken) removes
-   them too.
+   "Stopping… (again to force it)", then "Stopped.", ends the sessions and
+   their tmux server, stops the fake API and removes its folder; one that
+   cannot start (its port taken) removes them too. Should the stop hang (a
+   request that never ends holds the server open), Ctrl+C again: "Forced to
+   stop", the sessions, their tmux server and the folder removed, exit
+   status 1.
 
 ## With your own agent
 

@@ -6,8 +6,10 @@
 // checks the app's sign-in. The terminal stays on this machine either way.
 //
 //   node examples/translate-and-access/server.js             loopback only
-//   --host <address>   where the server listens (127.0.0.1); 0.0.0.0 to be reached
-//                      from the network, where the cockpit still refuses every page
+//   --host <address>   where the server listens (127.0.0.1); 0.0.0.0 (:: for IPv6
+//                      too) to be reached from the network, where the cockpit still
+//                      refuses every page; the link is on that address, or on the
+//                      loopback for a loopback or wildcard address
 //   --open             opens the cockpit to signed-in pages of the network
 //                      (listens on 0.0.0.0 unless --host says otherwise)
 //   --origin <origin>  one more origin a page may come from, with --open
@@ -37,6 +39,18 @@ const APP_NAME = 'translate-and-access';
 
 /** The cookie of the app's own sign-in, which a page of the network gets for the right password. */
 const SIGN_IN_COOKIE = 'translate-and-access-sign-in';
+
+/**
+ * How long a sign-in lasts, in seconds: a working day. A stolen or
+ * forgotten sign-in should not open the app for good; it ends sooner on a
+ * sign-out, and when the server stops (the app keeps its sign-ins in memory).
+ */
+const SIGN_IN_LIFETIME_S = 8 * 60 * 60;
+
+/** The addresses that listen on every address of the machine: IPv4's, and IPv6's (IPv4 too). */
+const WILDCARD_HOSTS = ['0.0.0.0', '::'];
+/** The loopback's names, which only this machine reaches. */
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
 
 /** One job, so that there are sessions to follow and a terminal to keep local. */
 const sayHello = {
@@ -79,16 +93,23 @@ if (options.open && port === 0) {
  * terminal, so only who sees it can sign a page of the network in.
  */
 const password = options.open ? randomBytes(18).toString('base64url') : undefined;
-/** The sign-ins the app has given, each a random value its cookie carries. */
-const signIns = new Set();
+/** The sign-ins the app has given: the random value each cookie carries, and when it expires (ms). */
+const signIns = new Map();
 
 // Ctrl+C, a `kill`, or the terminal closing — at any time, while it starts
 // too: the stop waits for what is starting, then stops all that started. A
-// second signal while stopping changes nothing: the first one's stop goes on.
+// second signal while it stops forces the exit: a stop can hang (a request
+// that never ends holds the server open), and a person presses Ctrl+C again.
 let stopping;
+let forcing = false;
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
-    stopping ??= starting
+    if (stopping !== undefined) {
+      void forceTheExit();
+      return;
+    }
+    console.log('Stopping… (again to force it)');
+    stopping = starting
       .catch(() => {})
       .then(stop)
       .then(
@@ -105,6 +126,10 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 let agent;
 let cockpit;
 let app;
+// The default is a stand-in for the agent's model, so that the example runs
+// with no login and costs nothing. It is the example's, not the package's.
+// Held from the start: a forced stop removes it, however far the start went.
+const agentStarting = options.real ? Promise.resolve(yourOwnAgent()) : scriptedAgent();
 const starting = start();
 try {
   await starting;
@@ -119,14 +144,12 @@ try {
   process.exitCode = 1;
 }
 if (stopping === undefined) {
-  if (host !== '127.0.0.1') tellTheNetworkAddresses();
+  if (!LOOPBACK_HOSTS.includes(host)) tellTheNetwork();
   console.log(`Open ${pageLink()}`);
 }
 
 async function start() {
-  // The default is a stand-in for the agent's model, so that the example runs
-  // with no login and costs nothing. It is the example's, not the package's.
-  agent = options.real ? yourOwnAgent() : await scriptedAgent();
+  agent = await agentStarting;
   console.log(agent.description);
   cockpit = await createCockpit({
     name: APP_NAME,
@@ -145,7 +168,7 @@ async function start() {
   });
   app = Fastify();
   await app.register(cockpitFastify(cockpit), { prefix: '/cockpit' });
-  addTheApi(app);
+  await app.register(theApi, { prefix: '/api' });
   for (const [path, file] of pageFiles()) {
     app.get(path, async (_request, reply) =>
       reply.type(CONTENT_TYPES[extname(file)]).send(await readFile(file)),
@@ -157,16 +180,13 @@ async function start() {
 /**
  * The cockpit's options that open it to the network: a request from another
  * address is served when it carries the app's sign-in, and a page may come
- * from this machine's network addresses at the app's port, or from an origin
+ * from the addresses the app listens on at the app's port, or from an origin
  * the person named.
  */
 function openedToTheNetwork() {
   return {
     authorize: (request) => signedIn(request),
-    origins: [
-      ...networkAddresses().map((address) => `http://${address}:${port}`),
-      ...options.origin,
-    ],
+    origins: [...networkOrigins(port), ...options.origin],
   };
 }
 
@@ -175,23 +195,37 @@ function openedToTheNetwork() {
  * with the app's token (`cockpitHeaders()` on the page, `cockpit.verify`
  * here) or, from the network, with the app's sign-in; the page itself, a
  * navigation, carries neither, so the pages are served to anyone.
+ *
+ * Every route that changes something refuses a page of another origin. The
+ * sign-in is a cookie, and a cookie is no proof of which page sent it: the
+ * browser sends it to every port of its host, and `SameSite` counts every
+ * port of a host as one site, so a page of any other server on this machine
+ * (another user's included) would send it with a request to these routes.
  */
-function addTheApi(server) {
-  server.get('/api/whoami', async (request, reply) => {
+async function theApi(api) {
+  api.addHook('onRequest', refuseOtherOrigins);
+
+  api.get('/whoami', async (request, reply) => {
     const provedBy = proofOf(request);
     if (provedBy === undefined) return refuse(reply);
     return { provedBy, from: request.socket.remoteAddress };
   });
 
-  server.post('/api/renew-token', async (request, reply) => {
-    if (proofOf(request) === undefined) return refuse(reply);
+  // The token only, never a sign-in: renewing cuts every page of this
+  // machine off until it opens the new link, which only this terminal shows.
+  api.post('/renew-token', async (request, reply) => {
+    if (!cockpit.verify(request)) {
+      return reply
+        .code(401)
+        .send({ error: 'no-token', message: 'Only a page with the token renews it.' });
+    }
     await cockpit.renewToken();
     console.log('Renewed the token: every page needs the new link.');
     console.log(`Open ${pageLink()}`);
     return reply.code(204).send();
   });
 
-  server.post('/api/sign-in', async (request, reply) => {
+  api.post('/sign-in', async (request, reply) => {
     if (password === undefined) {
       return reply.code(403).send({ error: 'not-open', message: 'Started without --open.' });
     }
@@ -199,12 +233,48 @@ function addTheApi(server) {
       return reply.code(403).send({ error: 'wrong-password', message: 'Not the password.' });
     }
     const signIn = randomBytes(32).toString('base64url');
-    signIns.add(signIn);
+    signIns.set(signIn, Date.now() + SIGN_IN_LIFETIME_S * 1000);
     // Sent back on every request of this address, WebSocket handshakes
     // included (a page can set no header on those): what `authorize` checks.
-    reply.header('set-cookie', `${SIGN_IN_COOKIE}=${signIn}; HttpOnly; SameSite=Strict; Path=/`);
+    // It expires with the sign-in, and the browser's copy with it.
+    reply.header('set-cookie', signInCookie(signIn, SIGN_IN_LIFETIME_S));
     return reply.code(204).send();
   });
+
+  // A shared or borrowed device must be able to give its access back.
+  api.post('/sign-out', async (request, reply) => {
+    signIns.delete(signInOf(request));
+    reply.header('set-cookie', signInCookie('', 0));
+    return reply.code(204).send();
+  });
+}
+
+/**
+ * Refuses a request that changes something when it comes from a page of
+ * another origin than the app's own. Browsers send `Origin` with every such
+ * request; one without it comes from no page (curl), and carries no cookie
+ * of the person's browser. The origins are exact, port included: stricter
+ * than the cockpit's check, which lets a page on any port of the loopback
+ * through, since its proof, the token, is no cookie.
+ */
+async function refuseOtherOrigins(request, reply) {
+  if (request.method === 'GET' || request.method === 'HEAD') return;
+  const origin = request.headers.origin;
+  if (origin === undefined || appOrigins().includes(origin)) return;
+  return reply
+    .code(403)
+    .send({ error: 'wrong-origin', message: `A page of ${origin} cannot change this app.` });
+}
+
+/** The origins of the app's own pages: the loopback, the addresses it listens on, the person's. */
+function appOrigins() {
+  const listening = app.server.address().port;
+  return [
+    `http://127.0.0.1:${listening}`,
+    `http://localhost:${listening}`,
+    ...networkOrigins(listening),
+    ...options.origin,
+  ];
 }
 
 /** How a request proves itself to the app's API: `'token'`, `'sign-in'`, or `undefined`. */
@@ -218,11 +288,26 @@ function refuse(reply) {
   return reply.code(401).send({ error: 'no-proof', message: 'Neither the token nor a sign-in.' });
 }
 
-/** Whether a request carries a sign-in the app gave. */
+/** Whether a request carries a sign-in the app gave, and that has not expired. */
 function signedIn(request) {
+  const signIn = signInOf(request);
+  const expires = signIns.get(signIn);
+  if (expires === undefined) return false;
+  if (expires > Date.now()) return true;
+  signIns.delete(signIn);
+  return false;
+}
+
+/** The sign-in a request's cookie carries; `undefined` for none. */
+function signInOf(request) {
   const cookies = (request.headers.cookie ?? '').split(';').map((cookie) => cookie.trim());
-  const carried = cookies.find((cookie) => cookie.startsWith(`${SIGN_IN_COOKIE}=`));
-  return carried !== undefined && signIns.has(carried.slice(SIGN_IN_COOKIE.length + 1));
+  return cookies
+    .find((cookie) => cookie.startsWith(`${SIGN_IN_COOKIE}=`))
+    ?.slice(SIGN_IN_COOKIE.length + 1);
+}
+
+function signInCookie(value, lifetimeSeconds) {
+  return `${SIGN_IN_COOKIE}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${lifetimeSeconds}`;
 }
 
 function isThePassword(given) {
@@ -232,29 +317,80 @@ function isThePassword(given) {
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-/** The page's link on this machine, the app's token in its fragment: only this terminal shows it. */
+/**
+ * The page's link, the app's token in its fragment: only this terminal shows
+ * it. It is on the loopback when the app listens there (on every address
+ * included), else on the address it listens on.
+ */
 function pageLink() {
-  return cockpit.link(`http://127.0.0.1:${app.server.address().port}/`);
+  const listening = app.server.address().port;
+  return cockpit.link(`http://${linkHost()}:${listening}/`);
 }
 
-/** The machine's IPv4 addresses beyond the loopback: where a page of the network reaches the app. */
+function linkHost() {
+  if (WILDCARD_HOSTS.includes(host) || host === '127.0.0.1' || host === 'localhost') {
+    return '127.0.0.1';
+  }
+  // The cockpit knows the loopback by its names `127.0.0.1` and `localhost`, and
+  // `localhost` reaches `::1`.
+  if (host === '::1') return 'localhost';
+  return inUrl(host);
+}
+
+/**
+ * Where a page of the network reaches the app: every address of the machine
+ * beyond the loopback when it listens on every one (IPv6's too for `::`), the
+ * address it listens on otherwise; none on the loopback.
+ */
 function networkAddresses() {
+  if (LOOPBACK_HOSTS.includes(host)) return [];
+  if (!WILDCARD_HOSTS.includes(host)) return [host];
+  const families = host === '::' ? ['IPv4', 'IPv6'] : ['IPv4'];
   return Object.values(networkInterfaces())
     .flat()
-    .filter((entry) => entry.family === 'IPv4' && !entry.internal)
+    .filter((entry) => families.includes(entry.family) && !entry.internal)
     .map((entry) => entry.address);
 }
 
-function tellTheNetworkAddresses() {
-  const listening = app.server.address().port;
-  for (const address of networkAddresses()) {
-    console.log(`From the network: http://${address}:${listening}/`);
+/** The origins of the pages of the network, at a port. */
+function networkOrigins(atPort) {
+  return networkAddresses().map((address) => `http://${inUrl(address)}:${atPort}`);
+}
+
+/** An address as a URL names it: an IPv6 one in brackets. */
+function inUrl(address) {
+  return address.includes(':') ? `[${address}]` : address;
+}
+
+function tellTheNetwork() {
+  if (WILDCARD_HOSTS.includes(host)) {
+    for (const origin of networkOrigins(app.server.address().port)) {
+      console.log(`From the network: ${origin}/`);
+    }
   }
   console.log(
     password === undefined
       ? 'Not opened (--open): the cockpit refuses every page of the network.'
       : `Password for a page of the network: ${password}`,
   );
+}
+
+/**
+ * Stops at once, on a second signal while the stop hangs: removes what the
+ * scripted agent started (its sessions, their tmux server, its temporary
+ * folder), then exits. The sessions of your own agent go on in tmux, as on
+ * any stop.
+ */
+async function forceTheExit() {
+  if (forcing) return;
+  forcing = true;
+  console.error('Forced to stop: removing what the scripted agent started.');
+  try {
+    const started = await agentStarting.catch(() => undefined);
+    await started?.close();
+  } finally {
+    process.exit(1);
+  }
 }
 
 /**

@@ -1,7 +1,11 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
-import { createServer, type Server } from 'node:net';
+import { connect, createServer, type Server, type Socket } from 'node:net';
+import { userInfo } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { RUN_PATH, TOKEN_HEADER } from '../../src/shared/wire.ts';
 import {
   type ExampleApp,
   interruptExampleWhileStarting,
@@ -86,3 +90,74 @@ describe('translate-and-access, refusing what it cannot do', () => {
     expect(ended.temporaryRoot, 'no scripted agent was started').toBeUndefined();
   });
 });
+
+describe('translate-and-access, stopped twice', () => {
+  let held: Socket | undefined;
+
+  afterEach(() => {
+    held?.destroy();
+    held = undefined;
+  });
+
+  it('forces the exit on a second Ctrl+C while its stop hangs, removing what its scripted agent started', async () => {
+    app = await startExampleApp('translate-and-access', ['--port', '0']);
+    const root = named(app.temporaryRoot(), app.printed());
+    const link = new URL(app.link);
+    await runHello(link);
+    const tmuxServer = tmuxServerOf(root);
+    // A request whose body never comes: the server's close waits for it.
+    held = await requestNeverEnding(link);
+
+    app.signal('SIGINT');
+    await app.nextLine(/^Stopping/);
+    const exitCode = await app.stop('SIGINT');
+
+    expect(exitCode, app.printed()).toBe(1);
+    expect(app.printed()).toContain('Forced to stop');
+    expect(isRunning(tmuxServer), 'its tmux server is ended').toBe(false);
+    expect(existsSync(root), 'its temporary folder is removed').toBe(false);
+  });
+});
+
+/** Runs the example's job, so that its scripted agent has a tmux server. */
+async function runHello(link: URL): Promise<void> {
+  const answer = await fetch(`${link.origin}/cockpit${RUN_PATH}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      [TOKEN_HEADER]: link.hash.replace('#cockpit=', ''),
+    },
+    body: JSON.stringify({ jobId: 'hello', args: { name: 'Ada' } }),
+  });
+  expect(answer.status, await answer.clone().text()).toBe(200);
+}
+
+/** The process of the tmux server the scripted agent keeps under its root. */
+function tmuxServerOf(root: string): number {
+  const socket = join(root, 'tmux', `tmux-${userInfo().uid}`, 'agent-cockpit-translate-and-access');
+  return Number(
+    execFileSync('tmux', ['-S', socket, 'display-message', '-p', '#{pid}'], { encoding: 'utf8' }),
+  );
+}
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Sends the app a request's head, announcing a body it never sends. */
+async function requestNeverEnding(link: URL): Promise<Socket> {
+  const socket = connect(Number(link.port), link.hostname);
+  await new Promise<void>((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+  socket.write(
+    `POST /api/sign-in HTTP/1.1\r\nHost: ${link.host}\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{`,
+  );
+  return socket;
+}

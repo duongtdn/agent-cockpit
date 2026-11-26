@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:net';
-import { networkInterfaces } from 'node:os';
+import { type NetworkInterfaceInfo, networkInterfaces } from 'node:os';
 import { type Browser, chromium, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SESSIONS_PATH, TOKEN_HEADER } from '../../src/shared/wire.ts';
@@ -24,7 +25,6 @@ const FOLLOWING = 'Following the sessions.';
 const NO_TOKEN = 'This page has no valid token: open the link the server printed.';
 
 let browser: Browser;
-const lan = networkAddress();
 
 beforeAll(async () => {
   browser = await chromium.launch();
@@ -76,7 +76,22 @@ describe('translate and access, not opened, listening on every address', () => {
     expect(await answer.json()).toMatchObject({ error: { code: 'refused', cause: 'forwarded' } });
   });
 
+  it('refuses a state-changing request of the app’s API from a page of another origin, the token with it', async () => {
+    for (const origin of [`http://127.0.0.1:${Number(portOf(app.link)) + 1}`, 'http://localhost']) {
+      const answer = await fetch(`${originOf(app.link)}/api/renew-token`, {
+        method: 'POST',
+        headers: { [TOKEN_HEADER]: tokenOf(app.link), origin },
+      });
+
+      expect(answer.status, origin).toBe(403);
+      expect(await answer.json()).toMatchObject({ error: 'wrong-origin' });
+    }
+    await page.reload();
+    await page.getByText(FOLLOWING).waitFor();
+  });
+
   it('refuses a page of the network, and its sign-in finds the app not opened', async () => {
+    const lan = networkAddress('IPv4');
     const remote = await newPage();
     await remote.goto(`http://${lan}:${portOf(app.link)}/`);
 
@@ -95,13 +110,11 @@ describe('translate and access, opened to the network with --open', () => {
   let app: ExampleApp;
   let local: Page;
   let remote: Page;
+  /** The link the renewal printed. */
+  let newLink: string;
 
   beforeAll(async () => {
-    app = await startExampleApp('translate-and-access', [
-      '--open',
-      '--port',
-      `${await freePort()}`,
-    ]);
+    app = await startOnAFreePort(['--open']);
     local = await newPage();
     remote = await newPage();
     await local.goto(app.link);
@@ -113,6 +126,7 @@ describe('translate and access, opened to the network with --open', () => {
   });
 
   it('refuses a page of the network until it signs in with the password, then serves it', async () => {
+    const lan = networkAddress('IPv4');
     await remote.goto(`http://${lan}:${portOf(app.link)}/`);
     await remote.getByText('The cockpit refused this page (refused · remote).').waitFor();
 
@@ -142,10 +156,44 @@ describe('translate and access, opened to the network with --open', () => {
     await local.getByText('(open)').waitFor();
   });
 
+  it('signs in for a stated time, from the app’s own origins only', async () => {
+    const signIn = (origin: string) =>
+      fetch(`${originOf(app.link)}/api/sign-in`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin },
+        body: JSON.stringify({ password: passwordOf(app) }),
+      });
+
+    const fromAnother = await signIn(`http://127.0.0.1:${Number(portOf(app.link)) + 1}`);
+    const fromItsOwn = await signIn(originOf(app.link));
+
+    expect(fromAnother.status).toBe(403);
+    expect(fromAnother.headers.get('set-cookie')).toBeNull();
+    expect(fromItsOwn.status).toBe(204);
+    expect(fromItsOwn.headers.get('set-cookie')).toMatch(
+      /^translate-and-access-sign-in=[\w-]+; HttpOnly; SameSite=Strict; Path=\/; Max-Age=28800$/,
+    );
+  });
+
+  it('renews the token only for a page with the token: a sign-in alone is refused', async () => {
+    await remote.getByRole('button', { name: 'Renew the token' }).click();
+
+    await remote.getByText('The app refused to renew the token (401).').waitFor();
+    await local.getByText(FOLLOWING).waitFor();
+  });
+
+  it('signs a page of the network out: refused again, until it signs in again', async () => {
+    await remote.getByRole('button', { name: 'Sign out' }).click();
+
+    await remote.getByText('The cockpit refused this page (refused · remote).').waitFor();
+    await remote.getByText('The app’s API refused this page (401).').waitFor();
+    expect(await remote.getByRole('button', { name: 'Sign in' }).isVisible()).toBe(true);
+  });
+
   it('renews the token from the page: open sockets closed, the old link dead, the new one served', async () => {
     const renewed = app.nextLine(LINK_LINE);
     await local.getByRole('button', { name: 'Renew the token' }).click();
-    const [, newLink] = await renewed;
+    newLink = (await renewed)[1] as string;
 
     await local
       .getByText('Renewed: every page needs the new link, printed in the server’s terminal.')
@@ -160,12 +208,68 @@ describe('translate and access, opened to the network with --open', () => {
     await withTheOldLink.getByText(NO_TOKEN).waitFor();
 
     const withTheNewLink = await newPage();
-    await withTheNewLink.goto(newLink as string);
+    await withTheNewLink.goto(newLink);
     await withTheNewLink.getByText(FOLLOWING).waitFor();
     await withTheNewLink.locator(`tr[data-key="${KEY}"]`).waitFor();
     await withTheNewLink
       .getByText('The app’s API knows this page by the app’s token, from 127.0.0.1.')
       .waitFor();
+  });
+
+  it('takes the new link opened in the tab that already shows the page: it follows again, its terminal too', async () => {
+    await local.goto(newLink);
+
+    await local.locator('#connection').getByText(FOLLOWING).waitFor();
+    await local.locator('#terminal-status').getByText('(open)').waitFor();
+    expect(local.url()).not.toContain('#');
+  });
+});
+
+describe('translate and access, its link and its origins by --host', () => {
+  it('gives a link on the loopback for --host localhost', async () => {
+    const app = await startExampleApp('translate-and-access', [
+      '--host',
+      'localhost',
+      '--port',
+      '0',
+    ]);
+    try {
+      expect(new URL(app.link).hostname).toBe('127.0.0.1');
+      const page = await newPage();
+      await page.goto(app.link);
+      await page.getByText(FOLLOWING).waitFor();
+    } finally {
+      await stopLeavingNothing(app);
+    }
+  });
+
+  it('gives a link on the address it listens on, for --host <an address of the network>', async () => {
+    const lan = networkAddress('IPv4');
+    const app = await startExampleApp('translate-and-access', ['--host', lan, '--port', '0']);
+    try {
+      expect(new URL(app.link).hostname).toBe(lan);
+      expect(app.printed()).toContain('Not opened (--open)');
+    } finally {
+      await stopLeavingNothing(app);
+    }
+  });
+
+  it('lets pages come from the machine’s IPv6 addresses too, with --open --host ::', async () => {
+    const addresses = [networkAddress('IPv4'), networkAddress('IPv6')];
+    const app = await startOnAFreePort(['--open', '--host', '::']);
+    try {
+      for (const address of addresses) {
+        const answer = await sessionsFrom(address, Number(portOf(app.link)));
+
+        // Refused only for lacking a sign-in: its Host and its Origin were allowed.
+        expect(answer, JSON.stringify(address)).toMatchObject({
+          status: 403,
+          body: { error: { code: 'refused', cause: 'remote' } },
+        });
+      }
+    } finally {
+      await stopLeavingNothing(app);
+    }
   });
 });
 
@@ -205,19 +309,76 @@ function portOf(link: string): string {
   return new URL(link).port;
 }
 
-/** An address of this machine beyond the loopback, where a request comes from the network. */
-function networkAddress(): string {
+/**
+ * An address of this machine beyond the loopback, where a request comes
+ * from the network. A test that needs one fails without it, saying so.
+ */
+function networkAddress(family: 'IPv4'): string;
+function networkAddress(family: 'IPv6'): NetworkInterfaceInfo;
+function networkAddress(family: 'IPv4' | 'IPv6'): string | NetworkInterfaceInfo {
   const found = Object.values(networkInterfaces())
     .flat()
-    .find((entry) => entry !== undefined && entry.family === 'IPv4' && !entry.internal);
-  if (found === undefined) throw new Error('The test needs an IPv4 address beyond the loopback.');
-  return found.address;
+    .find((entry) => entry !== undefined && entry.family === family && !entry.internal);
+  if (found === undefined) {
+    throw new Error(`This test needs an ${family} address of this machine beyond the loopback.`);
+  }
+  return family === 'IPv4' ? found.address : found;
 }
 
 /**
- * A port free on every address: `--open` needs a fixed port, since the
- * origins it allows name it.
+ * Asks the cockpit's sessions from one of the machine's addresses, as a
+ * page there would: the request goes to that address, its `Host` and its
+ * `Origin` name it.
  */
+function sessionsFrom(
+  entry: NetworkInterfaceInfo | string,
+  port: number,
+): Promise<{ status: number | undefined; body: unknown }> {
+  const { address, scopeid } =
+    typeof entry === 'string' ? { address: entry, scopeid: undefined } : entry;
+  const named = address.includes(':') ? `[${address}]` : address;
+  // A link-local address is reached through its interface; a URL cannot name it.
+  const zone = scopeid ? `%${scopeid}` : '';
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      {
+        host: `${address}${zone}`,
+        port,
+        path: `/cockpit${SESSIONS_PATH}`,
+        headers: { host: `${named}:${port}`, origin: `http://${named}:${port}` },
+      },
+      (answer) => {
+        let text = '';
+        answer.setEncoding('utf8');
+        answer.on('data', (chunk) => (text += chunk));
+        answer.on('end', () => resolve({ status: answer.statusCode, body: JSON.parse(text) }));
+      },
+    );
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+/**
+ * Starts the example on a fixed port that was free a moment before: `--open`
+ * needs one, since the origins it allows name it. Another process may take
+ * the port in between; the start is then tried again on another.
+ */
+async function startOnAFreePort(args: readonly string[]): Promise<ExampleApp> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await startExampleApp('translate-and-access', [
+        ...args,
+        '--port',
+        `${await freePort()}`,
+      ]);
+    } catch (error) {
+      if (attempt === 3 || !String(error).includes('EADDRINUSE')) throw error;
+    }
+  }
+}
+
+/** A port free on every address at the time asked. */
 async function freePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, '0.0.0.0', resolve));

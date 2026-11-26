@@ -20,6 +20,7 @@ const connection = document.getElementById('connection');
 const whoami = document.getElementById('whoami');
 const accessResult = document.getElementById('access-result');
 const signInForm = document.getElementById('sign-in');
+const signOut = document.getElementById('sign-out');
 const runForm = document.getElementById('run-form');
 const runResult = document.getElementById('run-result');
 const sessionsTable = document.getElementById('sessions');
@@ -48,6 +49,11 @@ document.getElementById('renew').addEventListener('click', async () => {
   accessResult.textContent = answer.ok
     ? 'Renewed: every page needs the new link, printed in the server’s terminal.'
     : `The app refused to renew the token (${answer.status}).`;
+});
+
+signOut.addEventListener('click', async () => {
+  await fetch('/api/sign-out', { method: 'POST' });
+  location.reload();
 });
 
 signInForm.addEventListener('submit', async (event) => {
@@ -88,6 +94,7 @@ async function askWhoThisPageIs() {
     return;
   }
   const { provedBy, from } = await answer.json();
+  signOut.hidden = provedBy !== 'sign-in';
   whoami.textContent =
     provedBy === 'token'
       ? `The app’s API knows this page by the app’s token, from ${from}.`
@@ -136,6 +143,8 @@ function showTerminal(key) {
   terminal = mountTerminal(document.getElementById('terminal'), key, { baseUrl: BASE_URL });
   terminal.on('status', (current) => {
     status.textContent = `(${current})`;
+    // Connected: what kept it from connecting before no longer holds.
+    if (current === 'open') terminalError.textContent = '';
   });
   terminal.on('error', (error) => {
     terminalError.textContent = explain(error);
