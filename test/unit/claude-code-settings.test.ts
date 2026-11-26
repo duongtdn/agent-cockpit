@@ -1,0 +1,121 @@
+import { describe, expect, it } from 'vitest';
+import { type SettingsParts, settingsDocument } from '../../src/claude-code/settings-document.ts';
+
+const PARTS: SettingsParts = {
+  hookUrl: 'http://127.0.0.1:4100/hooks',
+  token: 'token-of-the-launch',
+  sessionStartCommand: "'/usr/bin/node' '/hook.js' '/files/hook-address.json'",
+  permissions: { allow: ['Read'], deny: ['WebFetch'] },
+  confinement: {
+    stateRoots: ['/state'],
+    appAddresses: [{ host: '127.0.0.1', port: 8765 }],
+    listener: { host: '127.0.0.1', port: 4100 },
+  },
+  personsSettingsFiles: ['/config/settings.json'],
+};
+
+interface Document {
+  permissions: { allow?: string[]; ask?: string[]; deny: string[] };
+  sandbox: Record<string, unknown>;
+}
+
+function documentOf(parts: Partial<SettingsParts> = {}): Document {
+  return settingsDocument({ ...PARTS, ...parts }) as Document;
+}
+
+describe("the channel's allow rule", () => {
+  it('is written after the rules allowed, when the session has a channel', () => {
+    expect(documentOf({ channelServer: 'curator' }).permissions.allow).toEqual([
+      'Read',
+      'mcp__curator',
+    ]);
+  });
+
+  it('makes the allow list of its own when no rule is allowed', () => {
+    expect(documentOf({ permissions: {}, channelServer: 'curator' }).permissions.allow).toEqual([
+      'mcp__curator',
+    ]);
+  });
+
+  it('is not written without a channel', () => {
+    expect(documentOf().permissions.allow).toEqual(['Read']);
+    expect(documentOf({ permissions: {} }).permissions).not.toHaveProperty('allow');
+    expect(JSON.stringify(documentOf())).not.toContain('mcp__');
+  });
+});
+
+describe('the sandbox section', () => {
+  const lines = {
+    network: { deniedDomains: ['127.0.0.1:8765'], allowedDomains: ['127.0.0.1:4100'] },
+    allowUnsandboxedCommands: false,
+  };
+
+  it("is the cockpit's lines alone when the app does not ask for the sandbox: the person decides", () => {
+    expect(documentOf().sandbox).toEqual(lines);
+  });
+
+  it('turns the sandbox on and fails where it cannot run, beside the lines, when the app asks for it', () => {
+    expect(documentOf({ sandbox: {} }).sandbox).toEqual({
+      enabled: true,
+      failIfUnavailable: true,
+      ...lines,
+    });
+  });
+
+  it("carries the app's exceptions: the commands it excludes, and letting a refused command out", () => {
+    expect(
+      documentOf({
+        sandbox: { excludedCommands: ['docker', 'git push'], allowUnsandboxedCommands: true },
+      }).sandbox,
+    ).toEqual({
+      enabled: true,
+      failIfUnavailable: true,
+      excludedCommands: ['docker', 'git push'],
+      network: lines.network,
+      allowUnsandboxedCommands: true,
+    });
+  });
+
+  it('keeps every command in the sandbox when the app says nothing of it', () => {
+    expect(
+      documentOf({ sandbox: { excludedCommands: ['docker'] } }).sandbox.allowUnsandboxedCommands,
+    ).toBe(false);
+    expect(documentOf({ sandbox: { allowUnsandboxedCommands: false } }).sandbox).not.toHaveProperty(
+      'excludedCommands',
+    );
+  });
+});
+
+describe('the deny rules', () => {
+  it("are the app's, the state roots', the settings files' and the person's settings', in that order", () => {
+    expect(documentOf().permissions.deny).toEqual([
+      'WebFetch',
+      'Read(//state/**)',
+      'Edit(//state/**)',
+      'Edit(//**/.claude/settings.json)',
+      'Edit(//**/.claude/settings.local.json)',
+      'Edit(//config/settings.json)',
+    ]);
+  });
+
+  it("deny the person's settings by every path given", () => {
+    expect(
+      documentOf({ personsSettingsFiles: ['/home/a/.claude/settings.json', '/dotfiles/c.json'] })
+        .permissions.deny,
+    ).toEqual(
+      expect.arrayContaining(['Edit(//home/a/.claude/settings.json)', 'Edit(//dotfiles/c.json)']),
+    );
+  });
+});
+
+describe('what the settings never hold', () => {
+  it.each([
+    ['without the sandbox', {}],
+    ['with it', { sandbox: { excludedCommands: ['docker'] } }],
+    ['with a channel', { channelServer: 'curator' }],
+  ])('%s: only hooks, permissions and the sandbox, no env', (_, parts) => {
+    const document = documentOf(parts);
+
+    expect(Object.keys(document).sort()).toEqual(['hooks', 'permissions', 'sandbox']);
+  });
+});

@@ -27,6 +27,34 @@ export function stateRootDenies(stateRoots: readonly string[]): string[] {
 }
 
 /**
+ * Claude Code's settings files wherever a project or a folder holds them:
+ * the project's and its local ones, a parent repository's, the session's
+ * `~/.claude`.
+ */
+const SETTINGS_FILES_ANYWHERE: readonly string[] = [
+  '//**/.claude/settings.json',
+  '//**/.claude/settings.local.json',
+];
+
+/**
+ * Gives the permission rules that keep the agent's own tools from every
+ * settings file it reads. Its `Write` and `Edit` tools run outside the
+ * sandbox, and a command hook planted in such a file runs, unsandboxed, at
+ * the next start; in `bypassPermissions` nothing asks first. The rules
+ * stop the tools and the shell commands Claude Code recognizes; code the
+ * agent runs outside the sandbox still writes (as for the state roots).
+ *
+ * @param personsSettingsFiles - The person's own settings file
+ * (`<config>/settings.json`), absolute, by every path that names it.
+ * @returns The `Edit` deny rules.
+ */
+export function settingsFileDenies(personsSettingsFiles: readonly string[]): string[] {
+  return [...SETTINGS_FILES_ANYWHERE, ...personsSettingsFiles.map((file) => `/${file}`)].map(
+    (pattern) => `Edit(${pattern})`,
+  );
+}
+
+/**
  * Gives the sandbox's lines: every address of the app's the confinement
  * names denied (the core's list: every loopback name and local address, on
  * every port of the app's), the listener the one address allowed, and

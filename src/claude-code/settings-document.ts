@@ -1,7 +1,7 @@
 import type { Confinement } from '../server/driver.js';
-import { sandboxLines, stateRootDenies } from './confinement-lines.js';
+import { sandboxLines, settingsFileDenies, stateRootDenies } from './confinement-lines.js';
 import { HTTP_HOOK_EVENTS } from './hook-payloads.js';
-import type { PermissionRules } from './options.js';
+import type { ClaudeCodeSandbox, PermissionRules } from './options.js';
 
 /** What a session's settings are written from. */
 export interface SettingsParts {
@@ -12,19 +12,35 @@ export interface SettingsParts {
   /** The shell command that runs the `SessionStart` hook. */
   readonly sessionStartCommand: string;
   /**
-   * The app's permission rules; a list left out is not written, but `deny`,
-   * which always carries the confinement's.
+   * The session's permission rules, the app's with a job's added; a list
+   * left out is not written, but `deny`, which always carries the
+   * confinement's.
    */
   readonly permissions: PermissionRules;
   /** What the agent must not reach, written whatever the app's rules say. */
   readonly confinement: Confinement;
+  /** The person's own settings file, by every path that names it: the agent may not edit it. */
+  readonly personsSettingsFiles: readonly string[];
+  /**
+   * The sandbox the app asks for, with its exceptions; left out, the
+   * person's own settings decide whether it runs.
+   */
+  readonly sandbox?: ClaudeCodeSandbox | undefined;
+  /**
+   * The name of the session's channel server, allowed in every mode; left
+   * out for a session with no channel.
+   */
+  readonly channelServer?: string | undefined;
 }
 
 /**
  * Writes the settings a session is launched with (`--settings`): the hooks
- * that report to the cockpit, the app's permission rules, and the
- * confinement's lines. Claude Code merges them above the person's and the
- * project's settings, hooks too; a deny wins over any allow of any of them.
+ * that report to the cockpit, the session's permission rules, the
+ * confinement's lines, the sandbox the app asks for, and the channel's
+ * allow rule when the session has a channel. Claude Code merges them above
+ * the person's and the project's settings, hooks too; a deny wins over any
+ * allow of any of them. They hold no `env` (the person's own still
+ * applies) and no answer to a start-up dialog (the person answers those).
  *
  * `SessionStart` is a command hook, since Claude Code never posts it as an
  * HTTP hook; the others are HTTP hooks with the token in their
@@ -38,18 +54,51 @@ export interface SettingsParts {
  * @returns The settings, to write as JSON.
  */
 export function settingsDocument(parts: SettingsParts): object {
+  return { hooks: hooksOf(parts), permissions: permissionsOf(parts), sandbox: sandboxOf(parts) };
+}
+
+function hooksOf(parts: SettingsParts): object {
   const httpHook = {
     type: 'http',
     url: parts.hookUrl,
     headers: { Authorization: `Bearer ${parts.token}` },
   };
-  const hooks = {
+  return {
     SessionStart: [{ hooks: [{ type: 'command', command: parts.sessionStartCommand }] }],
     ...Object.fromEntries(HTTP_HOOK_EVENTS.map((event) => [event, [{ hooks: [httpHook] }]])),
   };
-  const permissions = {
-    ...parts.permissions,
-    deny: [...(parts.permissions.deny ?? []), ...stateRootDenies(parts.confinement.stateRoots)],
+}
+
+function permissionsOf(parts: SettingsParts): PermissionRules {
+  const { allow, deny, ...others } = parts.permissions;
+  // The channel's tools ask, or are denied, in most modes without it.
+  const channel = parts.channelServer === undefined ? [] : [`mcp__${parts.channelServer}`];
+  const allowed = [...(allow ?? []), ...channel];
+  return {
+    ...others,
+    ...(allow === undefined && channel.length === 0 ? {} : { allow: allowed }),
+    deny: [
+      ...(deny ?? []),
+      ...stateRootDenies(parts.confinement.stateRoots),
+      ...settingsFileDenies(parts.personsSettingsFiles),
+    ],
   };
-  return { hooks, permissions, sandbox: sandboxLines(parts.confinement) };
+}
+
+/**
+ * The sandbox's section: the cockpit's lines, and when the app asks for the
+ * sandbox, the sandbox on, refusing to start where it cannot run rather than
+ * running unconfined, with the app's exceptions.
+ */
+function sandboxOf({ confinement, sandbox }: SettingsParts): object {
+  const lines = sandboxLines(confinement);
+  if (sandbox === undefined) return lines;
+  const { excludedCommands, allowUnsandboxedCommands = false } = sandbox;
+  return {
+    enabled: true,
+    failIfUnavailable: true,
+    ...(excludedCommands === undefined ? {} : { excludedCommands }),
+    ...lines,
+    allowUnsandboxedCommands,
+  };
 }

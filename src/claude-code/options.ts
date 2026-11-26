@@ -1,3 +1,5 @@
+import { statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { CockpitError, type Issue } from '../shared/cockpit-error.js';
 
 /**
@@ -26,6 +28,13 @@ export interface PermissionRules {
   /** Tool calls that never run. */
   readonly deny?: readonly string[];
 }
+
+/**
+ * A source of settings Claude Code reads below the session's own: the
+ * person's (`user`), the project's (`project`), the project's own local
+ * ones (`local`).
+ */
+export type SettingSource = 'user' | 'project' | 'local';
 
 /**
  * The agent's sandbox, as the app asks for it: its commands run confined,
@@ -83,6 +92,29 @@ export interface ClaudeCodeOptions {
    */
   readonly acceptOpenNetwork?: boolean;
   /**
+   * The model of every session (`--model`), unless a job names its own;
+   * left out, the person's own default applies, as in their terminal.
+   */
+  readonly model?: string;
+  /**
+   * The app's plugin (`--plugin-dir`), for its sessions only: a folder,
+   * made absolute from the folder the server runs in, which must exist.
+   */
+  readonly pluginDir?: string;
+  /**
+   * The only sources of settings the sessions read below their own
+   * (`--setting-sources`): of `'user'`, `'project'`, `'local'`, none for an
+   * empty list. A source left out takes its settings, rules, hooks and MCP
+   * servers with it, and for `project` the project's `CLAUDE.md`. Left out,
+   * every source loads. The cockpit's hooks and the plugin load either way.
+   */
+  readonly settingSources?: readonly ('user' | 'project' | 'local')[];
+  /**
+   * `false` keeps every MCP server but the cockpit's out of the sessions
+   * (`--strict-mcp-config`); `true` when left out.
+   */
+  readonly otherMcpServers?: boolean;
+  /**
    * Runs every session in the agent's sandbox: `true`, or the sandbox's
    * exceptions. It may only turn the sandbox on: left out, the person's own
    * settings decide. A launch where the sandbox cannot run fails
@@ -91,11 +123,25 @@ export interface ClaudeCodeOptions {
   readonly sandbox?: true | ClaudeCodeSandbox;
 }
 
-/** The options once checked, each with its value. */
+/** The options once checked, each with its value: `undefined` for one the app left to the person. */
 export interface CheckedOptions {
   readonly permissionMode: PermissionMode;
   readonly permissions: PermissionRules;
   readonly acceptOpenNetwork: boolean;
+  readonly model: string | undefined;
+  /** An absolute path. */
+  readonly pluginDir: string | undefined;
+  readonly settingSources: readonly SettingSource[] | undefined;
+  readonly otherMcpServers: boolean;
+  /** The sandbox turned on, with the app's exceptions; `undefined`: the person's choice. */
+  readonly sandbox: ClaudeCodeSandbox | undefined;
+}
+
+/** What a session runs with, once a job's part is laid over the app's options. */
+export interface SessionChoices {
+  readonly permissionMode: PermissionMode;
+  readonly permissions: PermissionRules;
+  readonly model: string | undefined;
 }
 
 const PERMISSION_MODES: readonly PermissionMode[] = [
@@ -109,7 +155,20 @@ const PERMISSION_MODES: readonly PermissionMode[] = [
 
 const RULE_LISTS: readonly (keyof PermissionRules)[] = ['allow', 'ask', 'deny'];
 
-const OPTION_NAMES: readonly string[] = ['permissionMode', 'permissions', 'acceptOpenNetwork'];
+const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
+
+const OPTION_NAMES: readonly string[] = [
+  'permissionMode',
+  'permissions',
+  'acceptOpenNetwork',
+  'model',
+  'pluginDir',
+  'settingSources',
+  'otherMcpServers',
+  'sandbox',
+];
+
+const SANDBOX_EXCEPTIONS: readonly string[] = ['excludedCommands', 'allowUnsandboxedCommands'];
 
 const JOB_PART_NAMES: readonly string[] = ['permissionMode', 'permissions', 'model'];
 
@@ -117,12 +176,16 @@ const JOB_PART_NAMES: readonly string[] = ['permissionMode', 'permissions', 'mod
  * Checks the app's options for the driver.
  *
  * @param options - What the app gave, unchecked: an app in JavaScript gives anything.
- * @returns The options, with the default mode when none is given, and an
- * open network not accepted.
+ * @returns The options, with the default mode when none is given, an open
+ * network not accepted, the other MCP servers loaded, the plugin's folder
+ * absolute, and the sandbox `undefined` when left to the person (`{}` for
+ * `true`).
  * @throws `CockpitError` `invalid-options`, with every issue found, for
  * options that are no object, a mode Claude Code does not have, rules that
- * are no lists of rules, an acceptance that is no boolean, and any other option: one that a later version
- * takes (a model, a plugin) is refused rather than silently ignored.
+ * are no lists of rules, a model that is no text, a plugin folder that does
+ * not exist, a source of settings Claude Code does not read, a switch that
+ * is no boolean, the sandbox turned off or given exceptions it does not
+ * have, and any other option, refused rather than silently ignored.
  */
 export function checkOptions(options: unknown): CheckedOptions {
   const given = options === undefined ? {} : options;
@@ -136,20 +199,75 @@ export function checkOptions(options: unknown): CheckedOptions {
     permissionMode = 'default',
     permissions = {},
     acceptOpenNetwork = false,
+    model,
+    pluginDir,
+    settingSources,
+    otherMcpServers = true,
+    sandbox,
   } = given as ClaudeCodeOptions;
-  return { permissionMode, permissions, acceptOpenNetwork };
+  return {
+    permissionMode,
+    permissions,
+    acceptOpenNetwork,
+    model,
+    pluginDir: pluginDir === undefined ? undefined : resolve(pluginDir),
+    settingSources,
+    otherMcpServers,
+    sandbox: sandbox === true ? {} : sandbox,
+  };
 }
 
 function optionIssues(options: Record<string, unknown>): Issue[] {
-  const { permissionMode, permissions, acceptOpenNetwork, ...others } = options;
+  const {
+    permissionMode,
+    permissions,
+    acceptOpenNetwork,
+    model,
+    pluginDir,
+    settingSources,
+    otherMcpServers,
+    sandbox,
+    ...others
+  } = options;
   return [
     ...Object.keys(others).map((name) =>
       issue([name], `Not an option of the driver: it takes ${OPTION_NAMES.join(', ')}.`),
     ),
     ...modeIssues(permissionMode),
     ...permissionsIssues(permissions),
-    ...acceptanceIssues(acceptOpenNetwork),
+    ...booleanIssues(['acceptOpenNetwork'], acceptOpenNetwork),
+    ...modelIssues(model),
+    ...pluginDirIssues(pluginDir),
+    ...settingSourcesIssues(settingSources),
+    ...booleanIssues(['otherMcpServers'], otherMcpServers),
+    ...sandboxIssues(sandbox),
   ];
+}
+
+/**
+ * Lays a job's driver part over the app's options (ADR-0051): the part's
+ * mode and model replace the app's, its rules are added after the app's,
+ * list by list, so that the app's deny and ask rules always hold.
+ *
+ * @param options - The app's options, checked.
+ * @param part - The job's part, checked; none for a session of the app's own options.
+ * @returns What the session runs with.
+ */
+export function laidOver(options: CheckedOptions, part: ClaudeCodeJobPart = {}): SessionChoices {
+  return {
+    permissionMode: part.permissionMode ?? options.permissionMode,
+    permissions: rulesAdded(options.permissions, part.permissions ?? {}),
+    model: part.model ?? options.model,
+  };
+}
+
+function rulesAdded(first: PermissionRules, then: PermissionRules): PermissionRules {
+  return Object.fromEntries(
+    RULE_LISTS.flatMap((list) => {
+      const rules = [...(first[list] ?? []), ...(then[list] ?? [])];
+      return first[list] === undefined && then[list] === undefined ? [] : [[list, rules]];
+    }),
+  );
 }
 
 /**
@@ -180,9 +298,54 @@ function modelIssues(model: unknown): Issue[] {
   return [issue(['model'], "A model's name is a text, not empty.")];
 }
 
-function acceptanceIssues(accept: unknown): Issue[] {
-  if (accept === undefined || typeof accept === 'boolean') return [];
-  return [issue(['acceptOpenNetwork'], 'Expected true or false.')];
+function booleanIssues(path: readonly string[], value: unknown): Issue[] {
+  if (value === undefined || typeof value === 'boolean') return [];
+  return [issue(path, 'Expected true or false.')];
+}
+
+function pluginDirIssues(pluginDir: unknown): Issue[] {
+  if (pluginDir === undefined) return [];
+  if (typeof pluginDir !== 'string' || pluginDir === '') {
+    return [issue(['pluginDir'], "A folder's path is a text, not empty.")];
+  }
+  const folder = resolve(pluginDir);
+  if (statSync(folder, { throwIfNoEntry: false })?.isDirectory() === true) return [];
+  return [issue(['pluginDir'], `Not an existing folder: ${folder}.`)];
+}
+
+function settingSourcesIssues(sources: unknown): Issue[] {
+  if (sources === undefined) return [];
+  if (!Array.isArray(sources)) return [issue(['settingSources'], 'Not a list of sources.')];
+  return sources.flatMap((source, index) =>
+    SETTING_SOURCES.includes(source)
+      ? []
+      : [issue(['settingSources', index], `Not one of ${SETTING_SOURCES.join(', ')}.`)],
+  );
+}
+
+function sandboxIssues(sandbox: unknown): Issue[] {
+  if (sandbox === undefined || sandbox === true) return [];
+  if (sandbox === false) {
+    return [
+      issue(
+        ['sandbox'],
+        "The app may only turn the sandbox on: left out, the person's own settings decide.",
+      ),
+    ];
+  }
+  if (!isRecord(sandbox))
+    return [issue(['sandbox'], "Expected true, or the sandbox's exceptions.")];
+  const { excludedCommands, allowUnsandboxedCommands, ...others } = sandbox;
+  return [
+    ...Object.keys(others).map((name) =>
+      issue(
+        ['sandbox', name],
+        `Not an exception of the sandbox: they are ${SANDBOX_EXCEPTIONS.join(', ')}.`,
+      ),
+    ),
+    ...textListIssues(['sandbox', 'excludedCommands'], excludedCommands, 'command'),
+    ...booleanIssues(['sandbox', 'allowUnsandboxedCommands'], allowUnsandboxedCommands),
+  ];
 }
 
 function modeIssues(mode: unknown): Issue[] {
@@ -195,17 +358,19 @@ function permissionsIssues(permissions: unknown): Issue[] {
   if (!isRecord(permissions)) return [issue(['permissions'], 'The permissions are no object.')];
   return Object.entries(permissions).flatMap(([name, rules]) =>
     RULE_LISTS.includes(name as keyof PermissionRules)
-      ? ruleListIssues(name, rules)
+      ? textListIssues(['permissions', name], rules, 'rule')
       : [issue(['permissions', name], `Not a list of rules: they are ${RULE_LISTS.join(', ')}.`)],
   );
 }
 
-function ruleListIssues(name: string, rules: unknown): Issue[] {
-  if (!Array.isArray(rules)) return [issue(['permissions', name], 'Not a list of rules.')];
-  return rules.flatMap((rule, index) =>
-    typeof rule === 'string' && rule !== ''
+/** Issues of a list of texts, none of them empty, each a `what`; none for a list left out. */
+function textListIssues(path: readonly string[], list: unknown, what: string): Issue[] {
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) return [issue(path, `Not a list of ${what}s.`)];
+  return list.flatMap((text, index) =>
+    typeof text === 'string' && text !== ''
       ? []
-      : [issue(['permissions', name, index], 'A rule is a text, not empty.')],
+      : [issue([...path, index], `A ${what} is a text, not empty.`)],
   );
 }
 

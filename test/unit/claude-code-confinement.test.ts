@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,6 +16,13 @@ import type { Confinement, Launch } from '../../src/server/driver.ts';
 
 const DEFAULT_ROOT = '/home/someone/.local/state/agent-cockpit';
 const APP_ROOT = '/srv/app/cockpit-state';
+const CONFIG = '/home/someone/.config/claude';
+
+/** The denies that keep the agent's tools from every settings file a project or a folder holds. */
+const SETTINGS_FILE_DENIES = [
+  'Edit(//**/.claude/settings.json)',
+  'Edit(//**/.claude/settings.local.json)',
+];
 
 let files: string;
 
@@ -32,14 +47,14 @@ function confinementOf(overrides: Partial<Confinement> = {}): Confinement {
   };
 }
 
-function launchOf(confinement: Confinement): Launch {
+function launchOf(confinement: Confinement, configFolder = CONFIG): Launch {
   return {
     key: 'chapter-1',
     conversationId: '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11',
     directory: '/work/app',
     files,
     hooks: { url: 'http://127.0.0.1:4100', token: 'token-of-the-launch' },
-    environment: { PATH: '/usr/bin:/bin' },
+    environment: { PATH: '/usr/bin:/bin', CLAUDE_CONFIG_DIR: configFolder },
     confinement,
   };
 }
@@ -52,8 +67,12 @@ interface Settings {
   };
 }
 
-async function settingsOf(confinement: Confinement, driver = claudeCode()): Promise<Settings> {
-  const { args } = await driver.launch(launchOf(confinement));
+async function settingsOf(
+  confinement: Confinement,
+  driver = claudeCode(),
+  configFolder = CONFIG,
+): Promise<Settings> {
+  const { args } = await driver.launch(launchOf(confinement, configFolder));
   return JSON.parse(readFileSync(args[args.indexOf('--settings') + 1] as string, 'utf8'));
 }
 
@@ -63,7 +82,7 @@ describe('the state roots in the settings of a launch', () => {
       confinementOf({ stateRoots: [DEFAULT_ROOT, APP_ROOT] }),
     );
 
-    expect(permissions.deny).toEqual([
+    expect(permissions.deny.slice(0, 4)).toEqual([
       `Read(/${DEFAULT_ROOT}/**)`,
       `Edit(/${DEFAULT_ROOT}/**)`,
       `Read(/${APP_ROOT}/**)`,
@@ -99,9 +118,87 @@ describe('the state roots in the settings of a launch', () => {
     expect(settings.permissions).toEqual({
       allow: ['Read'],
       ask: ['Bash(git push:*)'],
-      deny: ['WebFetch', `Read(/${DEFAULT_ROOT}/**)`, `Edit(/${DEFAULT_ROOT}/**)`],
+      deny: [
+        'WebFetch',
+        `Read(/${DEFAULT_ROOT}/**)`,
+        `Edit(/${DEFAULT_ROOT}/**)`,
+        ...SETTINGS_FILE_DENIES,
+        `Edit(/${CONFIG}/settings.json)`,
+      ],
     });
   });
+});
+
+describe("Claude Code's settings files in the settings of a launch", () => {
+  it("are denied to Edit wherever a project or a folder holds them, and the person's own, after the state roots", async () => {
+    const { permissions } = await settingsOf(confinementOf());
+
+    expect(permissions.deny).toEqual([
+      `Read(/${DEFAULT_ROOT}/**)`,
+      `Edit(/${DEFAULT_ROOT}/**)`,
+      ...SETTINGS_FILE_DENIES,
+      `Edit(/${CONFIG}/settings.json)`,
+    ]);
+  });
+
+  it("deny the person's settings in .claude of the home folder when no configuration folder is named", async () => {
+    const launch = launchOf(confinementOf());
+    const { args } = await claudeCode().launch({
+      ...launch,
+      environment: { PATH: '/usr/bin:/bin' },
+    });
+    const { permissions }: Settings = JSON.parse(
+      readFileSync(args[args.indexOf('--settings') + 1] as string, 'utf8'),
+    );
+
+    expect(permissions.deny).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^Edit\(\/\/.+\/\.claude\/settings\.json\)$/)]),
+    );
+  });
+
+  it("deny the person's settings by the path given and the real one, when a link leads to the folder", async () => {
+    const folder = realpathSync(files);
+    const real = join(folder, 'real-config');
+    mkdirSync(real);
+    const linked = join(folder, 'linked-config');
+    symlinkSync(real, linked);
+
+    const { permissions } = await settingsOf(confinementOf(), claudeCode(), linked);
+
+    expect(permissions.deny).toContain(`Edit(/${linked}/settings.json)`);
+    expect(permissions.deny).toContain(`Edit(/${real}/settings.json)`);
+  });
+
+  it("deny the file a linked settings file leads to, as the person's dotfiles do", async () => {
+    const folder = realpathSync(files);
+    const config = join(folder, 'config');
+    mkdirSync(config);
+    const dotfile = join(folder, 'dotfiles-claude-settings.json');
+    writeFileSync(dotfile, '{}');
+    symlinkSync(dotfile, join(config, 'settings.json'));
+
+    const { permissions } = await settingsOf(confinementOf(), claudeCode(), config);
+
+    expect(permissions.deny).toContain(`Edit(/${config}/settings.json)`);
+    expect(permissions.deny).toContain(`Edit(/${dotfile})`);
+  });
+
+  it.each(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'] as const)(
+    'are denied in %s, whatever the app allows',
+    async (permissionMode) => {
+      const { permissions } = await settingsOf(
+        confinementOf(),
+        claudeCode({
+          permissionMode,
+          acceptOpenNetwork: true,
+          permissions: { allow: ['Edit', 'Write', 'Edit(//**/.claude/settings.json)'] },
+        }),
+      );
+
+      expect(permissions.deny).toEqual(expect.arrayContaining(SETTINGS_FILE_DENIES));
+      expect(permissions.deny).toContain(`Edit(/${CONFIG}/settings.json)`);
+    },
+  );
 });
 
 describe('the sandbox lines in the settings of a launch', () => {

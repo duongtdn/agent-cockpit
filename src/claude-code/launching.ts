@@ -1,6 +1,8 @@
-import { extname } from 'node:path';
+import { constants } from 'node:fs';
+import { access, stat } from 'node:fs/promises';
+import { delimiter, extname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { PermissionMode } from './options.js';
+import type { PermissionMode, SettingSource } from './options.js';
 
 /** The agent's program, looked up on the session's `PATH`. */
 export const AGENT_COMMAND = 'claude';
@@ -15,15 +17,23 @@ export interface ArgumentParts {
   readonly settingsFile: string;
   /** The mode the session runs in. */
   readonly permissionMode: PermissionMode;
+  /** The session's model; none for the person's default. */
+  readonly model?: string | undefined;
+  /** The app's plugin folder, absolute. */
+  readonly pluginDir?: string | undefined;
+  /** The only sources of settings read below the session's own; none for every source. */
+  readonly settingSources?: readonly SettingSource[] | undefined;
+  /** Whether MCP servers other than the cockpit's load. */
+  readonly otherMcpServers: boolean;
   /** The first prompt; none for a session that waits for one. */
   readonly prompt?: string | undefined;
 }
 
 /**
  * Gives the arguments of a launch: a new conversation under the id, or the
- * one of the id resumed. The prompt comes
- * last, after `--`: an option that takes several values would otherwise
- * read it as one of them.
+ * one of the id resumed. An option the app left out is not written, but the
+ * mode. The prompt comes last, after `--`: an option that takes several
+ * values would otherwise read it as one of them.
  *
  * @param parts - See {@link ArgumentParts}.
  * @returns The arguments, each a word of its own.
@@ -37,8 +47,59 @@ export function agentArguments(parts: ArgumentParts): string[] {
     // Always: the person's own defaultMode never applies by accident.
     '--permission-mode',
     parts.permissionMode,
+    ...optionWithValue('--model', parts.model),
+    ...optionWithValue('--plugin-dir', parts.pluginDir),
+    // An empty list is the empty word: no source at all.
+    ...optionWithValue('--setting-sources', parts.settingSources?.join(',')),
+    ...(parts.otherMcpServers ? [] : ['--strict-mcp-config']),
     ...(parts.prompt === undefined ? [] : ['--', parts.prompt]),
   ];
+}
+
+function optionWithValue(option: string, value: string | undefined): string[] {
+  return value === undefined ? [] : [option, value];
+}
+
+/**
+ * The programs the agent's sandbox needs, by platform: on Linux,
+ * bubblewrap and socat, found on the agent's `PATH`. Without one the agent
+ * starts, then exits with nothing on its screen to say why, so the driver
+ * looks first. Elsewhere the agent's own refusal (`failIfUnavailable`) is
+ * the check.
+ */
+export const SANDBOX_PROGRAMS: Partial<Record<NodeJS.Platform, readonly string[]>> = {
+  linux: ['bwrap', 'socat'],
+};
+
+/**
+ * Tells which programs a launch with this environment would not find: those
+ * no folder of its `PATH` holds as a file that can be run.
+ *
+ * @param programs - The programs' names.
+ * @param environment - The launch's environment.
+ * @returns The programs missing, in the order given.
+ */
+export async function missingPrograms(
+  programs: readonly string[],
+  environment: Readonly<Record<string, string>>,
+): Promise<string[]> {
+  // A relative folder of the PATH is relative to wherever the agent runs: not looked in.
+  const folders = (environment.PATH ?? '').split(delimiter).filter((folder) => isAbsolute(folder));
+  const found = await Promise.all(
+    programs.map(async (program) =>
+      (await Promise.all(folders.map((folder) => canRun(join(folder, program))))).includes(true),
+    ),
+  );
+  return programs.filter((_, index) => !found[index]);
+}
+
+async function canRun(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.X_OK);
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** Whether a variable is Claude Code's own, as a session passes it to what it runs. */
@@ -50,7 +111,10 @@ function isAgentsOwn(name: string): boolean {
  * Gives the agent's environment: the one the core gives, without Claude
  * Code's own variables. A server started from a Claude Code session has
  * them, among them that session's messaging socket and token, which no
- * launched agent may inherit.
+ * launched agent may inherit. A person who sets a provider (Bedrock, a base
+ * URL) in the `env` of their own Claude Code settings keeps it: the agent
+ * applies that `env` itself, past this stripping, and the session's
+ * settings write none over it.
  *
  * @param inherited - The environment the core gives the launch.
  * @returns The agent's whole environment.

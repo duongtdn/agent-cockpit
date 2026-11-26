@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -39,7 +40,12 @@ function launchOf(overrides: Partial<Launch> = {}): Launch {
     files,
     hooks: { url: 'http://127.0.0.1:4100', token: TOKEN },
     prompt: 'Explain a.ts',
-    environment: { PATH: '/usr/bin:/bin', HOME: '/home/someone', LANG: 'C.UTF-8' },
+    environment: {
+      PATH: '/usr/bin:/bin',
+      HOME: '/home/someone',
+      LANG: 'C.UTF-8',
+      CLAUDE_CONFIG_DIR: '/home/someone/.config/claude',
+    },
     confinement: {
       stateRoots: ['/home/someone/.local/state/agent-cockpit'],
       appAddresses: [{ host: '127.0.0.1', port: 8765 }],
@@ -51,7 +57,8 @@ function launchOf(overrides: Partial<Launch> = {}): Launch {
 
 interface Settings {
   hooks: Record<string, { matcher?: string; hooks: Record<string, unknown>[] }[]>;
-  permissions?: object;
+  permissions?: { allow?: string[]; ask?: string[]; deny: string[] };
+  sandbox?: Record<string, unknown>;
 }
 
 function settingsOf(args: readonly string[]): Settings {
@@ -102,6 +109,69 @@ describe('a launch of Claude Code', () => {
 
     expect(args).not.toContain('--');
     expect(args).toHaveLength(6);
+  });
+
+  it('names the model when the app does', async () => {
+    const { args } = await claudeCode({ model: 'claude-sonnet-4-5' }).launch(launchOf());
+
+    expect(args.slice(6, 8)).toEqual(['--model', 'claude-sonnet-4-5']);
+  });
+
+  it("loads the app's plugin from its folder, made absolute", async () => {
+    const { args } = await claudeCode({ pluginDir: files }).launch(launchOf());
+
+    expect(args.slice(6, 8)).toEqual(['--plugin-dir', files]);
+  });
+
+  it.each([
+    [['user', 'project'], 'user,project'],
+    [['local'], 'local'],
+    [[], ''],
+  ] as const)('reads only the sources of settings %j, as %j', async (settingSources, value) => {
+    const { args } = await claudeCode({ settingSources }).launch(launchOf());
+
+    expect(args.slice(6, 8)).toEqual(['--setting-sources', value]);
+  });
+
+  it("keeps MCP servers other than the cockpit's out when the app says so", async () => {
+    const { args } = await claudeCode({ otherMcpServers: false }).launch(launchOf());
+
+    expect(args.slice(6, 7)).toEqual(['--strict-mcp-config']);
+  });
+
+  it('writes every option before the prompt, in one order', async () => {
+    const { args } = await claudeCode({
+      model: 'opus',
+      pluginDir: files,
+      settingSources: ['user'],
+      otherMcpServers: false,
+    }).launch(launchOf());
+
+    expect(args.slice(6)).toEqual([
+      '--model',
+      'opus',
+      '--plugin-dir',
+      files,
+      '--setting-sources',
+      'user',
+      '--strict-mcp-config',
+      '--',
+      'Explain a.ts',
+    ]);
+  });
+
+  it('writes no model, plugin, sources or strictness when the app names none', async () => {
+    const { args } = await claudeCode({ otherMcpServers: true }).launch(launchOf());
+
+    for (const option of ['--model', '--plugin-dir', '--setting-sources', '--strict-mcp-config']) {
+      expect(args).not.toContain(option);
+    }
+  });
+
+  it('gives no MCP servers of its own yet: no --mcp-config without a channel', async () => {
+    const { args } = await claudeCode().launch(launchOf());
+
+    expect(args).not.toContain('--mcp-config');
   });
 
   it("removes Claude Code's own variables from the environment, and keeps the rest", async () => {
@@ -224,9 +294,176 @@ describe('the settings of a launch', () => {
         'WebFetch',
         'Read(//home/someone/.local/state/agent-cockpit/**)',
         'Edit(//home/someone/.local/state/agent-cockpit/**)',
+        'Edit(//**/.claude/settings.json)',
+        'Edit(//**/.claude/settings.local.json)',
+        'Edit(//home/someone/.config/claude/settings.json)',
       ],
     });
   });
+});
+
+describe("a launch of a job's driver part", () => {
+  const app = {
+    permissionMode: 'acceptEdits',
+    permissions: { allow: ['Read'], deny: ['WebFetch'] },
+    model: 'claude-sonnet-4-5',
+  } as const;
+
+  it("runs in the part's mode, with the part's model, over the app's", async () => {
+    const { args } = await claudeCode(app).launch(
+      launchOf({ part: claudeCode.job({ permissionMode: 'dontAsk', model: 'claude-haiku-4-5' }) }),
+    );
+
+    expect(args.slice(4, 8)).toEqual([
+      '--permission-mode',
+      'dontAsk',
+      '--model',
+      'claude-haiku-4-5',
+    ]);
+  });
+
+  it("keeps the app's mode and model where the part sets none", async () => {
+    const { args } = await claudeCode(app).launch(launchOf({ part: claudeCode.job({}) }));
+
+    expect(args.slice(4, 8)).toEqual([
+      '--permission-mode',
+      'acceptEdits',
+      '--model',
+      'claude-sonnet-4-5',
+    ]);
+  });
+
+  it("names the part's model where the app names none", async () => {
+    const { args } = await claudeCode().launch(
+      launchOf({ part: claudeCode.job({ model: 'claude-haiku-4-5' }) }),
+    );
+
+    expect(args.slice(6, 8)).toEqual(['--model', 'claude-haiku-4-5']);
+  });
+
+  it("adds the part's rules to the app's, the confinement's denies after both", async () => {
+    const { args } = await claudeCode(app).launch(
+      launchOf({
+        part: claudeCode.job({ permissions: { ask: ['Bash'], deny: ['Edit(/src/**)'] } }),
+      }),
+    );
+    const permissions = settingsOf(args).permissions;
+
+    expect(permissions?.allow).toEqual(['Read']);
+    expect(permissions?.ask).toEqual(['Bash']);
+    expect(permissions?.deny.slice(0, 3)).toEqual([
+      'WebFetch',
+      'Edit(/src/**)',
+      'Read(//home/someone/.local/state/agent-cockpit/**)',
+    ]);
+  });
+});
+
+describe('a launch in the sandbox the app asks for', () => {
+  /** A folder of stand-ins for the commands named, each an executable file. */
+  function commandsFolder(...names: string[]): string {
+    const folder = join(files, `bin-${names.join('-') || 'none'}`);
+    mkdirSync(folder);
+    for (const name of names) {
+      writeFileSync(join(folder, name), '#!/bin/sh\n');
+      chmodSync(join(folder, name), 0o755);
+    }
+    return folder;
+  }
+
+  async function refusalOf(driver: ReturnType<typeof claudeCode>, PATH: string): Promise<unknown> {
+    const launch = launchOf();
+    return driver.launch({ ...launch, environment: { ...launch.environment, PATH } }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+  }
+
+  it("turns the sandbox on, failing where it cannot run, beside the cockpit's lines", async () => {
+    const PATH = commandsFolder('bwrap', 'socat');
+    const launch = launchOf();
+    const { args } = await claudeCode({ sandbox: true }).launch({
+      ...launch,
+      environment: { ...launch.environment, PATH },
+    });
+
+    expect(settingsOf(args).sandbox).toMatchObject({
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      network: { allowedDomains: ['127.0.0.1:4100'] },
+    });
+  });
+
+  it.runIf(process.platform === 'linux')(
+    'is refused as sandbox-unavailable, naming what is missing, when bubblewrap or socat is not on the PATH',
+    async () => {
+      const driver = claudeCode({ sandbox: true });
+
+      const noBwrap = await refusalOf(driver, commandsFolder('socat'));
+      const neither = await refusalOf(driver, commandsFolder());
+
+      expect(isCockpitError(noBwrap, 'sandbox-unavailable')).toBe(true);
+      expect(noBwrap).toMatchObject({ cause: expect.stringMatching(/^bwrap not found/) });
+      expect(neither).toMatchObject({ cause: expect.stringMatching(/^bwrap and socat not found/) });
+    },
+  );
+
+  it.runIf(process.platform === 'linux')(
+    'writes no file and starts nothing when it is refused',
+    async () => {
+      await refusalOf(claudeCode({ sandbox: true }), commandsFolder('socat'));
+
+      expect(readdirSync(files).filter((name) => !name.startsWith('bin-'))).toEqual([]);
+    },
+  );
+
+  it('finds bubblewrap and socat in any folder of the PATH, not in a folder that is no folder', async () => {
+    const PATH = ['', join(files, 'absent'), commandsFolder('bwrap'), commandsFolder('socat')].join(
+      ':',
+    );
+
+    expect(await refusalOf(claudeCode({ sandbox: true }), PATH)).toBeUndefined();
+  });
+
+  it('does not look for the sandbox when the app does not ask for it: the person decides', async () => {
+    expect(await refusalOf(claudeCode(), commandsFolder())).toBeUndefined();
+  });
+
+  it.runIf(process.platform === 'linux')(
+    'does not count a file that cannot be run, or a folder, as the command',
+    async () => {
+      const folder = commandsFolder('socat');
+      writeFileSync(join(folder, 'bwrap'), '');
+      chmodSync(join(folder, 'bwrap'), 0o644);
+      const other = commandsFolder();
+      mkdirSync(join(other, 'bwrap'));
+
+      expect(
+        isCockpitError(
+          await refusalOf(claudeCode({ sandbox: true }), `${folder}:${other}`),
+          'sandbox-unavailable',
+        ),
+      ).toBe(true);
+    },
+  );
+});
+
+describe('what a launch never writes', () => {
+  it.each(['default', 'bypassPermissions'] as const)(
+    "no answer to a start-up dialog and no environment, in %s: the person answers, and their settings' env applies",
+    async (permissionMode) => {
+      const { args } = await claudeCode({ permissionMode, acceptOpenNetwork: true }).launch(
+        launchOf(),
+      );
+      const settings = settingsOf(args);
+
+      expect(Object.keys(settings).sort()).toEqual(['hooks', 'permissions', 'sandbox']);
+      expect(JSON.stringify(settings)).not.toMatch(
+        /skipDangerousModePermissionPrompt|hasTrustDialogAccepted|hasCompletedOnboarding|"env"/,
+      );
+    },
+  );
 });
 
 describe('shell words', () => {
@@ -246,7 +483,7 @@ describe("the driver's other parts", () => {
   it('refuses options that do not fit, as invalid-options', () => {
     let refusal: unknown;
     try {
-      claudeCode({ model: 'sonnet' } as never);
+      claudeCode({ model: '' });
     } catch (error) {
       refusal = error;
     }

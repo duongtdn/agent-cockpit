@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { givenAndRealPaths } from '../server/confinement.js';
 import {
   type Driver,
   type DriverPart,
@@ -18,6 +19,8 @@ import {
   AGENT_COMMAND,
   agentArguments,
   agentEnvironment,
+  missingPrograms,
+  SANDBOX_PROGRAMS,
   sessionStartCommand,
 } from './launching.js';
 import {
@@ -26,6 +29,7 @@ import {
   type ClaudeCodeOptions,
   checkJobPart,
   checkOptions,
+  laidOver,
   type PermissionMode,
 } from './options.js';
 import { readScreen } from './screen-reading.js';
@@ -37,6 +41,9 @@ const SETTINGS_FILE = 'settings.json';
 
 /** Where the `SessionStart` hook reports, with the token: its command line names only this file. */
 const ADDRESS_FILE = 'hook-address.json';
+
+/** The person's own settings, in the agent's configuration folder. */
+const PERSONS_SETTINGS_FILE = 'settings.json';
 
 /**
  * Claude Code's one terminal key: Shift+Enter sends ESC CR, a line break in
@@ -93,8 +100,9 @@ function namedHostsReason(mode: PermissionMode): string {
  * `driver`. It launches `claude` from the `PATH` of the server's
  * environment, in the session's folder, with settings of its own written in
  * the cockpit's state folder: the hooks that report to the cockpit, the
- * app's permission rules, and the lines that keep the agent from the
- * cockpit's state and the app's ports.
+ * app's permission rules (and a job's), the sandbox when the app asks for
+ * it, and the lines that keep the agent from the cockpit's state, the
+ * app's ports and every Claude Code settings file.
  *
  * A session in `default`, `acceptEdits` or `dontAsk` counts as keeping
  * its network to the cockpit's allow-list (its sandboxed commands were
@@ -102,15 +110,20 @@ function namedHostsReason(mode: PermissionMode): string {
  * `bypassPermissions` counts as open, which an app opened beyond loopback
  * must accept.
  *
+ * A launch with the sandbox asked for rejects with `CockpitError`
+ * `sandbox-unavailable` when the agent would not find what the sandbox
+ * needs (on Linux, `bwrap` and `socat` on its `PATH`): it never runs
+ * unsandboxed instead.
+ *
  * `claudeCode.job(…)` builds a job's driver part.
  *
- * @param options - The permission mode every session is launched in
- * (`default` when left out), the permission rules its settings carry, and
- * whether the app accepts the open network of `plan`, `auto` or
- * `bypassPermissions`.
+ * @param options - See {@link ClaudeCodeOptions}: the permission mode
+ * (`default` when left out), the permission rules, the acceptance of an
+ * open network, the model, the plugin, the sources of settings, whether
+ * other MCP servers load, and the sandbox.
  * @returns The driver.
  * @throws `CockpitError` `invalid-options` when the options do not fit,
- * any option other than these three among them.
+ * any other option among them.
  */
 export const claudeCode: {
   (options?: ClaudeCodeOptions): Driver;
@@ -156,14 +169,15 @@ function jobPart(part: ClaudeCodeJobPart): ClaudeCodeJobPart {
 
 /** The network of a session: the job's mode, else the app's; the acceptance always the app's. */
 function networkOf(options: CheckedOptions, part?: DriverPart): SessionNetwork {
-  const permissionMode = (part as ClaudeCodeJobPart | undefined)?.permissionMode;
-  const mode = permissionMode ?? options.permissionMode;
+  const mode = laidOver(options, part as ClaudeCodeJobPart | undefined).permissionMode;
   if (CONFINED_MODES.has(mode)) return { reach: 'confined' };
   const reason = mode === 'bypassPermissions' ? BYPASS_REASON : namedHostsReason(mode);
   return { reach: 'open', accepted: options.acceptOpenNetwork, reason };
 }
 
 async function launchSession(launch: Launch, options: CheckedOptions): Promise<LaunchCommand> {
+  if (options.sandbox !== undefined) await checkSandboxCanRun(launch.environment);
+  const session = laidOver(options, launch.part as ClaudeCodeJobPart | undefined);
   const address: HookAddress = { url: hookUrl(launch.hooks.url), token: launch.hooks.token };
   const addressFile = join(launch.files, ADDRESS_FILE);
   const settingsFile = join(launch.files, SETTINGS_FILE);
@@ -175,8 +189,10 @@ async function launchSession(launch: Launch, options: CheckedOptions): Promise<L
         hookUrl: address.url,
         token: address.token,
         sessionStartCommand: sessionStartCommand(addressFile),
-        permissions: options.permissions,
+        permissions: session.permissions,
         confinement: launch.confinement,
+        personsSettingsFiles: await personsSettingsFiles(launch.environment),
+        sandbox: options.sandbox,
       }),
     ),
   );
@@ -186,11 +202,39 @@ async function launchSession(launch: Launch, options: CheckedOptions): Promise<L
       conversationId: launch.conversationId,
       resume: launch.resume,
       settingsFile,
-      permissionMode: options.permissionMode,
+      permissionMode: session.permissionMode,
+      model: session.model,
+      pluginDir: options.pluginDir,
+      settingSources: options.settingSources,
+      otherMcpServers: options.otherMcpServers,
       prompt: launch.prompt,
     }),
     environment: agentEnvironment(launch.environment),
   };
+}
+
+/**
+ * Refuses a launch whose agent would not find what its sandbox needs. The
+ * agent would start, then exit with nothing on its screen to say why
+ * (`failIfUnavailable` stays the check of what this one cannot see).
+ */
+async function checkSandboxCanRun(environment: Readonly<Record<string, string>>): Promise<void> {
+  const missing = await missingPrograms(SANDBOX_PROGRAMS[process.platform] ?? [], environment);
+  if (missing.length === 0) return;
+  throw new CockpitError(
+    'sandbox-unavailable',
+    "The app asked for Claude Code's sandbox, which cannot run here: the session is not started.",
+    {
+      cause:
+        `${missing.join(' and ')} not found on the PATH the agent is launched with; the ` +
+        'sandbox needs bubblewrap (bwrap) and socat (on Debian or Ubuntu: apt install bubblewrap socat).',
+    },
+  );
+}
+
+/** The person's own settings file, by the path the agent would read it at and by its real path. */
+function personsSettingsFiles(environment: Readonly<Record<string, string>>): Promise<string[]> {
+  return givenAndRealPaths([join(agentConfigFolder(environment), PERSONS_SETTINGS_FILE)]);
 }
 
 function hookUrl(base: string): string {
