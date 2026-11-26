@@ -1,7 +1,6 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { HTTP_HOOK_EVENTS } from '../../src/claude-code/hook-payloads.ts';
 import type { PermissionMode } from '../../src/claude-code/index.ts';
 import type { LaunchCommand } from '../../src/server/driver.ts';
 import { toolUse, turn } from '../support/fake-api/index.ts';
@@ -35,6 +34,19 @@ import {
 
 /** Claude's own file tools and the shell, allowed with no ask: the denies are what is tested. */
 const TOOLS = ['Bash', 'Read', 'Write', 'Edit'];
+
+/**
+ * The HTTP hooks a session fires that runs one turn with a tool and exits:
+ * the driver's others (a failed turn, a compaction, a task) fire only when
+ * that happens.
+ */
+const HOOKS_OF_A_TOOL_TURN_THEN_EXIT = [
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'Stop',
+  'SessionEnd',
+];
 
 type ToolCall = readonly [name: string, input: Readonly<Record<string, unknown>>];
 
@@ -206,7 +218,9 @@ itInTheSandbox(
     expect(settings.sandbox.network.allowedDomains).toEqual([
       expect.stringMatching(/^127\.0\.0\.1:\d+$/),
     ]);
-    for (const event of HTTP_HOOK_EVENTS) expect(eventsRead(cockpit), event).toContain(event);
+    for (const event of HOOKS_OF_A_TOOL_TURN_THEN_EXIT) {
+      expect(eventsRead(cockpit), event).toContain(event);
+    }
   },
 );
 

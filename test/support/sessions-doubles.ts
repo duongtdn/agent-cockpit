@@ -235,6 +235,12 @@ export const STUB_EVENTS: Readonly<Record<string, readonly DriverEvent[]>> = {
   '/ending': [{ type: 'ending', reason: 'lost' }],
   '/start-and-take': [{ type: 'ready' }, { type: 'prompt-taken' }],
   '/background': [],
+  '/turn-ended-with-a-task': [
+    { type: 'turn-ended', lastMessage: 'Done.' },
+    { type: 'tasks', running: [{ id: 'a1', type: 'general-purpose' }] },
+  ],
+  '/compaction-began': [{ type: 'compaction-began' }],
+  '/compaction-ended': [{ type: 'compaction-ended' }],
 };
 
 /**

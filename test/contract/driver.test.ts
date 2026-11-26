@@ -22,6 +22,19 @@ function settingsOf(launch: LaunchCommand | undefined): {
   return JSON.parse(readFileSync(file, 'utf8'));
 }
 
+/**
+ * The HTTP hooks a session fires that runs one turn with a tool and exits:
+ * the driver's others (a failed turn, a compaction, a task) fire only when
+ * that happens.
+ */
+const HOOKS_OF_A_TOOL_TURN_THEN_EXIT = [
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'Stop',
+  'SessionEnd',
+];
+
 function eventOf(request: HookRequest): unknown {
   return (request.body as { hook_event_name?: unknown }).hook_event_name;
 }
@@ -70,7 +83,9 @@ it('14 — HTTP hooks carry the configured Authorization header', async () => {
       event,
     ).toEqual(['http']);
     expect(hooks[0]?.headers?.Authorization, event).toMatch(/^Bearer \S{43,}$/);
-    // The listener passes on a request only when it carried that header.
+  }
+  // The listener passes on a request only when it carried that header.
+  for (const event of HOOKS_OF_A_TOOL_TURN_THEN_EXIT) {
     expect(cockpit.hooksRead.map(eventOf), event).toContain(event);
   }
 });

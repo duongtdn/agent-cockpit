@@ -904,6 +904,45 @@ describe("a session's states, from the driver's events", () => {
     expect(sessionOf()?.state).toBe('busy');
   });
 
+  it('changes once for one hook that tells several events: its followers see the end', async () => {
+    await busy();
+    const seen: Session[][] = [];
+    sessions.follow((list) => seen.push([...list]));
+
+    hook('/turn-ended-with-a-task');
+
+    expect(seen.slice(1)).toEqual([
+      [
+        {
+          key: KEY,
+          state: 'idle',
+          since: T0.toISOString(),
+          lastMessage: 'Done.',
+          backgroundTasks: [{ id: 'a1', type: 'general-purpose' }],
+        },
+      ],
+    ]);
+  });
+
+  it('returns from a compaction begun while idle to that idle session, its since kept', async () => {
+    await busy();
+    hook('/turn-ended');
+    const ended = sessionOf();
+    vi.advanceTimersByTime(60_000);
+
+    hook('/compaction-began');
+    const compacting = sessionOf();
+    vi.advanceTimersByTime(8000);
+    hook('/compaction-ended');
+
+    expect(compacting).toEqual({
+      key: KEY,
+      state: 'busy',
+      since: new Date(T0.getTime() + 60_000).toISOString(),
+    });
+    expect(sessionOf()).toEqual(ended);
+  });
+
   it('ignores the hooks of a key it does not know', () => {
     hook('/prompt-taken', 'nobody');
 

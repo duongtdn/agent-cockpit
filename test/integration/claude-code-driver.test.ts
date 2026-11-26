@@ -155,6 +155,7 @@ describe('the Claude Code driver, with the fake agent in tmux', () => {
         { type: 'working' },
         { type: 'working' },
         { type: 'turn-ended', lastMessage: 'Done.' },
+        { type: 'tasks', running: [] },
       ]),
     );
     expect(listener.refused).toBe(0);

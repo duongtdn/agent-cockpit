@@ -35,7 +35,7 @@ import type {
 import { SessionHostError } from '../session-host/session-host-error.js';
 import { LivenessWatch } from './liveness-watch.js';
 import { ScreenWatch } from './screen-watch.js';
-import { sessionAfter } from './session-states.js';
+import { courseAfter, type SessionCourse } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
 
 export { SCREEN_INTERVAL_MS } from './screen-watch.js';
@@ -277,6 +277,8 @@ interface Entry {
   readonly launchedWithPrompt: boolean;
   readonly departure: Departure;
   session: Session;
+  /** What a compaction begun while `idle` returns the session to. */
+  compactingFrom?: SessionCourse['compactingFrom'];
   phase: Phase;
   /** Why the cockpit itself ends the session, which prevails over the agent's word. */
   endedBecause?: EndReason;
@@ -327,15 +329,21 @@ class SessionRegistry implements Sessions {
     const entry = this.#entries.get(key);
     if (entry?.phase !== 'launching' && entry?.phase !== 'live') return;
     const { events } = this.#options.driver.readHook({ key, path, body });
+    if (events.length === 0) return;
+    const at = now();
+    // One hook is one change: its followers never see a session half told.
+    let course: SessionCourse = courseOf(entry);
     for (const event of events) {
-      const before = this.#sessionAfterStartUp(entry, event);
+      course = { ...course, session: this.#sessionAfterStartUp(entry, course.session, event) };
       // The agent says it ends, the session goes on until its process is
       // gone: declining a dialog may say so too, before any other hook.
       if (event.type === 'ending') entry.agentSaid = event.reason;
       else this.#hear(entry);
-      this.#update(entry, sessionAfter(before, event, entry.launchedWithPrompt, now()));
-      if (event.type === 'ready') this.#awaitPrompt(entry);
+      course = courseAfter(course, event, entry.launchedWithPrompt, at);
     }
+    entry.compactingFrom = course.compactingFrom;
+    this.#update(entry, course.session);
+    if (events.some((event) => event.type === 'ready')) this.#awaitPrompt(entry);
   }
 
   async attach(key: string, size: TerminalSize): Promise<Attachment | undefined> {
@@ -485,8 +493,7 @@ class SessionRegistry implements Sessions {
    * the terminal for a start-up dialog is `starting` again once the agent
    * goes on, whose hooks come only once every dialog is answered.
    */
-  #sessionAfterStartUp(entry: Entry, event: DriverEvent): Session {
-    const { session } = entry;
+  #sessionAfterStartUp(entry: Entry, session: Session, event: DriverEvent): Session {
     const pastDialog = event.type !== 'ending' && !entry.heard && session.state === 'waiting';
     if (!pastDialog) return session;
     return { key: session.key, state: 'starting', since: now() };
@@ -666,6 +673,11 @@ function stopReadingTheScreen(entry: Entry): void {
   entry.startUp?.stop();
   entry.panel?.stop();
   clearTimeout(entry.promptBound);
+}
+
+function courseOf(entry: Entry): SessionCourse {
+  const { session, compactingFrom } = entry;
+  return compactingFrom === undefined ? { session } : { session, compactingFrom };
 }
 
 function wrongState(session: Session): CockpitError<'wrong-state'> {

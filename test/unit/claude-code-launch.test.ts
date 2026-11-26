@@ -229,7 +229,7 @@ describe('a launch of Claude Code', () => {
 });
 
 describe('the settings of a launch', () => {
-  it('post UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd to the hooks path, with the token', async () => {
+  it('post every hook the driver reads but SessionStart to the hooks path, with the token', async () => {
     const { args } = await claudeCode().launch(launchOf());
     const { hooks } = settingsOf(args);
     const httpHook = {
@@ -238,17 +238,21 @@ describe('the settings of a launch', () => {
       headers: { Authorization: `Bearer ${TOKEN}` },
     };
 
-    expect(Object.keys(hooks).sort()).toEqual(
-      [
-        'PostToolUse',
-        'PreToolUse',
-        'SessionEnd',
-        'SessionStart',
-        'Stop',
-        'UserPromptSubmit',
-      ].sort(),
-    );
-    for (const event of ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']) {
+    const httpEvents = [
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PostToolUse',
+      'Stop',
+      'StopFailure',
+      'PreCompact',
+      'PostCompact',
+      'SubagentStart',
+      'SubagentStop',
+      'SessionEnd',
+    ];
+
+    expect(Object.keys(hooks).sort()).toEqual(['SessionStart', ...httpEvents].sort());
+    for (const event of httpEvents) {
       expect(hooks[event]).toEqual([{ hooks: [httpHook] }]);
     }
   });

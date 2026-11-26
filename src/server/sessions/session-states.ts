@@ -1,49 +1,129 @@
-import type { Session } from '../../shared/session.js';
+import type { BackgroundTask, IdleSession, Session } from '../../shared/session.js';
 import type { DriverEvent } from '../driver.js';
 
 /**
- * Gives the session a driver's event leaves: the same object when the event
- * changes nothing, so that the caller tells a change by identity. A session
- * that stays in its state keeps its `since`: it entered the state once.
+ * A session as the core follows it from its agent's events: the session as
+ * it is listed, and what a later event needs that the session does not
+ * carry.
+ */
+export interface SessionCourse {
+  /** The session, as the app and the browser see it. */
+  readonly session: Session;
+  /**
+   * The `idle` session a compaction began on: the session is `busy` until
+   * the compaction ends, then returns to it, its `since` kept — the person
+   * did nothing meanwhile.
+   */
+  readonly compactingFrom?: IdleSession;
+}
+
+/**
+ * Gives the course a driver's event leaves the session on: the same object
+ * when the event changes nothing, and always the same session object when
+ * the session does not change, so that the caller tells a change by
+ * identity. A session that stays in its state keeps its `since`: it entered
+ * the state once.
  *
  * `ending` changes no state: the agent only says why it will end, and the
  * session has ended only once its process is gone.
  *
- * @param session - The session as it is; never `ended`, whose events the
- * caller drops.
+ * @param course - The course as it is; its session never `ended`, whose
+ * events the caller drops.
  * @param event - What a hook told.
  * @param launchedWithPrompt - Whether the launch gave the agent a first
  * prompt: then `ready` is not `idle`, for the agent goes on to take it.
  * @param now - The time of the event, as `since` holds it.
  */
-export function sessionAfter(
-  session: Session,
+export function courseAfter(
+  course: SessionCourse,
   event: DriverEvent,
   launchedWithPrompt: boolean,
   now: string,
-): Session {
-  const { key, state } = session;
+): SessionCourse {
+  const { session, compactingFrom } = course;
   switch (event.type) {
     case 'ready':
-      return state === 'starting' && !launchedWithPrompt
-        ? { key, state: 'idle', since: now }
-        : session;
+      return session.state === 'starting' && !launchedWithPrompt
+        ? { session: { key: session.key, state: 'idle', since: now } }
+        : course;
     case 'prompt-taken':
     case 'working':
-      return state === 'busy' ? session : { key, state: 'busy', since: now };
+      if (session.state !== 'busy') return { session: busySince(session, now) };
+      // A turn shows: a compaction that began idle is now inside it.
+      return compactingFrom === undefined ? course : { session };
     case 'turn-ended':
-      if (state === 'idle') return session;
-      return event.lastMessage === undefined
-        ? { key, state: 'idle', since: now }
-        : { key, state: 'idle', since: now, lastMessage: event.lastMessage };
-    case 'ending':
-      return session;
-    // No driver reports these yet: the hooks that tell them are not configured.
     case 'turn-failed':
+      return turnOver(course, event, now);
     case 'compaction-began':
+      return session.state === 'idle'
+        ? { session: busySince(session, now), compactingFrom: session }
+        : course;
     case 'compaction-ended':
+      return compactingFrom === undefined ? course : { session: compactingFrom };
     case 'tasks':
+      return withIdle(course, (idle) => withTasks(idle, event.running));
     case 'task-finished':
-      return session;
+      return withIdle(course, (idle) => withoutTask(idle, event.id));
+    case 'ending':
+      return course;
   }
+}
+
+function busySince(session: Session, now: string): Session {
+  return { key: session.key, state: 'busy', since: now };
+}
+
+/**
+ * The end of a turn, an answer or a failure: `idle`, with the turn's last
+ * message or its error, which replace whatever the last `idle` carried. On
+ * an `idle` session there is no turn to end.
+ */
+function turnOver(
+  course: SessionCourse,
+  event: Extract<DriverEvent, { type: 'turn-ended' | 'turn-failed' }>,
+  now: string,
+): SessionCourse {
+  const { key, state } = course.session;
+  if (state === 'idle') return course;
+  const idle: IdleSession = { key, state: 'idle', since: now };
+  if (event.type === 'turn-failed') return { session: { ...idle, error: event.error } };
+  return {
+    session: event.lastMessage === undefined ? idle : { ...idle, lastMessage: event.lastMessage },
+  };
+}
+
+/**
+ * Changes what an `idle` session carries: the session itself, or the one a
+ * compaction will return to. Any other session carries no tasks.
+ */
+function withIdle(
+  course: SessionCourse,
+  change: (idle: IdleSession) => IdleSession,
+): SessionCourse {
+  const { session, compactingFrom } = course;
+  if (compactingFrom !== undefined) {
+    const changed = change(compactingFrom);
+    return changed === compactingFrom ? course : { session, compactingFrom: changed };
+  }
+  if (session.state !== 'idle') return course;
+  const changed = change(session);
+  return changed === session ? course : { session: changed };
+}
+
+/** The idle session without the task; the same one when it does not list it. */
+function withoutTask(idle: IdleSession, id: string): IdleSession {
+  const tasks = idle.backgroundTasks ?? [];
+  if (!tasks.some((task) => task.id === id)) return idle;
+  return withTasks(
+    idle,
+    tasks.filter((task) => task.id !== id),
+  );
+}
+
+/** The idle session with these tasks, the field absent when none runs; the same one when it lists none and none ran. */
+function withTasks(idle: IdleSession, running: readonly BackgroundTask[]): IdleSession {
+  if (running.length > 0) return { ...idle, backgroundTasks: running };
+  if (idle.backgroundTasks === undefined) return idle;
+  const { backgroundTasks: _gone, ...withoutTasks } = idle;
+  return withoutTasks;
 }
