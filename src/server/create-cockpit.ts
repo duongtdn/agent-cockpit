@@ -122,8 +122,9 @@ export interface Cockpit {
   on(event: 'error', handler: (error: InternalFailure) => void): () => void;
   /**
    * Tells the app, once per version in the process, that the agent a launch
-   * runs is newer than any version the driver was tested on: the session
-   * runs, and `status()` says the same.
+   * runs is one the driver was not tested on — newer than any tested, or a
+   * suffixed build (`2.1.340-beta`) not older than the tested range: the
+   * session runs, and `status()` says the same.
    *
    * @param event - `'untested-version'`.
    * @param handler - Receives the version and the tested range; what it
@@ -195,8 +196,9 @@ export interface Cockpit {
  * its own (`*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `\`, a control
  * character), whose deny rules could miss it; with the driver's issues
  * (an empty path) when the server's environment keeps it from confining
- * its agent (for Claude Code, a configuration folder, `CLAUDE_CONFIG_DIR`
- * or the home's `.claude`, that is relative or holds such a character);
+ * its agent (for Claude Code, its configuration folder, `CLAUDE_CONFIG_DIR`
+ * or the home's `.claude`, or the home, `HOME`, itself, that is relative
+ * or holds such a character);
  * `unsupported-machine` when the machine is not Linux, or its tmux is
  * missing or too old; `cockpit-locked` when another process of the app runs
  * a cockpit.
@@ -404,7 +406,8 @@ async function refuseStateRootsRulesMisread(
 
 /**
  * Refuses an environment in which the driver could not confine its agent
- * (for Claude Code, a configuration folder its deny rules could miss).
+ * (for Claude Code, a configuration folder or a home its deny rules could
+ * miss).
  * Checked before anything is written; each launch checks it again.
  */
 async function refuseUnconfinableEnvironment(checked: CheckedCockpitOptions): Promise<void> {

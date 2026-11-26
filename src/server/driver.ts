@@ -347,8 +347,8 @@ export interface Driver {
   /**
    * Checks the environment launches start from for what would keep the
    * driver from confining its agent (for Claude Code, a configuration
-   * folder its deny rules could miss). `createCockpit` refuses such an
-   * environment; the driver's `launch` refuses it again, read anew.
+   * folder or a home its deny rules could miss). `createCockpit` refuses
+   * such an environment; the driver's `launch` refuses it again, read anew.
    *
    * @param environment - The environment a launch would start from.
    * @returns Every issue found, each with an empty path: the environment is
