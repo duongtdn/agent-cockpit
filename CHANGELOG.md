@@ -213,9 +213,11 @@ Nothing is published yet.
   next hook, never guessed `busy`.
 - A session follows the conversation the agent moves to: Claude Code's
   `/clear` starts one under a new id, and what the cockpit reads outside
-  the hooks, and an ended session's `canResume`, follow it. A compaction
-  begun `idle` that fails or is interrupted (no hook ends it) is read on
-  the screen and returns the session to the `idle` it left; an
+  the hooks, and an ended session's `canResume`, follow it (an
+  interruption recorded in the conversation left just before the move
+  still ends the turn open then). A compaction begun `idle` that fails or
+  is interrupted (no hook ends it) is read on the screen and returns the
+  session to the `idle` it left; an
   interruption the agent recorded before the next prompt was taken leaves
   the new turn `busy`.
 

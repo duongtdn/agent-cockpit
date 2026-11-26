@@ -332,10 +332,12 @@ A session follows the conversation the agent works in: the one launched,
 or the one it moves to (Claude Code's `/clear` starts a new conversation
 under a new id, which its `SessionStart` names). What the cockpit reads
 of the conversation outside the hooks (an interruption, a compaction), and
-an ended session's `canResume`, follow the new one. A compaction begun
-while `idle` that fails or is interrupted fires no hook to end it: the
-cockpit reads the screen while it runs, and the input box back returns
-the session to the `idle` it left. An interruption the agent recorded
+an ended session's `canResume`, follow the new one; an interruption
+recorded in the conversation left just before the move still ends the
+turn open then. A compaction begun while `idle` that fails or is
+interrupted fires no hook to end it: the cockpit reads the screen while
+it runs, and the input box back returns the session to the `idle` it
+left. An interruption the agent recorded
 before the next prompt was taken ended the turn before, and leaves the
 new one `busy`.
 
