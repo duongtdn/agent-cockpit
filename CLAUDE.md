@@ -140,13 +140,14 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   of the launch but those a test names in `passedOn`, which then reach the
   agent and are checked as the launch's: what the driver strips is seen
   stripped at the agent (row 74). `startContractCockpit({ driver, shim,
-  personsSettings, directory, appAddress })` takes the driver's options
+  personsSettings, directory, appAddress, jobs })` takes the driver's options
   (or a function of the run's folders, for a plugin's), the shim's
   `leftOutOfRecipe` (`onboarding`, `folder-trust`, `key-approval`: each a
   piece of the agent's `.claude.json` left out, for a test of the start-up
-  dialog it spares), its `variables` and `passedOn`, and the person's own
-  settings. The rows of the driver's options, dialogs, failed turns,
-  compaction, `/clear`, interruptions, tasks, version, the app's sandbox
+  dialog it spares), its `variables` and `passedOn`, the person's own
+  settings, and the app's jobs beside `say` (run, sent to and opened
+  through the cockpit's `run`, `send` and `open`). The rows of the
+  driver's options, dialogs, failed turns, compaction, `/clear`, interruptions, tasks, version, the app's sandbox
   and the settings files' denies run through it.
 - **The rows, by file:** `starting` (1–3), `prompts` (4, 5, 7), `ending`
   (8), `driver` (14, 29), `interrupting` (6, 22, 95 an interruption
@@ -171,7 +172,12 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   kill, a recalled history entry, an open menu, shell mode, the person's
   vim mode, a permission dialog, 100,000 multi-byte characters, a running
   background shell, Enters lost; through `typing-terminal.ts`, which
-  checks the box before each write as the core does).
+  checks the box before each write as the core does), `units-of-work`
+  (113–119, through the cockpit's `run`, `send` and `open`: 113 an ended
+  unit of work resumed, 114 a conversation the agent no longer keeps started anew,
+  115 `fresh` ending an idle or busy session gracefully, 116 a restart on
+  other settings, 118 a send over a draft of several lines, 119 a
+  permission dialog drawn while a send types).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:

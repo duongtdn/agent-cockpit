@@ -79,6 +79,25 @@ export interface ContractCockpit {
    */
   say(prompt: string, key?: string): ReturnType<Cockpit['run']>;
   /**
+   * Runs a job through the cockpit, as an app does: {@link SAY} or one of
+   * the test's own.
+   *
+   * @returns What the cockpit's run resolved with.
+   */
+  run(...call: Parameters<Cockpit['run']>): ReturnType<Cockpit['run']>;
+  /**
+   * Sends a prompt to a unit of work through the cockpit, as an app does.
+   *
+   * @returns What the cockpit's send resolved with.
+   */
+  send(...call: Parameters<Cockpit['send']>): ReturnType<Cockpit['send']>;
+  /**
+   * Opens a unit of work through the cockpit, as an app does.
+   *
+   * @returns What the cockpit's open resolved with.
+   */
+  open(...call: Parameters<Cockpit['open']>): ReturnType<Cockpit['open']>;
+  /**
    * Gives the conversation a session of a key was last launched with.
    *
    * @throws Error when no session of the key was launched.
@@ -152,8 +171,8 @@ export const SAID_KEY = 'say';
 
 const sayArgs = z.object({ prompt: z.string(), key: z.string() });
 
-/** The job every test runs: the prompt as it is given, on the key given. */
-const SAY = {
+/** The job every test may run: the prompt as it is given, on the key given. */
+export const SAY = {
   id: 'say',
   title: 'Say something',
   args: sayArgs,
@@ -200,6 +219,8 @@ export interface ContractCockpitOptions {
    * command could reach it by any of them were it not denied.
    */
   readonly appAddress?: string;
+  /** The app's jobs beside {@link SAY}: none by default. */
+  readonly jobs?: readonly Job[];
 }
 
 /**
@@ -254,6 +275,7 @@ export async function startContractCockpit(
 
   const hooksRead: HookRequest[] = [];
   const launches: LaunchCommand[] = [];
+  const launchedKeys: string[] = [];
   const conversationsFollowed: Conversation[] = [];
   const askedToResume: Conversation[] = [];
   const conversations = new Map<string, string>();
@@ -274,12 +296,13 @@ export async function startContractCockpit(
     driver: recorded(shim.guarded(claudeCode(driverOptions)), {
       hooksRead,
       launches,
+      launchedKeys,
       conversationsFollowed,
       askedToResume,
       conversations,
       timeline,
     }),
-    jobs: [SAY],
+    jobs: [SAY as unknown as Job, ...(options.jobs ?? [])],
     stateDirectory: shim.stateFolder,
     port: app.port,
   });
@@ -300,6 +323,20 @@ export async function startContractCockpit(
   const following = followed(cockpit, api, timeline);
   closers.push(async () => following.stop());
 
+  /** Remembers the agent a key's session runs, for the teardown, which waits for it to exit. */
+  const rememberAgentOf = async (key: string) => {
+    const running = await host.processOf(key).catch(() => undefined);
+    if (running !== undefined) processIds.push(running.pid);
+  };
+  const keysLaunchedSince = (index: number) => new Set(launchedKeys.slice(index));
+  /** Waits for an operation on a key, then remembers the agent it may have launched. */
+  async function launching<T>(key: string, operation: Promise<T>): Promise<T> {
+    try {
+      return await operation;
+    } finally {
+      await rememberAgentOf(key);
+    }
+  }
   const conversationOf = (key: string) => {
     const conversation = conversations.get(key);
     if (conversation === undefined) throw new Error(`No session of the key ${key} was launched.`);
@@ -323,15 +360,18 @@ export async function startContractCockpit(
     conversationsFollowed,
     askedToResume,
     timeline,
-    async say(prompt, key = SAID_KEY) {
+    say: (prompt, key = SAID_KEY) => launching(key, cockpit.run(SAY.id, { prompt, key })),
+    async run(jobId, args, runOptions) {
+      // The key is the job's: known once the run launched, from what the driver was given.
+      const before = launches.length;
       try {
-        return await cockpit.run(SAY.id, { prompt, key });
+        return await cockpit.run(jobId, args, runOptions);
       } finally {
-        // Remembered for the teardown, which waits for the agent to exit.
-        const running = await host.processOf(key).catch(() => undefined);
-        if (running !== undefined) processIds.push(running.pid);
+        for (const key of keysLaunchedSince(before)) await rememberAgentOf(key);
       }
     },
+    send: (key, prompt) => launching(key, cockpit.send(key, prompt)),
+    open: (key, openOptions) => launching(key, cockpit.open(key, openOptions)),
     conversationOf,
     async killAgent(key) {
       const running = await host.processOf(key);
@@ -340,7 +380,7 @@ export async function startContractCockpit(
       return following.sessionIn(key, 'ended');
     },
     states: following.states,
-    sessionIn: following.sessionIn,
+    sessionIn: (key, state) => following.sessionIn(key, state),
     terminal,
     async submitInTerminal(key, text, confirmation = 'UserPromptSubmit') {
       const session = terminal(key);
@@ -351,16 +391,18 @@ export async function startContractCockpit(
       submittedInTerminal({ session: terminal(key), hooksRead, text, confirmation, api }),
     async exitByItself(key, conversationId) {
       const session = terminal(key, conversationId);
+      // An end of this exit: the key's session may have ended before.
+      const from = following.states(key).length;
       await session.type('/exit');
       for (let enters = 1; ; enters++) {
         await session.press('Enter');
         const ended = await following
-          .sessionIn(key, 'ended', EXIT_PATIENCE_MS)
+          .sessionIn(key, 'ended', EXIT_PATIENCE_MS, from)
           .catch(() => undefined);
         if (ended !== undefined) return ended;
         const box = inputBoxText(await session.screen().catch(() => ''));
         if (box === undefined || !box.includes('/exit') || enters === ENTER_PRESSES) {
-          return following.sessionIn(key, 'ended');
+          return following.sessionIn(key, 'ended', PATIENCE_MS, from);
         }
       }
     },
@@ -406,6 +448,8 @@ function serveFrom(shim: RealAgentShim): void {
 interface DriverRecord {
   readonly hooksRead: HookRequest[];
   readonly launches: LaunchCommand[];
+  /** The key of each launch, in the order of {@link launches}. */
+  readonly launchedKeys: string[];
   readonly conversationsFollowed: Conversation[];
   readonly askedToResume: Conversation[];
   /** The conversation each key was last launched with. */
@@ -424,6 +468,7 @@ function recorded(driver: Driver, record: DriverRecord): Driver {
     async launch(launch) {
       const command = await driver.launch(launch);
       record.launches.push(command);
+      record.launchedKeys.push(launch.key);
       record.conversations.set(launch.key, launch.conversationId);
       return command;
     },
@@ -488,7 +533,12 @@ async function submittedInTerminal(submit: TerminalSubmit): Promise<HookPayload>
 
 interface Following {
   states(key: string): SessionState[];
-  sessionIn(key: string, state: SessionState, patienceMs?: number): Promise<Session>;
+  /**
+   * Waits until the session of a key is in a state.
+   *
+   * @param from - How many of the key's states to pass over: none by default.
+   */
+  sessionIn(key: string, state: SessionState, patienceMs?: number, from?: number): Promise<Session>;
   stop(): void;
 }
 
@@ -507,8 +557,17 @@ function followed(cockpit: Cockpit, api: FakeApi, timeline: Moment[]): Following
     for (const waiter of waiters) waiter();
   });
 
-  function sessionIn(key: string, state: SessionState, patienceMs = PATIENCE_MS): Promise<Session> {
-    const found = () => seen.get(key)?.find((session) => session.state === state);
+  function sessionIn(
+    key: string,
+    state: SessionState,
+    patienceMs = PATIENCE_MS,
+    from = 0,
+  ): Promise<Session> {
+    const found = () =>
+      seen
+        .get(key)
+        ?.slice(from)
+        .find((session) => session.state === state);
     return new Promise((resolve, reject) => {
       const done = () => {
         clearTimeout(timer);
