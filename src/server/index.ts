@@ -8,13 +8,16 @@
 export type { CockpitErrorCode, CockpitErrorFields, Issue } from '../shared/cockpit-error.js';
 export { CockpitError, isCockpitError } from '../shared/cockpit-error.js';
 export type {
+  BackgroundTask,
   EndReason,
   Pending,
   RunResult,
   Session,
   SessionState,
   StartupDialog,
+  TurnError,
 } from '../shared/session.js';
+export type { CockpitStatus, TestedRange, UntestedVersion } from './agent-status.js';
 export type { CockpitOptions } from './cockpit-options.js';
 export type { Cockpit } from './create-cockpit.js';
 export { createCockpit } from './create-cockpit.js';

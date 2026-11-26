@@ -76,6 +76,13 @@ describe('a launch of Claude Code', () => {
     ]);
   });
 
+  it('resumes the conversation by its id, rather than start one, when the launch resumes', async () => {
+    const { args } = await claudeCode().launch(launchOf({ resume: true }));
+
+    expect(args.slice(0, 2)).toEqual(['--resume', CONVERSATION]);
+    expect(args).not.toContain('--session-id');
+  });
+
   it('passes the default mode when the app names none', async () => {
     const { args } = await claudeCode().launch(launchOf());
 
@@ -260,22 +267,22 @@ describe("the driver's other parts", () => {
   it.each(['default', 'acceptEdits', 'dontAsk'] as const)(
     'keeps the network of a session in %s to the allow-list: it asks or refuses beyond it (contract 80, 81)',
     (permissionMode) => {
-      expect(claudeCode({ permissionMode }).network).toEqual({ reach: 'confined' });
-      expect(claudeCode({ permissionMode, acceptOpenNetwork: true }).network).toEqual({
+      expect(claudeCode({ permissionMode }).networkOf()).toEqual({ reach: 'confined' });
+      expect(claudeCode({ permissionMode, acceptOpenNetwork: true }).networkOf()).toEqual({
         reach: 'confined',
       });
     },
   );
 
   it('keeps the network of a session in the default mode to the allow-list', () => {
-    expect(claudeCode().network).toEqual({ reach: 'confined' });
+    expect(claudeCode().networkOf()).toEqual({ reach: 'confined' });
   });
 
   it.each(['plan', 'auto', 'bypassPermissions'] as const)(
     'counts the network of a session in %s as open, naming the mode, accepted only when the app says so',
     (permissionMode) => {
-      const refused = claudeCode({ permissionMode }).network;
-      const accepted = claudeCode({ permissionMode, acceptOpenNetwork: true }).network;
+      const refused = claudeCode({ permissionMode }).networkOf();
+      const accepted = claudeCode({ permissionMode, acceptOpenNetwork: true }).networkOf();
 
       expect(refused).toEqual({
         reach: 'open',
@@ -290,13 +297,35 @@ describe("the driver's other parts", () => {
   it.each(['plan', 'auto'] as const)(
     'says what was measured of a session in %s: a command that names a host in allowed_domains reaches it once approved, with no ask of the network (contract 82)',
     (permissionMode) => {
-      const { reason } = claudeCode({ permissionMode }).network as { reason: string };
+      const { reason } = claudeCode({ permissionMode }).networkOf() as { reason: string };
 
       expect(reason).toMatch(/allowed_domains/);
       expect(reason).toMatch(/measured|seen/);
       expect(reason).not.toMatch(/not known/);
     },
   );
+});
+
+describe("the network of a session that runs a job's driver part", () => {
+  it("is the part's mode's, which replaces the app's", () => {
+    const confined = claudeCode({ permissionMode: 'bypassPermissions' });
+    const open = claudeCode();
+
+    expect(confined.networkOf({ permissionMode: 'default' })).toEqual({ reach: 'confined' });
+    expect(open.networkOf({ permissionMode: 'bypassPermissions' })).toEqual(
+      claudeCode({ permissionMode: 'bypassPermissions' }).networkOf(),
+    );
+  });
+
+  it("is the app's mode's when the part sets none, the app's acceptance holding", () => {
+    const accepted = claudeCode({ permissionMode: 'auto', acceptOpenNetwork: true });
+
+    expect(accepted.networkOf({ model: 'sonnet' })).toEqual(accepted.networkOf());
+    expect(accepted.networkOf({ permissionMode: 'plan' })).toMatchObject({
+      reach: 'open',
+      accepted: true,
+    });
+  });
 });
 
 describe('whether a conversation can resume', () => {

@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import { CockpitError, type Issue } from '../shared/cockpit-error.js';
+import type { DriverPart } from './driver.js';
 
 /**
  * A job: one kind of work the app offers, whose run starts the agent on a
@@ -31,6 +32,12 @@ export interface Job<Args extends z.ZodType = z.ZodType> {
    * @param args - The arguments, as the schema gave them.
    */
   prompt?(args: z.output<Args>): string;
+  /**
+   * The job's driver part, built by the driver's factory
+   * (`claudeCode.job(…)`): the agent's own options for the job's sessions,
+   * laid over the app's.
+   */
+  readonly driver?: DriverPart;
 }
 
 /** What a job's run asks of the sessions: its key and its first prompt. */

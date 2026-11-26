@@ -78,12 +78,42 @@ export interface WaitingSession extends SessionBase {
   readonly pending: readonly Pending[];
 }
 
+/**
+ * Why the last turn failed, when it ended on an error of the model's API
+ * rather than with an answer: the provider's side (`server`, an overload
+ * included), a rate limit (`rate-limit`), or anything else (`other`); with
+ * the agent's own text.
+ */
+export interface TurnError {
+  /** What kind of failure, for the app to act on. */
+  readonly kind: 'server' | 'rate-limit' | 'other';
+  /** What the agent said of it, in its own words. */
+  readonly message: string;
+}
+
+/**
+ * A task the agent runs in the background of a session, a subagent for one,
+ * which goes on while the session is `idle`.
+ */
+export interface BackgroundTask {
+  /** The task's id, as the agent names it: an ask the task raises carries it. */
+  readonly id: string;
+  /** What kind of task, in the agent's terms (a subagent's type, such as `general-purpose`). */
+  readonly type: string;
+  /** What the task was given to do, when the agent says. */
+  readonly description?: string;
+}
+
 /** A session whose agent can take a prompt. */
 export interface IdleSession extends SessionBase {
   /** Its state. */
   readonly state: 'idle';
   /** The last message of the turn that ended, if any: absent when no turn ran yet. */
   readonly lastMessage?: string;
+  /** Why the turn that just ended failed, when it did; a later turn clears it. */
+  readonly error?: TurnError;
+  /** The tasks still running in the background; absent when none runs. */
+  readonly backgroundTasks?: readonly BackgroundTask[];
 }
 
 /** A session whose agent's process is gone. */
@@ -94,6 +124,11 @@ export interface EndedSession extends SessionBase {
   readonly canResume: boolean;
   /** Why it ended. */
   readonly reason: EndReason;
+  /**
+   * With `declined`: the start-up dialog the person left, when the driver
+   * knew it; the next launch meets the same dialog.
+   */
+  readonly dialog?: StartupDialog;
 }
 
 /**

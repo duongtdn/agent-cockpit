@@ -38,5 +38,12 @@ export function sessionAfter(
         : { key, state: 'idle', since: now, lastMessage: event.lastMessage };
     case 'ending':
       return session;
+    // No driver reports these yet: the hooks that tell them are not configured.
+    case 'turn-failed':
+    case 'compaction-began':
+    case 'compaction-ended':
+    case 'tasks':
+    case 'task-finished':
+      return session;
   }
 }

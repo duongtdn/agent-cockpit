@@ -14,6 +14,7 @@ import type {
 } from '../../src/server/session-host/session-host.ts';
 import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import type { HookAccess, SessionFolders } from '../../src/server/sessions/sessions.ts';
+import { DRIVER_DEFAULTS } from './driver-defaults.ts';
 
 /** What a deferred host call waits for: the test settles it. */
 interface Gate {
@@ -242,7 +243,7 @@ export function createStubDriver(): StubDriver {
     resumable: true,
     terminalKeys: [],
     silentStartCause: 'The stub agent sent no hook.',
-    network: { reach: 'confined' },
+    ...DRIVER_DEFAULTS,
     failNextLaunch(error) {
       nextLaunchError = error;
     },

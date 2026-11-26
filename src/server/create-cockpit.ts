@@ -3,6 +3,12 @@ import type { Duplex } from 'node:stream';
 import { CockpitError } from '../shared/cockpit-error.js';
 import type { RunResult, Session } from '../shared/session.js';
 import { openAgentListener } from './agent-listener/agent-listener.js';
+import {
+  type AgentStatus,
+  type CockpitStatus,
+  createAgentStatus,
+  type UntestedVersion,
+} from './agent-status.js';
 import { APP_PORT_SOURCE, createAppPorts, type LearnsAppPorts } from './app-ports.js';
 import {
   type CheckedCockpitOptions,
@@ -10,7 +16,7 @@ import {
   checkCockpitOptions,
 } from './cockpit-options.js';
 import { confinementReader, givenAndRealPaths, holdsRuleSyntax } from './confinement.js';
-import { createFailureReport, type InternalFailure } from './failures.js';
+import { createFailureReport, type FailureReport, type InternalFailure } from './failures.js';
 import { createHandler } from './http/handler.js';
 import { carriesAppToken, type RequestHeaders } from './http/request-token.js';
 import { type Job, launchOfJob } from './jobs.js';
@@ -100,6 +106,25 @@ export interface Cockpit {
    */
   on(event: 'error', handler: (error: InternalFailure) => void): () => void;
   /**
+   * Tells the app, once per version in the process, that the agent a launch
+   * runs is newer than any version the driver was tested on: the session
+   * runs, and `status()` says the same.
+   *
+   * @param event - `'untested-version'`.
+   * @param handler - Receives the version and the tested range; what it
+   * throws goes to `console.error`, and the others are still told.
+   * @returns A function that removes the handler.
+   * @throws `TypeError` for an event the cockpit does not have.
+   */
+  on(event: 'untested-version', handler: (event: UntestedVersion) => void): () => void;
+  /**
+   * Tells the agent's version as last read, whether the driver was tested
+   * on it, and the driver's tested range.
+   *
+   * @returns The status now.
+   */
+  status(): CockpitStatus;
+  /**
    * Renews the app's token: a new one is written to the state folder and
    * put in force, and the one before is refused at once (`no-token`). Every
    * browser-facing WebSocket is closed, the terminals' among them, so that
@@ -181,6 +206,7 @@ async function openCockpit(
   try {
     const appToken = await openAppToken(folder.path);
     const failures = createFailureReport();
+    const agentStatus = createAgentStatus(checked.driver.testedRange);
     // The listener takes hooks only with a session's token, and none is
     // granted before the sessions exist: nothing reaches `receive` early.
     const receiver: { sessions?: Sessions } = {};
@@ -235,7 +261,8 @@ async function openCockpit(
       sessions: { list: () => sessions.list(), follow: (handler) => sessions.follow(handler) },
       link: (pageUrl) => linkTo(pageUrl, appToken.value),
       verify: (request) => carriesAppToken(request, appToken.matches),
-      on: (_event, handler) => failures.on(handler),
+      on: eventsOf(failures, agentStatus),
+      status: () => agentStatus.current(),
       renewToken() {
         const renewal = renewToken();
         renewing = Promise.all([renewing, renewal.catch(() => undefined)]).then(() => undefined);
@@ -260,6 +287,24 @@ async function openCockpit(
     await lock.release();
     throw error;
   }
+}
+
+/** The cockpit's `on`: each event's handlers to the part that tells it. */
+function eventsOf(failures: FailureReport, agentStatus: AgentStatus): Cockpit['on'] {
+  function on(event: 'error', handler: (error: InternalFailure) => void): () => void;
+  function on(event: 'untested-version', handler: (event: UntestedVersion) => void): () => void;
+  function on(
+    event: string,
+    handler: ((error: InternalFailure) => void) | ((event: UntestedVersion) => void),
+  ): () => void {
+    // The overloads pair each event with its handler's type.
+    if (event === 'error') return failures.on(handler as (error: InternalFailure) => void);
+    if (event === 'untested-version') {
+      return agentStatus.onUntested(handler as (event: UntestedVersion) => void);
+    }
+    throw new TypeError(`The cockpit has no event ${JSON.stringify(event)}.`);
+  }
+  return on;
 }
 
 /**

@@ -27,6 +27,38 @@ export interface PermissionRules {
   readonly deny?: readonly string[];
 }
 
+/**
+ * The agent's sandbox, as the app asks for it: its commands run confined,
+ * with these exceptions. The cockpit's own lines are written beside them.
+ */
+export interface ClaudeCodeSandbox {
+  /**
+   * Commands that run outside the sandbox (its `excludedCommands`): each is
+   * unconfined, the cockpit's lines included.
+   */
+  readonly excludedCommands?: readonly string[];
+  /**
+   * Whether a command the sandbox refuses may run outside it instead, once
+   * the person approves; `false` when left out.
+   */
+  readonly allowUnsandboxedCommands?: boolean;
+}
+
+/**
+ * A job's driver part for Claude Code (ADR-0051), as `claudeCode.job(…)`
+ * builds it: laid over the app's options for the job's sessions. The
+ * plugin, the environment and the acceptance of an open network stay the
+ * app's.
+ */
+export interface ClaudeCodeJobPart {
+  /** The mode the job's sessions are launched in, in place of the app's. */
+  readonly permissionMode?: PermissionMode;
+  /** Rules added to the app's: the app's deny and ask rules always hold. */
+  readonly permissions?: PermissionRules;
+  /** The model of the job's sessions (`--model`), over the app's and the person's. */
+  readonly model?: string;
+}
+
 /** The app's options for the Claude Code driver. */
 export interface ClaudeCodeOptions {
   /**
@@ -50,6 +82,13 @@ export interface ClaudeCodeOptions {
    * `authorize`.
    */
   readonly acceptOpenNetwork?: boolean;
+  /**
+   * Runs every session in the agent's sandbox: `true`, or the sandbox's
+   * exceptions. It may only turn the sandbox on: left out, the person's own
+   * settings decide. A launch where the sandbox cannot run fails
+   * (`sandbox-unavailable`), never running unsandboxed instead.
+   */
+  readonly sandbox?: true | ClaudeCodeSandbox;
 }
 
 /** The options once checked, each with its value. */
@@ -71,6 +110,8 @@ const PERMISSION_MODES: readonly PermissionMode[] = [
 const RULE_LISTS: readonly (keyof PermissionRules)[] = ['allow', 'ask', 'deny'];
 
 const OPTION_NAMES: readonly string[] = ['permissionMode', 'permissions', 'acceptOpenNetwork'];
+
+const JOB_PART_NAMES: readonly string[] = ['permissionMode', 'permissions', 'model'];
 
 /**
  * Checks the app's options for the driver.
@@ -109,6 +150,34 @@ function optionIssues(options: Record<string, unknown>): Issue[] {
     ...permissionsIssues(permissions),
     ...acceptanceIssues(acceptOpenNetwork),
   ];
+}
+
+/**
+ * Checks a job's driver part: what `claudeCode.job` builds, or what an app in
+ * JavaScript wrote by hand.
+ *
+ * @param part - The part, unchecked.
+ * @returns Every issue found, each path from the part: a part that is no
+ * object, a mode Claude Code does not have, rules that are no lists of
+ * rules, a model that is no text or an empty one, and anything a job may
+ * not set.
+ */
+export function checkJobPart(part: unknown): Issue[] {
+  if (!isRecord(part)) return [issue([], "A job's driver part is an object.")];
+  const { permissionMode, permissions, model, ...others } = part;
+  return [
+    ...Object.keys(others).map((name) =>
+      issue([name], `Not for a job to set: it sets ${JOB_PART_NAMES.join(', ')}.`),
+    ),
+    ...modeIssues(permissionMode),
+    ...permissionsIssues(permissions),
+    ...modelIssues(model),
+  ];
+}
+
+function modelIssues(model: unknown): Issue[] {
+  if (model === undefined || (typeof model === 'string' && model !== '')) return [];
+  return [issue(['model'], "A model's name is a text, not empty.")];
 }
 
 function acceptanceIssues(accept: unknown): Issue[] {

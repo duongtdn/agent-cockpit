@@ -131,13 +131,28 @@ Nothing is published yet.
   `MountTerminalOptions` and `TerminalStatus`. Any program in a session can
   write the person's clipboard through OSC 52; none can read it.
 
+- `cockpit.status()` (`CockpitStatus`: `{ agentVersion?, tested,
+  testedRange }`) and `cockpit.on('untested-version', handler)`
+  (`UntestedVersion`), with `TestedRange`, from `.`; the agent's version is
+  not read yet, so `status()` has no `agentVersion` and the event never
+  fires. `cockpit.on` throws `TypeError` for an event it does not have.
+- `claudeCode.job({ permissionMode?, permissions?, model? })` from
+  `./claude-code`, with the type `ClaudeCodeJobPart`: builds a job's driver
+  part, `invalid-options` when it does not fit. The types
+  `ClaudeCodeSandbox` and `ClaudeCodeOptions.sandbox`.
+- The types `TurnError` and `BackgroundTask`, from `.` and `./client`; an
+  `idle` session's `error` and `backgroundTasks`, an `ended` one's
+  `dialog` (none set yet).
+- The error code `sandbox-unavailable` (`cause`, 503).
+
 ### Not yet: refused or missing in this version
 
 - `createCockpit` refuses every option but `name`, `directory`, `driver`,
   `jobs`, `stateDirectory`, `agentPort`, `authorize`, `origins`, `terminal`
   and `port`, and every job field but `id`,
   `title`, `description`, `args`, `key` and `prompt`, with
-  `invalid-options`.
+  `invalid-options`: a job's `driver` among them. `claudeCode` refuses
+  `sandbox`.
 - A run on a key that has a session, whatever its state, is refused with
   `wrong-state`: there is no resume, send, open, interrupt, end or remove.
 - A run whose agent reports nothing within 30 seconds is ended and refused

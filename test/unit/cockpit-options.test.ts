@@ -171,7 +171,7 @@ describe("createCockpit's options", () => {
   });
 
   it('refuse a driver that does not say how far its sessions reach the network', async () => {
-    const { network: _left, ...withoutNetwork } = claudeCode();
+    const { networkOf: _left, ...withoutNetwork } = claudeCode();
 
     expect(
       (await optionIssues({ ...valid(), driver: withoutNetwork })).map(({ path }) => path),

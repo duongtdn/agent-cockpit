@@ -2,6 +2,7 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Driver } from '../../src/server/driver.ts';
+import { DRIVER_DEFAULTS } from '../support/driver-defaults.ts';
 import { type ScriptedAgent, startScriptedAgent } from '../support/scripted-agent.ts';
 
 const SOME_SESSION = '0c9a3d4e-0000-4000-8000-000000000000';
@@ -17,7 +18,7 @@ afterEach(async () => {
 const plainDriver: Driver = {
   terminalKeys: [],
   silentStartCause: '',
-  network: { reach: 'confined' },
+  ...DRIVER_DEFAULTS,
   launch: async () => ({
     command: 'claude',
     args: [],

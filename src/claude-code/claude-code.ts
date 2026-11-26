@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import {
   type Driver,
+  type DriverPart,
   HOOKS_PATH,
   type HookAddress,
   type Launch,
@@ -8,7 +9,9 @@ import {
   type SessionNetwork,
 } from '../server/driver.js';
 import { writePrivateFile } from '../server/state/private-files.js';
+import { CockpitError } from '../shared/cockpit-error.js';
 import type { KeyRule } from '../shared/wire.js';
+import { readAgentVersion } from './agent-version.js';
 import { agentConfigFolder, keepsConversation } from './conversations.js';
 import { readHook } from './hook-payloads.js';
 import {
@@ -19,11 +22,15 @@ import {
 } from './launching.js';
 import {
   type CheckedOptions,
+  type ClaudeCodeJobPart,
   type ClaudeCodeOptions,
+  checkJobPart,
   checkOptions,
   type PermissionMode,
 } from './options.js';
+import { readScreen } from './screen-reading.js';
 import { settingsDocument } from './settings-document.js';
+import { TESTED_RANGE } from './tested-range.js';
 
 /** The session's settings, which carry the token in the HTTP hooks' header. */
 const SETTINGS_FILE = 'settings.json';
@@ -95,6 +102,8 @@ function namedHostsReason(mode: PermissionMode): string {
  * `bypassPermissions` counts as open, which an app opened beyond loopback
  * must accept.
  *
+ * `claudeCode.job(…)` builds a job's driver part.
+ *
  * @param options - The permission mode every session is launched in
  * (`default` when left out), the permission rules its settings carry, and
  * whether the app accepts the open network of `plan`, `auto` or
@@ -103,12 +112,31 @@ function namedHostsReason(mode: PermissionMode): string {
  * @throws `CockpitError` `invalid-options` when the options do not fit,
  * any option other than these three among them.
  */
-export function claudeCode(options?: ClaudeCodeOptions): Driver {
+export const claudeCode: {
+  (options?: ClaudeCodeOptions): Driver;
+  /**
+   * Builds a job's driver part (ADR-0051), which the job carries as
+   * `driver`: its permission mode replaces the app's, its rules are added
+   * to the app's, its model is the sessions' own.
+   *
+   * @param part - The mode, the rules and the model, each optional.
+   * @returns The part, as given.
+   * @throws `CockpitError` `invalid-options`, with every issue found, when
+   * it does not fit: anything else a job may not set among them.
+   */
+  job(part: ClaudeCodeJobPart): ClaudeCodeJobPart;
+} = Object.assign(createDriver, { job: jobPart });
+
+function createDriver(options?: ClaudeCodeOptions): Driver {
   const checked = checkOptions(options);
   return {
     terminalKeys: TERMINAL_KEYS,
     silentStartCause: SILENT_START_CAUSE,
-    network: networkOf(checked),
+    testedRange: TESTED_RANGE,
+    agentVersion: (environment) => readAgentVersion(environment, TESTED_RANGE),
+    checkPart: checkJobPart,
+    networkOf: (part) => networkOf(checked, part),
+    readScreen,
     launch: (launch) => launchSession(launch, checked),
     readHook,
     canResume: ({ conversationId }) =>
@@ -116,11 +144,23 @@ export function claudeCode(options?: ClaudeCodeOptions): Driver {
   };
 }
 
-function networkOf({ permissionMode, acceptOpenNetwork }: CheckedOptions): SessionNetwork {
-  if (CONFINED_MODES.has(permissionMode)) return { reach: 'confined' };
-  const reason =
-    permissionMode === 'bypassPermissions' ? BYPASS_REASON : namedHostsReason(permissionMode);
-  return { reach: 'open', accepted: acceptOpenNetwork, reason };
+function jobPart(part: ClaudeCodeJobPart): ClaudeCodeJobPart {
+  const issues = checkJobPart(part);
+  if (issues.length > 0) {
+    throw new CockpitError('invalid-options', "A job's Claude Code driver part does not fit.", {
+      issues,
+    });
+  }
+  return part;
+}
+
+/** The network of a session: the job's mode, else the app's; the acceptance always the app's. */
+function networkOf(options: CheckedOptions, part?: DriverPart): SessionNetwork {
+  const permissionMode = (part as ClaudeCodeJobPart | undefined)?.permissionMode;
+  const mode = permissionMode ?? options.permissionMode;
+  if (CONFINED_MODES.has(mode)) return { reach: 'confined' };
+  const reason = mode === 'bypassPermissions' ? BYPASS_REASON : namedHostsReason(mode);
+  return { reach: 'open', accepted: options.acceptOpenNetwork, reason };
 }
 
 async function launchSession(launch: Launch, options: CheckedOptions): Promise<LaunchCommand> {
@@ -144,6 +184,7 @@ async function launchSession(launch: Launch, options: CheckedOptions): Promise<L
     command: AGENT_COMMAND,
     args: agentArguments({
       conversationId: launch.conversationId,
+      resume: launch.resume,
       settingsFile,
       permissionMode: options.permissionMode,
       prompt: launch.prompt,

@@ -29,6 +29,7 @@ const everyField: { [C in CockpitErrorCode]: Required<CockpitErrorFields[C]> } =
   unobservable: { key: 'chapter-1', cause: 'The hooks did not fire.' },
   'session-cap-reached': { cap: 2, live: ['chapter-1', 'chapter-2'] },
   'no-app-port': {},
+  'sandbox-unavailable': { cause: 'bubblewrap (bwrap) is not installed.' },
   'unknown-id': { id: 'a9' },
   'already-settled': { id: 'a1', by: 'terminal' },
   'terminal-only': { id: 'a1' },
@@ -225,6 +226,7 @@ describe('a CockpitError, serialized', () => {
   it.each([
     ['refused', 'origin'],
     ['unobservable', 'The hooks did not fire.'],
+    ['sandbox-unavailable', 'bubblewrap (bwrap) is not installed.'],
   ] as const)('keeps the cause of %s, which is a field of the code', (code, cause) => {
     const error = createError(code, everyField[code]);
 

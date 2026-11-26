@@ -12,8 +12,10 @@
  * @packageDocumentation
  */
 
-import type { EndReason } from '../shared/session.js';
+import type { Issue } from '../shared/cockpit-error.js';
+import type { BackgroundTask, EndReason, StartupDialog, TurnError } from '../shared/session.js';
 import type { KeyRule } from '../shared/wire.js';
+import type { AgentVersion, TestedRange } from './agent-status.js';
 
 /**
  * The path, under a session's {@link HookAddress.url}, that the listener
@@ -94,6 +96,15 @@ export type SessionNetwork =
       readonly reason: string;
     };
 
+/**
+ * A job's driver part (ADR-0051): what a job sets of the agent's own
+ * options — for Claude Code its permission mode, rules and model — built by
+ * the driver's factory (`claudeCode.job(…)`) and carried by the job as
+ * `driver`. Opaque to the core, which only hands it back to the driver: to
+ * check it, to tell its network, and with each launch of the job.
+ */
+export type DriverPart = object;
+
 /** What the core asks a driver to launch: one start of the agent for one session. */
 export interface Launch {
   /** The session's key, which names it on the host and in the state folder. */
@@ -104,6 +115,13 @@ export interface Launch {
    * it.
    */
   readonly conversationId: string;
+  /**
+   * Whether the conversation `conversationId` exists and is resumed, rather
+   * than started under that id; a new one when left out.
+   */
+  readonly resume?: boolean;
+  /** The driver part of the job the launch runs, when it has one: laid over the app's options. */
+  readonly part?: DriverPart;
   /** The folder the agent works in: the app's, or the job's inside it. An absolute path. */
   readonly directory: string;
   /**
@@ -185,6 +203,35 @@ export type DriverEvent =
       readonly lastMessage?: string;
     }
   | {
+      /** The turn ended on an error of the model's API, after the agent's own retries: `idle`. */
+      readonly type: 'turn-failed';
+      /** Why it failed. */
+      readonly error: TurnError;
+    }
+  | {
+      /**
+       * The agent began to compact its conversation: `busy` if the session
+       * was `idle`, no change otherwise.
+       */
+      readonly type: 'compaction-began';
+    }
+  | {
+      /** The compaction ended: the session returns to the state it began in. */
+      readonly type: 'compaction-ended';
+    }
+  | {
+      /** The tasks running in the background, the whole list, at the end of a turn. */
+      readonly type: 'tasks';
+      /** Every task still running; none when the list is empty. */
+      readonly running: readonly BackgroundTask[];
+    }
+  | {
+      /** One background task finished: it leaves the list. */
+      readonly type: 'task-finished';
+      /** The task's id. */
+      readonly id: string;
+    }
+  | {
       /** The agent is ending, and says why. */
       readonly type: 'ending';
       /** Why. */
@@ -209,6 +256,27 @@ export interface Conversation {
 }
 
 /**
+ * What the agent's screen shows while the core waits for its first hook: a
+ * start-up dialog (named when the driver knows it), the ready input box, or
+ * nothing it can tell yet.
+ */
+export type ScreenReading =
+  | {
+      /** A dialog the person must answer in the terminal before the agent goes on. */
+      readonly shows: 'dialog';
+      /** Which, when the driver knows it; absent for a dialog it does not recognize. */
+      readonly dialog?: StartupDialog;
+    }
+  | {
+      /** The agent's input box, ready for a prompt. */
+      readonly shows: 'ready';
+    }
+  | {
+      /** Nothing the driver can tell: the agent still drawing, or a screen it does not know. */
+      readonly shows: 'nothing';
+    };
+
+/**
  * The driver of one coding agent, as the core sees it. The app builds one
  * with the driver's own entry (`claudeCode(…)`) and gives it to
  * `createCockpit`; it holds the app's options for that agent.
@@ -225,8 +293,40 @@ export interface Driver {
    * fails with.
    */
   readonly silentStartCause: string;
-  /** How far its sessions' commands reach the network without asking. */
-  readonly network: SessionNetwork;
+  /** The oldest and the newest versions of the agent its contract tests ran on. */
+  readonly testedRange: TestedRange;
+  /**
+   * Reads the version of the agent a launch with this environment would run.
+   *
+   * @param environment - The environment the launch starts from: its `PATH` finds the agent.
+   * @returns The version and how it stands against {@link testedRange}, or
+   * that no agent was found.
+   */
+  agentVersion(environment: Readonly<Record<string, string>>): Promise<AgentVersion>;
+  /**
+   * Checks a job's driver part against the driver's type, as its factory
+   * does: an app in JavaScript may write one by hand.
+   *
+   * @param part - The job's `driver`, unchecked.
+   * @returns Every issue found, each path from the part; none when it fits.
+   */
+  checkPart(part: unknown): readonly Issue[];
+  /**
+   * Tells how far the commands of a session reach the network without
+   * asking: the app's options, with a job's part laid over them.
+   *
+   * @param part - The job's driver part, checked; none for the app's own options.
+   * @returns The session's network.
+   */
+  networkOf(part?: DriverPart): SessionNetwork;
+  /**
+   * Reads the agent's screen, as the terminal shows it in text, while the
+   * core waits for the agent's first hook.
+   *
+   * @param text - The screen, line by line.
+   * @returns What it shows.
+   */
+  readScreen(text: string): ScreenReading;
   /**
    * Prepares a launch: writes the files it needs in the session's folder and
    * says how to run the agent.

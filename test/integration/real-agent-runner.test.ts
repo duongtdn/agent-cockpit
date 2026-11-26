@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
+import { DRIVER_DEFAULTS } from '../support/driver-defaults.ts';
 import { eventually } from '../support/eventually.ts';
 import { type FakeApi, startFakeApi } from '../support/fake-api/index.ts';
 import {
@@ -250,7 +251,7 @@ describe('the shim that runs the real agent in place of the driver’s claude', 
         .guarded({
           terminalKeys: [],
           silentStartCause: '',
-          network: { reach: 'confined' },
+          ...DRIVER_DEFAULTS,
           launch: async () => ({ command: 'claude', args, environment }),
           readHook: () => ({ events: [] }),
           canResume: async () => false,

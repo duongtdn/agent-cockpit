@@ -9,6 +9,8 @@ export const AGENT_COMMAND = 'claude';
 export interface ArgumentParts {
   /** The conversation's id, which the core minted. */
   readonly conversationId: string;
+  /** Whether the conversation exists and is resumed, rather than started under the id. */
+  readonly resume?: boolean | undefined;
   /** The session's settings file. */
   readonly settingsFile: string;
   /** The mode the session runs in. */
@@ -18,7 +20,8 @@ export interface ArgumentParts {
 }
 
 /**
- * Gives the arguments of a launch of a new conversation. The prompt comes
+ * Gives the arguments of a launch: a new conversation under the id, or the
+ * one of the id resumed. The prompt comes
  * last, after `--`: an option that takes several values would otherwise
  * read it as one of them.
  *
@@ -27,7 +30,7 @@ export interface ArgumentParts {
  */
 export function agentArguments(parts: ArgumentParts): string[] {
   return [
-    '--session-id',
+    parts.resume === true ? '--resume' : '--session-id',
     parts.conversationId,
     '--settings',
     parts.settingsFile,

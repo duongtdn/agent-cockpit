@@ -107,6 +107,16 @@ const OPTION_NAMES: readonly string[] = [
 
 const isFunction = (value: unknown): boolean => typeof value === 'function';
 
+const DRIVER_FUNCTIONS: readonly string[] = [
+  'launch',
+  'readHook',
+  'canResume',
+  'agentVersion',
+  'checkPart',
+  'networkOf',
+  'readScreen',
+];
+
 const schemaLike = z.custom<z.ZodType>(
   (value) =>
     typeof value === 'object' &&
@@ -128,15 +138,10 @@ const driver = z.custom<Driver>(
   (value) =>
     typeof value === 'object' &&
     value !== null &&
-    ['launch', 'readHook', 'canResume'].every((name) =>
-      isFunction((value as Record<string, unknown>)[name]),
-    ) &&
-    Array.isArray((value as { terminalKeys?: unknown }).terminalKeys) &&
-    networkReaches.includes((value as { network?: { reach?: unknown } }).network?.reach),
+    DRIVER_FUNCTIONS.every((name) => isFunction((value as Record<string, unknown>)[name])) &&
+    Array.isArray((value as { terminalKeys?: unknown }).terminalKeys),
   'Expected a driver, as claudeCode(…) gives one.',
 );
-
-const networkReaches: readonly unknown[] = ['confined', 'open'];
 
 const port = z.int().min(1).max(65535);
 
@@ -211,7 +216,7 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
  * that works from afar. The app accepts it in the driver's options.
  */
 function openNetworkIssues({ authorize, driver }: CockpitOptions): Issue[] {
-  const { network } = driver;
+  const network = driver.networkOf();
   if (authorize === undefined || network.reach === 'confined' || network.accepted) return [];
   return [
     {

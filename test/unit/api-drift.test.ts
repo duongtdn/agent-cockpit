@@ -52,6 +52,7 @@ const fieldsByCode: {
   unobservable: { key: 'required', cause: 'required' },
   'session-cap-reached': { cap: 'required', live: 'required' },
   'no-app-port': {},
+  'sandbox-unavailable': { cause: 'required' },
   'unknown-id': { id: 'required' },
   'already-settled': { id: 'required', by: 'required' },
   'terminal-only': { id: 'required' },

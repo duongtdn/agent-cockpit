@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { checkOptions } from '../../src/claude-code/options.ts';
+import { claudeCode } from '../../src/claude-code/index.ts';
+import { checkJobPart, checkOptions } from '../../src/claude-code/options.ts';
 import { CockpitError, isCockpitError } from '../../src/shared/cockpit-error.ts';
 
 /** The issues `checkOptions` refuses the options with; none when it takes them. */
@@ -85,5 +86,71 @@ describe("the Claude Code driver's options", () => {
       { path: ['model'], message: expect.any(String) },
       { path: ['pluginDir'], message: expect.any(String) },
     ]);
+  });
+});
+
+describe("a job's driver part for Claude Code", () => {
+  it('takes a permission mode, rules and a model, each left out or given', () => {
+    const part = {
+      permissionMode: 'acceptEdits',
+      permissions: { deny: ['Bash(git push:*)'] },
+      model: 'sonnet',
+    };
+
+    expect(checkJobPart(part)).toEqual([]);
+    expect(checkJobPart({})).toEqual([]);
+  });
+
+  it('refuses what a job may not set, saying where: the app keeps the plugin, the environment, the acceptance', () => {
+    expect(
+      checkJobPart({
+        permissionMode: 'yolo',
+        permissions: { allow: 'Read' },
+        model: '',
+        pluginDir: './plugin',
+        acceptOpenNetwork: true,
+      }),
+    ).toEqual([
+      { path: ['pluginDir'], message: expect.stringContaining('model') },
+      { path: ['acceptOpenNetwork'], message: expect.any(String) },
+      { path: ['permissionMode'], message: expect.any(String) },
+      { path: ['permissions', 'allow'], message: expect.any(String) },
+      { path: ['model'], message: expect.any(String) },
+    ]);
+  });
+
+  it.each([
+    ['a text', 'acceptEdits'],
+    ['null', null],
+    ['a list', []],
+    ['nothing', undefined],
+  ])('refuses %s, which is no part', (_, part) => {
+    expect(checkJobPart(part)).toEqual([{ path: [], message: expect.stringContaining('object') }]);
+  });
+
+  it('refuses a model that is no text', () => {
+    expect(checkJobPart({ model: 3 })).toEqual([{ path: ['model'], message: expect.any(String) }]);
+  });
+
+  it('is checked by the driver as by its factory', () => {
+    expect(claudeCode().checkPart({ model: 3 })).toEqual(checkJobPart({ model: 3 }));
+  });
+
+  it('is built by claudeCode.job, as given, once it fits', () => {
+    const part = { permissionMode: 'plan', permissions: { ask: ['Edit'] }, model: 'opus' } as const;
+
+    expect(claudeCode.job(part)).toEqual(part);
+  });
+
+  it('is refused by claudeCode.job as invalid-options, with every issue, when it does not fit', () => {
+    let thrown: unknown;
+    try {
+      claudeCode.job({ permissionMode: 'yolo' } as never);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(isCockpitError(thrown, 'invalid-options')).toBe(true);
+    expect(thrown).toMatchObject({ issues: [{ path: ['permissionMode'] }] });
   });
 });

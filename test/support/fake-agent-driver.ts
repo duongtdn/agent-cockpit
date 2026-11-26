@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Driver, DriverEvent, HookRequest } from '../../src/server/driver.ts';
 import type { HookAccess } from '../../src/server/sessions/sessions.ts';
+import { DRIVER_DEFAULTS } from './driver-defaults.ts';
 import { fakeAgentCommand } from './fake-agent/launching.ts';
 import { transcriptPathFor } from './fake-agent/transcript.ts';
 
@@ -26,7 +27,7 @@ export function fakeAgentDriver(configFolder: string): Driver {
   return {
     terminalKeys: [],
     silentStartCause: 'The fake agent sent no SessionStart.',
-    network: { reach: 'confined' },
+    ...DRIVER_DEFAULTS,
     async launch(launch) {
       const settingsFile = join(launch.files, 'settings.json');
       writeFileSync(settingsFile, JSON.stringify(settingsFor(launch.hooks)), { mode: 0o600 });

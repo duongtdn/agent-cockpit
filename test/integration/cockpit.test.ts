@@ -18,6 +18,7 @@ import Fastify from 'fastify';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { claudeCode } from '../../src/claude-code/index.ts';
+import { TESTED_RANGE } from '../../src/claude-code/tested-range.ts';
 import { cockpitFastify } from '../../src/fastify/index.ts';
 import {
   type Cockpit,
@@ -750,6 +751,31 @@ describe('a failure the browser is not told of', () => {
     expect(failures).toEqual([
       expect.objectContaining({ code: 'internal-failure', where: 'handler', cause: broken }),
     ]);
+  });
+});
+
+describe("the cockpit's status of the agent", () => {
+  it("gives the driver's tested range, no version read yet counted as untested", async () => {
+    const { cockpit } = await newCockpit();
+
+    expect(cockpit.status()).toEqual({ tested: false, testedRange: TESTED_RANGE });
+  });
+
+  it('takes a handler of untested versions, removed by the function it gives', async () => {
+    const { cockpit } = await newCockpit();
+
+    const stop = cockpit.on('untested-version', () => {});
+
+    expect(stop).toBeTypeOf('function');
+    expect(stop()).toBeUndefined();
+  });
+
+  it('refuses a handler of an event it does not have', async () => {
+    const { cockpit } = await newCockpit();
+
+    expect(() =>
+      (cockpit.on as (event: string, handler: () => void) => void)('bogus', () => {}),
+    ).toThrow(TypeError);
   });
 });
 

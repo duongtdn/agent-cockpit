@@ -15,6 +15,7 @@ describe('the wire’s answer to a failure', () => {
     [new CockpitError('wrong-state', 'Busy.', { key: 'k', state: 'busy' }), 409],
     [new CockpitError('unobservable', 'Silent.', { key: 'k', cause: 'c' }), 502],
     [new CockpitError('agent-not-found', 'None.', { command: 'claude' }), 503],
+    [new CockpitError('sandbox-unavailable', 'No sandbox.', { cause: 'No bwrap.' }), 503],
   ])('carries %s with its status and its JSON, nothing else', (error, status) => {
     const answer = answerOfFailure(error);
 

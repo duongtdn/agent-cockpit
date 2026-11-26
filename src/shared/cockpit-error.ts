@@ -133,6 +133,15 @@ export interface CockpitErrorFields {
    * server listens.
    */
   'no-app-port': Record<never, never>;
+  /**
+   * A launch was refused: the app asked for its sessions to run in the
+   * agent's sandbox, and the sandbox cannot run on this machine. The
+   * session is never started unsandboxed instead.
+   */
+  'sandbox-unavailable': {
+    /** What the driver could tell of the reason, in its own words: what is missing, and how to get it. */
+    cause: string;
+  };
   /** No ask or channel request has that id. */
   'unknown-id': {
     /** The id asked for. */
@@ -245,7 +254,11 @@ type CodeWithCauseField = {
 }[CockpitErrorCode];
 
 /** On these codes `cause` is a field like the others, not the error that lies under. */
-const CAUSE_IS_A_FIELD: Record<CodeWithCauseField, true> = { unobservable: true, refused: true };
+const CAUSE_IS_A_FIELD: Record<CodeWithCauseField, true> = {
+  unobservable: true,
+  refused: true,
+  'sandbox-unavailable': true,
+};
 
 class CodedError<C extends CockpitErrorCode> extends Error {
   /** Always `'CockpitError'`, whatever the code. */

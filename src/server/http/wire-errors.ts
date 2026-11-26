@@ -22,7 +22,7 @@ import type { ErrorResponse } from '../../shared/wire.js';
  * - 502: the agent, or the model's API, failed to do it (the one-shot
  *   call's failures included);
  * - 503: the machine cannot run it now (no agent, the cap reached, no
- *   port of the app's known);
+ *   port of the app's known, no sandbox where the app asked for one);
  * - 504: the agent did not confirm it in time;
  * - 500: a code no request can raise (creating the cockpit, the
  *   client's own), should one ever reach the wire.
@@ -48,6 +48,7 @@ export const STATUS_OF_CODE: Readonly<Record<CockpitErrorCode, number>> = {
   unobservable: 502,
   'session-cap-reached': 503,
   'no-app-port': 503,
+  'sandbox-unavailable': 503,
   'unknown-id': 404,
   'already-settled': 409,
   'terminal-only': 409,

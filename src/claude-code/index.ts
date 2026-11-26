@@ -6,4 +6,10 @@
  */
 
 export { claudeCode } from './claude-code.js';
-export type { ClaudeCodeOptions, PermissionMode, PermissionRules } from './options.js';
+export type {
+  ClaudeCodeJobPart,
+  ClaudeCodeOptions,
+  ClaudeCodeSandbox,
+  PermissionMode,
+  PermissionRules,
+} from './options.js';
