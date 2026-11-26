@@ -1,9 +1,15 @@
 import { join } from 'node:path';
-import type { Driver, HookAddress, Launch, LaunchCommand } from '../server/driver.js';
+import {
+  type Driver,
+  HOOKS_PATH,
+  type HookAddress,
+  type Launch,
+  type LaunchCommand,
+} from '../server/driver.js';
 import { writePrivateFile } from '../server/state/private-files.js';
 import type { KeyRule } from '../shared/wire.js';
 import { agentConfigFolder, keepsConversation } from './conversations.js';
-import { HOOK_PATH, readHook } from './hook-payloads.js';
+import { readHook } from './hook-payloads.js';
 import {
   AGENT_COMMAND,
   agentArguments,
@@ -84,5 +90,5 @@ async function launchSession(launch: Launch, options: CheckedOptions): Promise<L
 }
 
 function hookUrl(base: string): string {
-  return `${base.replace(/\/+$/, '')}${HOOK_PATH}`;
+  return `${base.replace(/\/+$/, '')}${HOOKS_PATH}`;
 }

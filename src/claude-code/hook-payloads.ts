@@ -1,11 +1,9 @@
-import type { DriverEvent, HookOutcome, HookRequest } from '../server/driver.js';
-
-/**
- * The path, under the session's hook address, that every hook of the
- * driver's posts to, the `SessionStart` command hook's report included. One
- * path: the payload names its event (`hook_event_name`).
- */
-export const HOOK_PATH = '/hooks';
+import {
+  type DriverEvent,
+  HOOKS_PATH,
+  type HookOutcome,
+  type HookRequest,
+} from '../server/driver.js';
 
 /** What tells nothing. */
 const NOTHING: HookOutcome = { events: [] };
@@ -31,7 +29,7 @@ const EXIT_BY_ITSELF = 'prompt_input_exit';
  */
 export function readHook(request: HookRequest): HookOutcome {
   const { path, body } = request;
-  if (path !== HOOK_PATH || !isRecord(body) || body.agent_id !== undefined) return NOTHING;
+  if (path !== HOOKS_PATH || !isRecord(body) || body.agent_id !== undefined) return NOTHING;
   return { events: eventsOf(body) };
 }
 

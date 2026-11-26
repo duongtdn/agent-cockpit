@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import type { HookRequest } from '../driver.js';
+import { HOOKS_PATH, type HookRequest } from '../driver.js';
 import type { HookAccess } from '../sessions/sessions.js';
 import { writePrivateFile } from '../state/private-files.js';
 import { createHookTokens, type HookTokens } from './hook-tokens.js';
@@ -11,9 +11,6 @@ const LOOPBACK = '127.0.0.1';
 
 /** The state folder's file that remembers the listener's port. */
 const PORT_FILE = 'agent-port';
-
-/** The one path the agent's hooks are posted to. */
-const HOOKS_PATH = '/hooks';
 
 /**
  * The largest hook body taken. A hook carries a tool's input or output,

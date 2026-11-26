@@ -15,6 +15,13 @@
 import type { EndReason } from '../shared/session.js';
 import type { KeyRule } from '../shared/wire.js';
 
+/**
+ * The path, under a session's {@link HookAddress.url}, that the listener
+ * takes the agent's hooks on, and the driver posts every hook to: the
+ * payload names its event. One constant, so that the two never disagree.
+ */
+export const HOOKS_PATH = '/hooks';
+
 /** Where the agent reports to: the cockpit's agent-facing listener, for one session. */
 export interface HookAddress {
   /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { HOOK_PATH, readHook } from '../../src/claude-code/hook-payloads.ts';
+import { readHook } from '../../src/claude-code/hook-payloads.ts';
+import { HOOKS_PATH } from '../../src/server/driver.ts';
 import {
   afterPrompt,
   type HookEvent,
@@ -23,7 +24,7 @@ const session = {
 };
 const touch = { id: 'toolu_01', name: 'Bash', input: { command: 'touch a.txt' } };
 
-function eventsOf(hookEvent: HookEvent, path = HOOK_PATH) {
+function eventsOf(hookEvent: HookEvent, path = HOOKS_PATH) {
   return readHook({ key: 'chapter-1', path, body: payloadOf(session, hookEvent) }).events;
 }
 
@@ -43,7 +44,7 @@ describe("what Claude Code's hooks tell the core", () => {
     expect(
       readHook({
         key: 'chapter-1',
-        path: HOOK_PATH,
+        path: HOOKS_PATH,
         body: {
           ...payloadOf(session, sessionStart({ source: 'startup', model: 'm' })),
           source: 'compact',
@@ -68,7 +69,7 @@ describe("what Claude Code's hooks tell the core", () => {
       agent_type: 'general-purpose',
     };
 
-    expect(readHook({ key: 'chapter-1', path: HOOK_PATH, body }).events).toEqual([]);
+    expect(readHook({ key: 'chapter-1', path: HOOKS_PATH, body }).events).toEqual([]);
   });
 
   it('Stop: the turn ended, with its last message', () => {
@@ -80,7 +81,7 @@ describe("what Claude Code's hooks tell the core", () => {
   it('Stop with no last message: the turn ended, with none', () => {
     const body = { ...payloadOf(session, stop('')), last_assistant_message: undefined };
 
-    expect(readHook({ key: 'chapter-1', path: HOOK_PATH, body }).events).toEqual([
+    expect(readHook({ key: 'chapter-1', path: HOOKS_PATH, body }).events).toEqual([
       { type: 'turn-ended' },
     ]);
   });
@@ -102,7 +103,7 @@ describe("what Claude Code's hooks tell the core", () => {
 
   it('a request on another path, or with a body that is no payload, tells nothing', () => {
     expect(eventsOf(userPromptSubmit('Hi'), '/mcp')).toEqual([]);
-    expect(readHook({ key: 'chapter-1', path: HOOK_PATH, body: 'Stop' }).events).toEqual([]);
-    expect(readHook({ key: 'chapter-1', path: HOOK_PATH, body: null }).events).toEqual([]);
+    expect(readHook({ key: 'chapter-1', path: HOOKS_PATH, body: 'Stop' }).events).toEqual([]);
+    expect(readHook({ key: 'chapter-1', path: HOOKS_PATH, body: null }).events).toEqual([]);
   });
 });
