@@ -36,6 +36,7 @@ import { openAppToken } from './state/app-token.js';
 import { takeAppLock } from './state/lock.js';
 import { UntrustedStateError } from './state/own-files.js';
 import { cockpitStateRoot, openStateFolder, stateFolderPath } from './state/state-folder.js';
+import { createTerminalHolds } from './terminal-hold.js';
 
 /** The fragment's key that carries the app's token in the page's link. */
 const LINK_KEY = 'cockpit';
@@ -339,6 +340,8 @@ async function openCockpit(
         refuseUnfitPart(checked, job);
         return sessions.run({ ...launch, directory: checked.directory });
       });
+    // The core holds a key while it types a prompt; the pty bridge's terminals join it.
+    const holds = createTerminalHolds();
     const handler = createHandler({
       tokenMatches: appToken.matches,
       run,
@@ -346,6 +349,7 @@ async function openCockpit(
       terminals: {
         attach: (key, size) => sessions.attach(key, size),
         isLive: (key) => host.isLive(key),
+        joinHold: (key, terminal) => holds.join(key, terminal),
       },
       keyRules: checked.driver.terminalKeys,
       ...(checked.authorize === undefined ? {} : { authorize: checked.authorize }),

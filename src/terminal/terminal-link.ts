@@ -5,11 +5,16 @@ import {
   type KeyRule,
   SESSION_ENDED_CLOSE_CODE,
   type TerminalClientMessage,
+  type TerminalServerMessage,
   terminalPath,
 } from '../shared/wire.js';
 
-/** Where the terminal's connection to its session stands. */
-export type TerminalStatus = 'connecting' | 'open' | 'closed' | 'ended';
+/**
+ * Where the terminal's connection to its session stands: `held` is open,
+ * while the cockpit types a prompt into the session and the server keeps
+ * the person's keys, to pass them on after.
+ */
+export type TerminalStatus = 'connecting' | 'open' | 'held' | 'closed' | 'ended';
 
 /** A terminal's size, in character cells. */
 export interface CellSize {
@@ -116,11 +121,16 @@ export function linkTerminal(
         screen.write(new Uint8Array(data));
         return;
       }
-      const sent = keyRulesOf(data);
-      if (sent === undefined) return;
-      // The server sends the rules once attached: the session was reached.
-      rules = sent;
-      failures = 0;
+      const message = serverMessageOf(data);
+      if (message?.type === 'keys') {
+        // The server sends the rules once attached: the session was reached.
+        rules = message.rules;
+        failures = 0;
+      } else if (message?.type === 'held') {
+        screen.status('held');
+      } else if (message?.type === 'released') {
+        screen.status('open');
+      }
     });
     current.addEventListener('close', ({ code }: CloseEvent) => {
       if (!isCurrent()) return;
@@ -171,10 +181,10 @@ function isTerminalOff(error: CockpitError): boolean {
 }
 
 /**
- * The rules a `TerminalKeysMessage` carries; `undefined` for anything else,
- * which is skipped: client and server ship as one version.
+ * The server's message a text carries; `undefined` for anything else, which
+ * is skipped: client and server ship as one version.
  */
-function keyRulesOf(data: unknown): readonly KeyRule[] | undefined {
+function serverMessageOf(data: unknown): TerminalServerMessage | undefined {
   if (typeof data !== 'string') return undefined;
   let message: unknown;
   try {
@@ -184,5 +194,6 @@ function keyRulesOf(data: unknown): readonly KeyRule[] | undefined {
   }
   if (typeof message !== 'object' || message === null) return undefined;
   const { type, rules } = message as { type?: unknown; rules?: unknown };
-  return type === 'keys' && Array.isArray(rules) ? rules : undefined;
+  if (type === 'keys') return Array.isArray(rules) ? { type, rules } : undefined;
+  return type === 'held' || type === 'released' ? { type } : undefined;
 }

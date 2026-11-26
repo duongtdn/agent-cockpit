@@ -308,11 +308,34 @@ export interface TerminalKeysMessage {
 }
 
 /**
+ * Sent on a terminal's WebSocket, as text, when the cockpit starts typing a
+ * prompt into the session, or when the terminal attaches while it does: the
+ * person's keys no longer reach the session; the server keeps them.
+ */
+export interface TerminalHeldMessage {
+  /** Its kind. */
+  readonly type: 'held';
+}
+
+/**
+ * Sent on a terminal's WebSocket, as text, once the prompt's send is over
+ * and every key kept meanwhile has reached the session, in order: the
+ * person's keys pass again.
+ */
+export interface TerminalReleasedMessage {
+  /** Its kind. */
+  readonly type: 'released';
+}
+
+/**
  * What the server sends on a terminal's WebSocket as text. What the session
  * draws comes as binary messages, its UTF-8 bytes, so that output is never
  * mistaken for a message.
  */
-export type TerminalServerMessage = TerminalKeysMessage;
+export type TerminalServerMessage =
+  | TerminalKeysMessage
+  | TerminalHeldMessage
+  | TerminalReleasedMessage;
 
 /**
  * The terminal's size, in character cells. The browser sends it first, as

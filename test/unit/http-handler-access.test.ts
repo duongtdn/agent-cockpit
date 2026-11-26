@@ -132,6 +132,7 @@ async function serve(
         return attachment;
       },
       isLive: async () => true,
+      joinHold: () => () => {},
     },
     keyRules: [],
     ...(authorize === undefined

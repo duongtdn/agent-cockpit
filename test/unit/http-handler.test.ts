@@ -7,6 +7,7 @@ import { CockpitError } from '../../src/shared/cockpit-error.ts';
 import type { RunResult, Session } from '../../src/shared/session.ts';
 import { SESSION_ENDED_CLOSE_CODE } from '../../src/shared/wire.ts';
 import { eventually } from '../support/eventually.ts';
+import { FakeAttachment } from '../support/fake-attachment.ts';
 import {
   baseUrlOf,
   call,
@@ -19,38 +20,6 @@ import {
 const TOKEN = 'the-apps-token';
 const keyRules = [{ key: 'Enter', modifiers: ['shift'] as const, send: '\x1b\r' }];
 const idle: Session = { key: 'explain-a', state: 'idle', since: '2026-11-26T00:00:00.000Z' };
-
-/** A terminal attached to a session, as the host would give it, that records what it is told. */
-class FakeAttachment implements Attachment {
-  readonly written: string[] = [];
-  readonly sizes: TerminalSize[] = [];
-  detached = false;
-  #data = new Set<(data: string) => void>();
-  #end = new Set<() => void>();
-  onData(listener: (data: string) => void) {
-    this.#data.add(listener);
-    return () => void this.#data.delete(listener);
-  }
-  onEnd(listener: () => void) {
-    this.#end.add(listener);
-    return () => void this.#end.delete(listener);
-  }
-  write(data: string) {
-    this.written.push(data);
-  }
-  resize(size: TerminalSize) {
-    this.sizes.push(size);
-  }
-  async detach() {
-    this.detached = true;
-  }
-  draw(data: string) {
-    for (const listener of this.#data) listener(data);
-  }
-  end() {
-    for (const listener of this.#end) listener();
-  }
-}
 
 let server: Server;
 let handler: Handler;
@@ -91,6 +60,7 @@ beforeEach(async () => {
         return attachOutcome();
       },
       isLive: async () => live,
+      joinHold: () => () => {},
     },
     keyRules,
     origins: [],

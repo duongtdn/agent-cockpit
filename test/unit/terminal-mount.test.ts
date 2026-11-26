@@ -405,6 +405,39 @@ describe('the status', () => {
 
     expect(statuses).toEqual(['connecting', 'ended']);
   });
+
+  it('is held while the cockpit types a prompt, still sending what the person types, then open again', () => {
+    const { socket, xterm } = mountAttached();
+
+    socket.deliver(JSON.stringify({ type: 'held' }));
+    xterm.type('ok');
+    socket.deliver(JSON.stringify({ type: 'released' }));
+
+    expect(statuses).toEqual(['connecting', 'open', 'held', 'open']);
+    expect(socket.sent.slice(1).map(text)).toEqual(['ok']);
+  });
+
+  it('is closed, then held again, when the connection drops while held and the send goes on', async () => {
+    const { socket } = mountAttached();
+    socket.deliver(JSON.stringify({ type: 'held' }));
+
+    socket.drop();
+    await vi.advanceTimersByTimeAsync(500);
+    const again = FakeWebSocket.last();
+    again.accept();
+    again.deliver(claudeCodeKeys);
+    again.deliver(JSON.stringify({ type: 'held' }));
+
+    expect(statuses).toEqual([
+      'connecting',
+      'open',
+      'held',
+      'closed',
+      'connecting',
+      'open',
+      'held',
+    ]);
+  });
 });
 
 describe('reconnecting', () => {

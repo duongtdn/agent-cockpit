@@ -2,10 +2,11 @@ import type { RawData, WebSocket } from 'ws';
 import {
   type KeyRule,
   SESSION_ENDED_CLOSE_CODE,
-  type TerminalKeysMessage,
   type TerminalResizeMessage,
+  type TerminalServerMessage,
 } from '../../shared/wire.js';
 import type { Attachment, TerminalSize } from '../session-host/session-host.js';
+import type { HeldTerminal } from '../terminal-hold.js';
 
 /** What the bridge reaches a session through. */
 export interface BridgedSessions {
@@ -17,6 +18,13 @@ export interface BridgedSessions {
   attach(key: string, size: TerminalSize): Promise<Attachment | undefined>;
   /** Tells whether the session still lives on the host. */
   isLive(key: string): Promise<boolean>;
+  /**
+   * Joins an attached terminal to its session's key hold: the
+   * `TerminalHolds`' `join`.
+   *
+   * @returns Its removal.
+   */
+  joinHold(key: string, terminal: HeldTerminal): () => void;
 }
 
 /** The close code of a socket whose first message was not the terminal's size. */
@@ -32,11 +40,32 @@ const SERVER_ERROR = 1011;
 const MAX_CELLS = 1000;
 
 /**
+ * The longest wait between two kept keys as they are written to the
+ * session, in milliseconds: written at once, the person's keys would come
+ * as one burst, which the agent can take for a paste; the driver's own
+ * typing is read as typing at this pace.
+ */
+const KEPT_KEYS_GAP_MS = 50;
+
+/**
+ * The most a terminal's kept keys may weigh, in UTF-8 bytes: a person types
+ * far less during a send, even pasting; a terminal that sends more is
+ * closed rather than held in memory.
+ */
+const MAX_KEPT_BYTES = 1024 * 1024;
+
+/**
  * Bridges a terminal's WebSocket to its session (the pty bridge): waits for
  * the terminal's size, its first message, attaches the session at that
  * size, sends the driver's key rules, then passes what the session draws
  * out as binary messages and the person's keys in, and applies each later
- * size. When the session ends, the socket closes with
+ * size. While the cockpit types a prompt into the session (the session's
+ * key held), the person's keys are kept, the browser told `held`; once
+ * released, they reach the session in the order sent, each as it was sent,
+ * at most {@link KEPT_KEYS_GAP_MS} apart, then the browser is told
+ * `released`. Kept keys over {@link MAX_KEPT_BYTES} close the socket
+ * (1008); a socket that closes drops its kept keys. When the session ends,
+ * the socket closes with
  * {@link SESSION_ENDED_CLOSE_CODE}, and so it does at once when no session
  * of the key lives; when the socket closes, the terminal detaches and the
  * session goes on.
@@ -56,15 +85,21 @@ export function bridgeTerminal(
 ): Promise<void> {
   let attachment: Attachment | undefined;
   let attaching: Promise<void> | undefined;
+  let gate: KeyGate | undefined;
+  let leaveHold = (): void => {};
   const early: RawData[] = [];
 
   const take = (data: RawData, isBinary: boolean): void => {
     if (isBinary) {
-      attachment?.write(textOf(data));
+      gate?.pass(textOf(data));
       return;
     }
     const size = sizeOf(data);
     if (size !== undefined) attachment?.resize(size);
+  };
+
+  const tell = (message: TerminalServerMessage): void => {
+    if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
   };
 
   const attach = async (size: TerminalSize): Promise<void> => {
@@ -81,11 +116,16 @@ export function bridgeTerminal(
     }
     attachment = attached;
     if (socket.readyState !== socket.OPEN) return;
-    const keys: TerminalKeysMessage = { type: 'keys', rules: keyRules };
-    socket.send(JSON.stringify(keys));
+    tell({ type: 'keys', rules: keyRules });
     attached.onData((data) => socket.send(Buffer.from(data, 'utf8')));
     attached.onEnd(() => void closeOnEnd(socket, key, sessions));
-    for (const data of early.splice(0)) attachment.write(textOf(data));
+    gate = keyGate(
+      (text) => attached.write(text),
+      tell,
+      () => socket.close(POLICY_VIOLATION, 'Too many keys sent while the session was held.'),
+    );
+    leaveHold = sessions.joinHold(key, gate);
+    for (const data of early.splice(0)) gate.pass(textOf(data));
   };
 
   socket.on('message', (data, isBinary) => {
@@ -106,6 +146,8 @@ export function bridgeTerminal(
 
   return new Promise((resolve) => {
     socket.once('close', () => {
+      leaveHold();
+      gate?.drop();
       void (async () => {
         await attaching;
         await attachment?.detach();
@@ -113,6 +155,88 @@ export function bridgeTerminal(
       })();
     });
   });
+}
+
+/** A terminal's keys on their way to the session, kept while its key is held. */
+interface KeyGate extends HeldTerminal {
+  /** Passes the person's keys on, or keeps them while held or while kept keys are still written. */
+  pass(text: string): void;
+  /** Drops the kept keys: the terminal is gone. */
+  drop(): void;
+}
+
+/**
+ * Makes a terminal's key gate.
+ *
+ * @param write - Writes keys to the session.
+ * @param tell - Sends the browser a message.
+ * @param overflow - Called when the kept keys outgrow {@link MAX_KEPT_BYTES}.
+ */
+function keyGate(
+  write: (text: string) => void,
+  tell: (message: TerminalServerMessage) => void,
+  overflow: () => void,
+): KeyGate {
+  const kept: { text: string; at: number }[] = [];
+  let keptBytes = 0;
+  let held = false;
+  // Outlasts the hold until the keys kept are written: a key typed in
+  // between must not overtake them.
+  let keeping = false;
+  let pending: ReturnType<typeof setTimeout> | undefined;
+
+  const stopKeeping = (): void => {
+    keeping = false;
+    tell({ type: 'released' });
+  };
+
+  const writeNext = (): void => {
+    pending = undefined;
+    if (held) return;
+    const next = kept.shift();
+    if (next !== undefined) {
+      keptBytes -= Buffer.byteLength(next.text);
+      write(next.text);
+    }
+    const following = kept[0];
+    if (next === undefined || following === undefined) {
+      stopKeeping();
+      return;
+    }
+    pending = setTimeout(writeNext, Math.min(following.at - next.at, KEPT_KEYS_GAP_MS));
+  };
+
+  return {
+    pass(text) {
+      if (!keeping) {
+        write(text);
+        return;
+      }
+      const bytes = Buffer.byteLength(text);
+      if (keptBytes + bytes > MAX_KEPT_BYTES) {
+        overflow();
+        return;
+      }
+      keptBytes += bytes;
+      kept.push({ text, at: Date.now() });
+    },
+    hold() {
+      held = true;
+      clearTimeout(pending);
+      pending = undefined;
+      if (keeping) return;
+      keeping = true;
+      tell({ type: 'held' });
+    },
+    release() {
+      held = false;
+      if (pending === undefined) writeNext();
+    },
+    drop() {
+      clearTimeout(pending);
+      kept.length = 0;
+    },
+  };
 }
 
 /** Closes the socket of an attachment that ended without being detached. */

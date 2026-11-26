@@ -30,7 +30,10 @@ export interface MountTerminalOptions {
 /** A terminal mounted in the app's element. */
 export interface MountedTerminal {
   /**
-   * Follows the connection's status: `connecting`, `open`, `closed` (the
+   * Follows the connection's status: `connecting`, `open`, `held` (open,
+   * while the cockpit types a prompt into the session: what the person
+   * types is kept by the server and reaches the session after the send, in
+   * order; then `open` again), `closed` (the
    * connection dropped or was refused; the terminal reconnects by itself,
    * unless the terminal's switch refused it: then it stays `closed`) or
    * `ended` (the session is gone: nothing to attach to). The handler
@@ -82,6 +85,7 @@ export interface MountedTerminal {
  * page's tab gives a new token; once the session has ended it stays
  * `ended`. Why it could not connect goes to `on('error')`; refused by the
  * terminal's switch (`terminal-off`), it stays `closed`.
+ * While the cockpit types a prompt into the session it is `held`.
  *
  * Keys: the session's driver sends its key rules when the terminal attaches
  * (for Claude Code, Shift+Enter types a new line rather than submitting).

@@ -239,6 +239,13 @@ Nothing is published yet.
   field, argsSoFar?)` and `run`'s `{ fresh }`; the client calls them
   (`/send`, `/open`, `/jobs`, `/options`), which the handler does not
   serve yet.
+- `TerminalStatus` gains `held`: while the cockpit types a prompt into a
+  session, the page's terminals attached to it keep sending what the
+  person types, and the server keeps it, then passes it to the session
+  once the send is over, in order, each key as it was sent (at most 50 ms
+  apart), and the status is `open` again. A terminal that keeps over a
+  megabyte of keys is closed with 1008. A person's own `tmux attach` is not
+  held.
 
 ### Not yet: refused or missing in this version
 

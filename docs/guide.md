@@ -130,7 +130,7 @@ const result = await client.run('explain', { file: 'README.md' }); // { action: 
 const terminal = mountTerminal(document.getElementById('terminal'), 'explain-readme-md', {
   baseUrl: '/cockpit',
 });
-terminal.on('status', (status) => showStatus(status)); // 'connecting' | 'open' | 'closed' | 'ended'
+terminal.on('status', (status) => showStatus(status)); // 'connecting' | 'open' | 'held' | 'closed' | 'ended'
 ```
 
 With a bundler, import the entries by their names, and the style sheet from
@@ -374,6 +374,17 @@ session has ended there is nothing to attach to: the status is `ended`.
 `terminal.on('error', handler)` tells why it could not connect (`no-token`,
 `refused` with its `cause`, `unreachable`); refused by the app's `terminal`
 switch (`terminal-off`), it stays `closed` and stops trying.
+
+While the cockpit types a prompt into a session (a send), every page
+terminal attached to it is `held`: what the person types is kept by the
+server, not typed into the app's prompt, and reaches the session once the
+send is over, however it ended — in the order typed, each key as it was
+sent, so that the agent reads typing, not a paste; the status is then
+`open` again. A long prompt takes a while to type (about 25 seconds for
+100,000 characters), so a page shows the status. Resizing still applies.
+A terminal closed during the send drops what it kept, and one that keeps
+over a megabyte of keys is closed (it reconnects, held). A person's own
+`tmux attach` to the session is not held.
 
 ## The Claude Code driver
 
