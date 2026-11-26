@@ -42,33 +42,36 @@ export async function pressOnDialog(
   taken: (screen: string | undefined) => boolean,
 ): Promise<void> {
   for (let presses = 1; presses <= DIALOG_KEY_PRESSES; presses++) {
-    const t0 = Date.now();
-    const fs = await import('node:fs');
-    fs.mkdirSync('/tmp/cockpit-diagnostics', { recursive: true });
-    fs.appendFileSync(
-      '/tmp/cockpit-diagnostics/presses.log',
-      `${t0} ${session.name} ${key} press#${presses}\n`,
-    );
-    await session.press(key).catch((error: unknown) => {
-      fs.appendFileSync(
-        '/tmp/cockpit-diagnostics/presses.log',
-        `${Date.now()} ${session.name} ${key} press#${presses} FAILED ${String(error)}\n`,
-      );
-      throw error;
-    });
+    if (await pressedOrGone(session, key, taken)) return;
     const deadline = Date.now() + DIALOG_KEY_PATIENCE_MS;
     while (Date.now() < deadline) {
-      if (taken(await screenOrNothing(session))) {
-        (await import('node:fs')).appendFileSync(
-          '/tmp/cockpit-diagnostics/presses.log',
-          `${Date.now()} ${session.name} ${key} press#${presses} taken after ${Date.now() - t0}ms\n`,
-        );
-        return;
-      }
+      if (taken(await screenOrNothing(session))) return;
       await pause(SCREEN_POLL_MS);
     }
   }
   throw new Error(`The dialog did not take ${key} in ${DIALOG_KEY_PRESSES} presses.`);
+}
+
+/**
+ * Presses a key, and tells whether the session went with the keys before:
+ * an agent that took a key may act on it slower than a press is repeated,
+ * and leave as that press reaches its terminal.
+ *
+ * @returns Whether the session is gone, as `taken` asked.
+ * @throws The press's error when the session lives, or when its going is not what was asked.
+ */
+async function pressedOrGone(
+  session: AgentSession,
+  key: string,
+  taken: (screen: string | undefined) => boolean,
+): Promise<boolean> {
+  try {
+    await session.press(key);
+    return false;
+  } catch (error) {
+    if (!(await session.isLive()) && taken(undefined)) return true;
+    throw error;
+  }
 }
 
 /** Tells whether a selection stays on screen for a while, or stops as soon as it is gone. */
