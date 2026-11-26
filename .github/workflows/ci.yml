@@ -35,5 +35,12 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test:coverage
+      # The pinned agent, in tmux, against a scripted API of the suite's own: no login, no secret.
+      - run: pnpm test:contract
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: contract-results-node-${{ matrix.node }}
+          path: test-results/contract.json
       - run: pnpm build
       - run: pnpm test:pack

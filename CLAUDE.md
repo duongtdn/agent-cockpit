@@ -44,9 +44,31 @@ built-ins: `server/`, `fastify/`, `claude-code/` and `channel-server/` only.
   the coverage gate (90% of `src/`): only real tmux exercises the code that
   speaks to it, so the gate counts both.
 - `pnpm test` (unit, quick), `pnpm test:integration` (real tmux),
-  `pnpm test:contract`, `pnpm test:e2e`, `pnpm test:live` (the real model;
-  by hand only).
+  `pnpm test:contract` (the real agent, below), `pnpm test:e2e`,
+  `pnpm test:live` (the real model; by hand only).
 - `pnpm build`, `pnpm typecheck`, `pnpm lint` (Biome, which also formats).
+
+## The contract suite
+
+`pnpm test:contract` runs the real Claude Code TUI in tmux against the
+scripted fake API of `test/support/fake-api/`: one test per behavior the
+driver relies on, titled with the behavior's number. It takes a few seconds.
+
+- **The agent is pinned**: `@anthropic-ai/claude-code`, a dev dependency at
+  one exact version, allowed to run its install script in
+  `pnpm-workspace.yaml` (without it the package holds no binary). The suite
+  runs that binary, never the `claude` of the `PATH`. Moving to another
+  version is a change of the pin, with the suite green on it.
+- **It needs no login and no network**: every test gets a temporary `HOME`
+  and `CLAUDE_CONFIG_DIR`, a fake API key, a fake API and a hook receiver on
+  loopback ports of its own, and its own tmux socket
+  (`test/support/real-agent/`). The runner refuses to launch an agent that
+  could reach Anthropic or the person's configuration.
+- **A behavior that does not hold is a finding**: the test keeps stating the
+  behavior and fails; it is never bent to pass.
+- Each run writes `test-results/contract.json` (git-ignored; CI keeps it as
+  an artifact): the agent's version, the date, each behavior's number, title
+  and outcome.
 
 ## How code is written here
 
