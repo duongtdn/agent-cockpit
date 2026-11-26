@@ -32,7 +32,11 @@ export interface CockpitOptions {
    * server's environment at that moment without them; the driver then
    * removes its agent's own (for Claude Code, every `CLAUDE_CODE_*` and
    * `CLAUDECODE`). The agent's own settings files, the person's, may still
-   * give it variables: those are the person's.
+   * give it variables: those are the person's. The app's tmux server is
+   * not given them either, and drops them from its global environment.
+   * This is hygiene, not a boundary: the agent runs as the app's user, and
+   * a process of that user can read the app's own environment
+   * (`/proc/<pid>/environ`).
    */
   readonly hiddenEnv?: readonly string[];
   /**

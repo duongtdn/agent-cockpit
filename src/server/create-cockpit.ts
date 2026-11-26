@@ -198,7 +198,10 @@ export interface Cockpit {
 export async function createCockpit(options: CockpitOptions): Promise<Cockpit> {
   const checked = await checkCockpitOptions(options);
   checkPlatform(process.platform);
-  const host = createTmuxSessionHost({ appName: checked.name });
+  const host = createTmuxSessionHost({
+    appName: checked.name,
+    hiddenVariables: checked.hiddenEnv,
+  });
   await host.checkMachine();
   const statePath = stateFolderPath(checked.name, checked.stateDirectory);
   await refuseStateRootsRulesMisread(checked, statePath);

@@ -52,6 +52,16 @@ export interface TmuxSessionHostOptions {
    * attach a terminal, before the operation fails; 10 seconds when left out.
    */
   readonly timeoutMs?: number;
+  /**
+   * The variables of the server's environment the app hides
+   * (`hiddenEnv`): no tmux process the host runs is given them, so a tmux
+   * server it starts never has them, and each start removes them from the
+   * global environment of a server that had them (one started by another
+   * process). This is hygiene, not a boundary: a process of the same user,
+   * a session's agent among them, can still read the app's own environment
+   * in `/proc/<pid>/environ`, and that of a server started with them.
+   */
+  readonly hiddenVariables?: readonly string[];
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -85,20 +95,28 @@ const TERMINAL_DATABASE_PROGRAM = 'infocmp';
 export function createTmuxSessionHost(options: TmuxSessionHostOptions): SessionHost {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return new TmuxSessionHost(
-    createTmuxClient(socketNameFor(options.appName), options.executable ?? 'tmux', timeoutMs),
+    createTmuxClient(
+      socketNameFor(options.appName),
+      options.executable ?? 'tmux',
+      timeoutMs,
+      options.hiddenVariables,
+    ),
     timeoutMs,
+    options.hiddenVariables ?? [],
   );
 }
 
 class TmuxSessionHost implements SessionHost {
   readonly #tmux: TmuxClient;
   readonly #timeoutMs: number;
+  readonly #hiddenVariables: readonly string[];
   /** Asked of the machine once: its terminal database does not change under a running app. */
   #terminalType: Promise<string> | undefined;
 
-  constructor(tmux: TmuxClient, timeoutMs: number) {
+  constructor(tmux: TmuxClient, timeoutMs: number, hiddenVariables: readonly string[]) {
     this.#tmux = tmux;
     this.#timeoutMs = timeoutMs;
+    this.#hiddenVariables = hiddenVariables;
   }
 
   async checkMachine(): Promise<void> {
@@ -113,10 +131,16 @@ class TmuxSessionHost implements SessionHost {
   }
 
   async start(options: StartOptions): Promise<void> {
-    const processEnvironment = { ...process.env };
+    const processEnvironment = this.#tmux.environment();
+    const hiddenVariables = this.#hiddenVariables;
     // What cannot be a session is refused here, before anything runs: once
     // tmux waits for its commands, there is no one to refuse it to.
-    startScript(options, { processEnvironment, serverVariables: [], terminalType: '' });
+    startScript(options, {
+      processEnvironment,
+      serverVariables: [],
+      hiddenVariables,
+      terminalType: '',
+    });
     await requireFolder(options.folder);
     this.#terminalType ??= paneTerminalType(TERMINAL_DATABASE_PROGRAM, this.#timeoutMs);
     const terminalType = await this.#terminalType;
@@ -126,6 +150,7 @@ class TmuxSessionHost implements SessionHost {
         startScript(options, {
           processEnvironment,
           serverVariables: parseVariableNames(printed),
+          hiddenVariables,
           terminalType,
         }),
       );

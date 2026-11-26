@@ -15,6 +15,7 @@ const start: StartOptions = {
 const context: StartContext = {
   processEnvironment: {},
   serverVariables: [],
+  hiddenVariables: [],
   terminalType: 'tmux-256color',
 };
 

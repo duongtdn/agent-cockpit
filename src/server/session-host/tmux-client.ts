@@ -68,7 +68,7 @@ export interface TmuxClient {
   /**
    * The environment tmux runs in: the calling process's as it is now,
    * without the variables that would tie a call to a tmux session the
-   * process itself was started in.
+   * process itself was started in, and without the ones the app hides.
    */
   environment(): NodeJS.ProcessEnv;
 }
@@ -76,8 +76,9 @@ export interface TmuxClient {
 /** tmux prints a server's whole environment, and a screen: more than Node keeps by default. */
 const MOST_OUTPUT_BYTES = 64 * 1024 * 1024;
 
-function tmuxEnvironment(): NodeJS.ProcessEnv {
+function tmuxEnvironment(hidden: readonly string[]): NodeJS.ProcessEnv {
   const { TMUX: _session, TMUX_PANE: _pane, ...environment } = process.env;
+  for (const name of hidden) delete environment[name];
   return environment;
 }
 
@@ -180,22 +181,26 @@ async function findProgram(program: string, path: string | undefined): Promise<s
  * @param socketName - The name of the app's socket.
  * @param executable - The tmux program to run.
  * @param timeoutMs - How long a call may take before it is ended and fails.
+ * @param hidden - The variables of the calling process no tmux process is
+ * given: a server this client starts never has them.
  */
 export function createTmuxClient(
   socketName: string,
   executable: string,
   timeoutMs: number,
+  hidden: readonly string[] = [],
 ): TmuxClient {
   const connection = connectionArguments(socketName);
+  const tmuxEnvironmentNow = () => tmuxEnvironment(hidden);
   return {
     run: (args) =>
       execute(executable, [...connection, ...args], {
-        environment: tmuxEnvironment(),
+        environment: tmuxEnvironmentNow(),
         timeoutMs,
         feed: feedNothing,
       }),
     async runAnswering(args, marker, answer) {
-      const { PATH: path, ...environment } = tmuxEnvironment();
+      const { PATH: path, ...environment } = tmuxEnvironmentNow();
       return execute(await findProgram(executable, path), [...connection, ...args], {
         environment,
         timeoutMs,
@@ -204,12 +209,12 @@ export function createTmuxClient(
     },
     version: () =>
       execute(executable, ['-V'], {
-        environment: tmuxEnvironment(),
+        environment: tmuxEnvironmentNow(),
         timeoutMs,
         feed: feedNothing,
       }),
     executable,
     connection,
-    environment: tmuxEnvironment,
+    environment: tmuxEnvironmentNow,
   };
 }

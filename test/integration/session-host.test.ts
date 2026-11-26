@@ -1153,3 +1153,63 @@ describe('shutting the host down', () => {
     await expectScreen('again', 'back');
   });
 });
+
+describe('the variables the app hides', () => {
+  const SECRET = 'COCKPIT_HOST_TEST_SECRET';
+  const hidingAppName = `host-hiding-${process.pid}-${Date.now()}`;
+  const tmux = (...args: string[]) =>
+    execFileSync('tmux', [...connectionArguments(socketNameFor(hidingAppName)), ...args], {
+      encoding: 'utf8',
+    });
+  let hiding: SessionHost;
+
+  beforeAll(() => {
+    hiding = createTmuxSessionHost({ appName: hidingAppName, hiddenVariables: [SECRET] });
+  });
+
+  afterEach(async () => {
+    await hiding.shutDown();
+  });
+
+  function serverKnowsTheSecret(): { global: boolean; process: boolean } {
+    const pid = tmux('display-message', '-p', '#{pid}').trim();
+    return {
+      global: tmux('show-environment', '-g').includes(`${SECRET}=`),
+      process: readFileSync(`/proc/${pid}/environ`, 'latin1')
+        .split('\0')
+        .some((entry) => entry.startsWith(`${SECRET}=`)),
+    };
+  }
+
+  it('starts a server that never had them, in its own environment or its global one', async () => {
+    withProcessVariable(SECRET, 'the-app-secret');
+
+    await hiding.start({
+      name: 'clean',
+      folder,
+      command: 'cat',
+      args: [],
+      environment: { set: {}, remove: [] },
+      size,
+    });
+
+    expect(serverKnowsTheSecret()).toEqual({ global: false, process: false });
+  });
+
+  it('removes them from the global environment of a server that had them', async () => {
+    withProcessVariable(SECRET, 'the-app-secret');
+    tmux('new-session', '-d', '-s', 'before', 'cat');
+    expect(serverKnowsTheSecret().global).toBe(true);
+
+    await hiding.start({
+      name: 'after',
+      folder,
+      command: 'cat',
+      args: [],
+      environment: { set: {}, remove: [] },
+      size,
+    });
+
+    expect(serverKnowsTheSecret().global).toBe(false);
+  });
+});

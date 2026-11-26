@@ -151,6 +151,8 @@ export interface StartContext {
   readonly processEnvironment: Readonly<Record<string, string | undefined>>;
   /** The names of the variables the tmux server would give a session by itself. */
   readonly serverVariables: readonly string[];
+  /** The variables the app hides, which the server's global environment must not keep. */
+  readonly hiddenVariables: readonly string[];
   /** The terminal type of the server's panes. */
   readonly terminalType: string;
 }
@@ -208,8 +210,9 @@ function commandWords(options: StartOptions, removed: ReadonlySet<string>): stri
 }
 
 /**
- * Writes the tmux commands that start a session: the host's options, then
- * the session, detached, with its name, size, folder, variables and command.
+ * Writes the tmux commands that start a session: the host's options, the
+ * hidden variables the server's global environment holds removed from it,
+ * then the session, detached, with its name, size, folder, variables and command.
  *
  * The session's process gets the environment of the calling process, with
  * the folder as `PWD` and no `OLDPWD`, plus the variables set, minus the
@@ -223,7 +226,7 @@ function commandWords(options: StartOptions, removed: ReadonlySet<string>): stri
  *
  * @param options - What the session is started with.
  * @param context - The calling process's environment, the names of the
- * server's variables and the panes' terminal type.
+ * server's variables, the variables the app hides and the panes' terminal type.
  * @returns The commands, one per line, for tmux's `source-file`.
  * @throws `TypeError` or `RangeError` for a name, a folder, a variable
  * name, a command or a size that cannot be used, and for a NUL character;
@@ -236,6 +239,9 @@ export function startScript(options: StartOptions, context: StartContext): strin
   const settings = hostSettings(context.terminalType).map(
     ([scope, option, value]) => `set-option ${scope} ${quoted(option)} ${quoted(value)}`,
   );
+  const unsets = context.serverVariables
+    .filter((variable) => context.hiddenVariables.includes(variable))
+    .map((variable) => `set-environment -g -u ${quoted(checkedVariableName(variable))}`);
   const session = [
     'new-session',
     '-d',
@@ -254,5 +260,5 @@ export function startScript(options: StartOptions, context: StartContext): strin
     '--',
     ...commandWords(options, removedNames(options, context, variables)).map(quoted),
   ];
-  return [...settings, session.join(' '), ''].join('\n');
+  return [...settings, ...unsets, session.join(' '), ''].join('\n');
 }
