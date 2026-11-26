@@ -210,6 +210,9 @@ export const SETTINGS_RULES: Readonly<Record<string, Check<unknown>>> = {
   // The warning a session in bypassPermissions opens with, accepted once as a person does: the
   // mode itself is the launch's, which its own rule checks.
   skipDangerousModePermissionPrompt: (value) => (value === true ? undefined : 'not true'),
+  // WebFetch asks api.anthropic.com about each host before it fetches, whatever the API's
+  // address: a test whose agent fetches turns that off, and the setting may do nothing else.
+  skipWebFetchPreflight: (value) => (value === true ? undefined : 'not true'),
   env: refused('it would replace the variables checked here'),
   apiKeyHelper: refused('it would run a program for a key'),
 };

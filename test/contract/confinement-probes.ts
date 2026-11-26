@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { type AddressInfo, createServer as createTcpServer, type Socket } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { setTimeout as pause } from 'node:timers/promises';
 import { it, onTestFinished, type RunnerTestCase, type TaskMeta, TestRunner } from 'vitest';
@@ -46,6 +46,48 @@ export async function openDoor(host: string): Promise<Door> {
       }),
   );
   return { port: (server.address() as AddressInfo).port, answer, hits: () => [...hits] };
+}
+
+/** A server that keeps every byte each connection sent it, and ends the connection with no answer. */
+export interface RawDoor {
+  readonly port: number;
+  /** What each connection sent, in the order they came. */
+  received(): readonly Buffer[];
+}
+
+/**
+ * Opens a raw door on an address for the running test, closed when it
+ * finishes: a TCP listener that speaks no protocol, so that what a client
+ * sends first — an HTTP request line, a TLS hello — shows as it is. It
+ * ends each connection once its first bytes came, so that no client waits
+ * on it for an answer.
+ *
+ * @param host - The address it listens on.
+ */
+export async function openRawDoor(host: string): Promise<RawDoor> {
+  const received: Buffer[][] = [];
+  const sockets = new Set<Socket>();
+  const server = createTcpServer((socket) => {
+    const chunks: Buffer[] = [];
+    received.push(chunks);
+    sockets.add(socket);
+    socket.on('data', (chunk) => chunks.push(chunk));
+    socket.once('data', () => socket.end());
+    socket.on('error', () => socket.destroy());
+    socket.on('close', () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve) => server.listen(0, host, resolve));
+  onTestFinished(
+    () =>
+      new Promise<void>((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => resolve());
+      }),
+  );
+  return {
+    port: (server.address() as AddressInfo).port,
+    received: () => received.map((chunks) => Buffer.concat(chunks)),
+  };
 }
 
 /**

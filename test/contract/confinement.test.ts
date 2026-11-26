@@ -22,6 +22,7 @@ import {
   linesByLabel,
   machineAddresses,
   openDoor,
+  openRawDoor,
   toolResults,
 } from './confinement-probes.ts';
 
@@ -283,6 +284,46 @@ itInTheSandbox(
     }
   },
 );
+
+/** The first bytes of a TLS connection: a handshake record (22), version 3.x. */
+const TLS_HANDSHAKE = Buffer.from([0x16, 0x03]);
+
+it("54 — WebFetch forces HTTPS and sends no header of the caller's", async () => {
+  // WebFetch would ask api.anthropic.com about the host first: the person turns that off.
+  const cockpit = await startContractCockpit({
+    driver: { permissionMode: 'default', permissions: { allow: ['WebFetch'] } },
+    personsSettings: { skipWebFetchPreflight: true },
+  });
+  const door = await openRawDoor('127.0.0.1');
+  const token = appToken(cockpit);
+  const url = `http://127.0.0.1:${door.port}/page`;
+  const prompt = 'Say what the page holds.';
+  cockpit.api.script(
+    turn(toolUse('WebFetch', { url, prompt })),
+    // A header of the caller's, by a parameter of its own, then by the URL's credentials.
+    turn(toolUse('WebFetch', { url, prompt, headers: { 'X-Cockpit-Token': token } })),
+    turn(toolUse('WebFetch', { url: `http://cockpit:${token}@127.0.0.1:${door.port}/`, prompt })),
+    turn('Done.'),
+  );
+  await cockpit.say('fetch the page');
+  await cockpit.sessionIn(SAID_KEY, 'idle');
+
+  const [plain, withHeaders, withCredentials] = toolResults(cockpit.api);
+  expect(plain?.isError).toBe(true);
+  expect(withHeaders).toEqual({
+    text: expect.stringContaining('An unexpected parameter `headers` was provided'),
+    isError: true,
+  });
+  expect(withCredentials).toEqual({ text: expect.stringContaining('Invalid URL'), isError: true });
+  // The plain http address is fetched over TLS: a hello reaches the door, never a request
+  // line; and nothing of the caller's token reaches it, by any of the three.
+  const received = door.received();
+  expect(received.length).toBeGreaterThan(0);
+  for (const bytes of received) {
+    expect(bytes.subarray(0, 2).equals(TLS_HANDSHAKE), bytes.toString('latin1')).toBe(true);
+    expect(bytes.includes(token)).toBe(false);
+  }
+});
 
 it('77 — A Read deny rule on the folder of the --settings file does not keep Claude Code from loading it', async () => {
   const { cockpit } = await sessionMaking({ mode: 'default', sandbox: false }, () => [

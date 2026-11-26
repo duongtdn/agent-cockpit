@@ -311,6 +311,13 @@ describe("the guard of the real agent's settings", () => {
     );
   });
 
+  it("lets WebFetch's domain lookup be turned off, never on: it would call Anthropic itself", () => {
+    expect(withSettings({ ...settings, skipWebFetchPreflight: true })).not.toThrow();
+    expect(withSettings({ ...settings, skipWebFetchPreflight: false })).toThrow(
+      /"skipWebFetchPreflight", not true/,
+    );
+  });
+
   it('refuses a setting that has no rule, and says where a rule is added', () => {
     expect(withSettings({ ...settings, forceLoginMethod: 'claudeai' })).toThrow(
       /settings.*"forceLoginMethod".*SETTINGS_RULES.*launch-rules\.ts/,
