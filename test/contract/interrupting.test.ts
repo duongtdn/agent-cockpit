@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { eventually } from '../support/eventually.ts';
 // The markers the fake agent plays are the ones the real agent is held to here.
 import { INTERRUPTED, INTERRUPTED_FOR_TOOL_USE } from '../support/fake-agent/transcript.ts';
-import { heldTurn, toolUse, turn } from '../support/fake-api/index.ts';
+import { heldTurn, TEXT_WRITTEN, toolUse, turn } from '../support/fake-api/index.ts';
 import type { AgentSession } from '../support/real-agent/runner.ts';
+import { type Moment, SAID_KEY, sessionAfter, startContractCockpit } from './cockpit-harness.ts';
 import { type ContractAgent, startContractAgent, submitPrompt, userTexts } from './harness.ts';
 
 /** The file a running tool call leaves, for the test to know the tool runs. */
@@ -88,4 +90,35 @@ async function interruptWhileAToolRuns(): Promise<void> {
 
 it('6 — Esc while the agent generates or runs a tool fires no hook; the transcript records an interruption marker at once', async () => {
   await Promise.all([interruptWhileGenerating(), interruptWhileAToolRuns()]);
+});
+
+it('22 — Esc while the agent writes: the transcript records [Request interrupted by user] at once and no hook fires; the driver reads the marker, and the session is idle until the next prompt', async () => {
+  const cockpit = await startContractCockpit();
+  // Held once its text is written: the agent is writing its answer.
+  cockpit.api.script(
+    heldTurn(turn('Thinking it over'), { afterEvents: TEXT_WRITTEN }),
+    NEXT_ANSWER,
+  );
+
+  expect(await cockpit.say('think')).toEqual({ action: 'started', state: 'busy' });
+  const held = await cockpit.api.heldRequest();
+  const session = cockpit.terminal(SAID_KEY);
+  // The agent shows a text once its block ends; while it streams, the tokens it took.
+  await eventually(async () => expect(await session.screen()).toMatch(/↓ \d+ tokens/u));
+  const from = cockpit.timeline.length;
+  await session.press('Escape');
+  await eventually(() => expect(userTexts(session)).toContain(INTERRUPTED));
+  const idle = await sessionAfter(cockpit, 'idle', from);
+  const hooksOfTheEsc = cockpit.timeline.slice(from).filter((moment) => 'hook' in moment);
+  await cockpit.submitInTerminal(SAID_KEY, NEXT_PROMPT);
+  const taken = cockpit.timeline.findIndex(
+    (moment: Moment) => 'hook' in moment && moment.hook.prompt === NEXT_PROMPT,
+  );
+  const answered = await sessionAfter(cockpit, 'idle', taken);
+
+  expect(await held.ended).toBe('client-gone');
+  expect(hooksOfTheEsc).toEqual([]);
+  expect(idle).toMatchObject({ state: 'idle' });
+  expect(answered).toMatchObject({ state: 'idle', lastMessage: 'Going on.' });
+  expect(userTexts(session)).toEqual(['think', INTERRUPTED, NEXT_PROMPT]);
 });

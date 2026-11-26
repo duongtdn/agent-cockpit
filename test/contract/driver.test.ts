@@ -105,3 +105,26 @@ it('29 — A prompt after -- is read as the prompt, whatever options precede it'
   expect(conversationTexts(request)).toContain(looksLikeOptions);
   expect(idle).toMatchObject({ lastMessage: 'Read as a prompt.' });
 });
+
+/**
+ * The row that has each HTTP hook the driver configures fire on the real
+ * agent and read through the cockpit's listener, which passes on only a
+ * request that carried the session's token: row 14 the hooks of a turn
+ * with a tool, the others when what fires them happens.
+ */
+const ROW_OF_EACH_HTTP_HOOK: Readonly<Record<string, string>> = {
+  UserPromptSubmit: '14',
+  PreToolUse: '14',
+  PostToolUse: '14',
+  Stop: '14',
+  SessionEnd: '14',
+  StopFailure: '64 (turn-failures.test.ts)',
+  PreCompact: '16 (compaction.test.ts)',
+  PostCompact: '16 (compaction.test.ts)',
+  SubagentStart: '62 (tasks.test.ts)',
+  SubagentStop: '62 (tasks.test.ts)',
+};
+
+it('every HTTP hook the driver configures has a row that reads it through the listener', () => {
+  expect(Object.keys(ROW_OF_EACH_HTTP_HOOK).sort()).toEqual([...HTTP_HOOK_EVENTS].sort());
+});
