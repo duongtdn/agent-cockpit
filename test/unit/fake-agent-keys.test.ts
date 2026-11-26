@@ -45,6 +45,10 @@ describe("the keys the fake agent's terminal receives", () => {
     ]);
   });
 
+  it('reads Alt+Y, ESC then y, as yank-pop', () => {
+    expect(decode(`${ESC}y`)).toEqual([{ kind: 'yank-pop' }]);
+  });
+
   it('reads Up and Down, as a terminal sends them in either cursor mode', () => {
     expect(decode(`${ESC}[A`, `${ESC}[B`, `${ESC}OA`, `${ESC}O`, 'B')).toEqual([
       { kind: 'up' },

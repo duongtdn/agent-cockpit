@@ -1,5 +1,6 @@
 import {
   type BoxRow,
+  cellsOf,
   INVISIBLE_SEPARATOR,
   layOut,
   OBSERVED_SIZE,
@@ -22,6 +23,11 @@ export interface DrawnBox {
   readonly looksEmpty: boolean;
   /** Whether the box is in shell mode, its sign `!`. */
   readonly inShellMode: boolean;
+  /**
+   * Where the cursor is drawn, among the rows shown and the columns of the
+   * terminal: Claude Code puts the terminal's cursor there.
+   */
+  readonly cursor: { readonly row: number; readonly column: number };
 }
 
 /**
@@ -29,7 +35,8 @@ export interface DrawnBox {
  * Code 2.1.332 was seen to do in it: a cursor that Up and Down move a
  * screen row at a time, Ctrl+E to the end of the line, Ctrl+U killing back
  * to the start of the cursor's screen row (or the line break before it),
- * Ctrl+Y yanking what successive kills killed, the history of the prompts
+ * Ctrl+Y yanking what successive kills killed and Alt+Y right after it
+ * the kill before, the history of the prompts
  * on Up from the first row, and shell mode on a `!` typed into an empty box.
  */
 export interface InputBox {
@@ -78,6 +85,8 @@ export interface InputBoxSurroundings {
 }
 
 const SHELL_SIGN = '!';
+/** The cells the sign and the blank after it take, before every row's text. */
+const SIGN_CELLS = 2;
 const PROMPT_SIGN = '❯';
 
 /** What the box held before the history was browsed, which Down past the newest entry brings back. */
@@ -98,8 +107,12 @@ export function createInputBox(surroundings: InputBoxSurroundings = {}): InputBo
   let text: string[] = [];
   let cursor = 0;
   let shell = false;
-  let killed = '';
+  /** The kill ring, oldest first: successive kills make one entry. */
+  const killRing: string[] = [];
   let lastKeyKilled = false;
+  /** The text the last key yanked, and its entry of the kill ring: Alt+Y replaces it with the one before. */
+  let yanked: { readonly start: number; readonly index: number } | undefined;
+  let lastKeyYanked = false;
   let browsing: Browsing | undefined;
 
   const rows = (): BoxRow[] => layOut(text.join(''), textWidthIn(size()));
@@ -142,7 +155,38 @@ export function createInputBox(surroundings: InputBoxSurroundings = {}): InputBo
       else from = (laidOut[index - 1] as BoxRow).start;
     }
     const removed = remove(from, cursor);
-    killed = removed + (lastKeyKilled ? killed : '');
+    if (lastKeyKilled && killRing.length > 0) {
+      killRing[killRing.length - 1] = removed + killRing.at(-1);
+    } else if (removed !== '') {
+      killRing.push(removed);
+    }
+  }
+
+  function yank(): void {
+    const index = killRing.length - 1;
+    yanked = undefined;
+    if (index < 0) return;
+    yanked = { start: cursor, index };
+    insert(killRing[index] as string);
+  }
+
+  /**
+   * Seen of Claude Code: Alt+Y right after Ctrl+Y puts the kill ring's entry
+   * before the one yanked in its place.
+   *
+   * @throws `Error` for Alt+Y after any other key, or past the oldest
+   * entry: neither was observed.
+   */
+  function yankEarlier(): void {
+    if (!lastKeyYanked || yanked === undefined) {
+      throw new Error('Alt+Y after another key than Ctrl+Y or Alt+Y: not observed');
+    }
+    if (yanked.index === 0)
+      throw new Error("Alt+Y past the kill ring's oldest entry: not observed");
+    const index = yanked.index - 1;
+    remove(yanked.start, cursor);
+    yanked = { start: cursor, index };
+    insert(killRing[index] as string);
   }
 
   function endOfLine(): void {
@@ -225,7 +269,8 @@ export function createInputBox(surroundings: InputBoxSurroundings = {}): InputBo
     'line-break': () => insert('\n'),
     backspace,
     'kill-line': killToRowStart,
-    yank: () => insert(killed),
+    yank,
+    'yank-pop': yankEarlier,
     'end-of-line': endOfLine,
     up,
     down,
@@ -237,7 +282,8 @@ export function createInputBox(surroundings: InputBoxSurroundings = {}): InputBo
 
   function drawn(): DrawnBox {
     const laidOut = rows();
-    const window = windowOf(laidOut.length, rowOf(laidOut, cursor), size());
+    const cursorRow = rowOf(laidOut, cursor);
+    const window = windowOf(laidOut.length, cursorRow, size());
     const shownRows = laidOut
       .slice(window.first, window.first + window.count)
       .map((row, index) => `${window.first + index === 0 ? `${sign()}\u00a0` : '  '}${row.shown}`);
@@ -247,7 +293,18 @@ export function createInputBox(surroundings: InputBoxSurroundings = {}): InputBo
       below: window.hiddenBelow > 0 ? `↓ ${window.hiddenBelow} more` : undefined,
       looksEmpty: text.every((character) => character === INVISIBLE_SEPARATOR),
       inShellMode: shell,
+      cursor: {
+        row: cursorRow - window.first,
+        column: SIGN_CELLS + cellsBefore(laidOut[cursorRow] as BoxRow),
+      },
     };
+  }
+
+  /** The cells between the start of the cursor's row and the cursor. */
+  function cellsBefore(row: BoxRow): number {
+    return text
+      .slice(row.start, cursor)
+      .reduce((cells, character) => cells + cellsOf(character), 0);
   }
 
   function sign(): string {
@@ -273,6 +330,7 @@ export function createInputBox(surroundings: InputBoxSurroundings = {}): InputBo
     press(key) {
       apply(key);
       lastKeyKilled = key.kind === 'kill-line';
+      lastKeyYanked = key.kind === 'yank' || key.kind === 'yank-pop';
       drawn();
     },
     take() {

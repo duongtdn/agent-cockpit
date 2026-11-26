@@ -151,6 +151,21 @@ describe("the fake agent's input box: the keys the driver types a prompt with", 
   });
 });
 
+describe("the fake agent's input box: its kill ring", () => {
+  const yankPop: Key = { kind: 'yank-pop' };
+
+  it('Alt+Y right after Ctrl+Y puts the kill before in place of the one yanked', () => {
+    const box = boxAfter([text('the draft'), kill, text('the prompt'), kill, yank, yankPop]);
+
+    expect(box.text()).toBe('the draft');
+  });
+
+  it('refuses Alt+Y after another key, and past the oldest kill', () => {
+    expect(() => boxAfter([text('a'), kill, yankPop])).toThrow(/not observed/);
+    expect(() => boxAfter([text('a'), kill, yank, yankPop])).toThrow(/oldest/);
+  });
+});
+
 describe("the fake agent's input box: what it shows", () => {
   it('shows the rows around the cursor when it is taller than 15, and says on its rules how many it hides', () => {
     const box = boxAfter(typing(draftLines(25)));
@@ -160,6 +175,13 @@ describe("the fake agent's input box: what it shows", () => {
     for (const key of repeated(up, 10)) box.press(key);
     expect(box.drawn()).toMatchObject({ above: '↑ 7 more', below: '↓ 3 more' });
     expect(box.drawn().rows.at(7)).toBe('  draft line 15');
+  });
+
+  it('draws its cursor after the sign, on the row and at the column of the text it is at', () => {
+    expect(boxAfter(typing('one\ntwo')).drawn().cursor).toEqual({ row: 1, column: 5 });
+    expect(boxAfter([...typing('one\ntwo'), up]).drawn().cursor).toEqual({ row: 0, column: 5 });
+    expect(boxAfter([text(`ab${SEPARATOR}`)]).drawn().cursor).toEqual({ row: 0, column: 4 });
+    expect(boxAfter([text(LONG_LINE), kill]).drawn().cursor).toEqual({ row: 5, column: 2 });
   });
 
   it('draws the sign on the box first row only', () => {

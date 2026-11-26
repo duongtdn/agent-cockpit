@@ -68,6 +68,23 @@ const FOOTERS_AFTER_A_SUBAGENT = {
 };
 
 /**
+ * Where a terminal's cursor is put: counted from the last row drawn, since
+ * the rows above the box may be wider than the terminal and wrap there.
+ */
+export interface ScreenCursor {
+  /** How many rows above the last one drawn. */
+  readonly rowsUp: number;
+  /** Its column, from 0. */
+  readonly column: number;
+}
+
+/** A screen as drawn: its rows, and where the cursor goes, when the input box shows. */
+export interface DrawnScreen {
+  readonly rows: string[];
+  readonly cursor: ScreenCursor | undefined;
+}
+
+/**
  * Renders the screen. A start-up dialog is drawn as Claude Code draws it,
  * alone. Otherwise one fact a line, always in the same order, so that a
  * test finds each by its label; then, once the session started, the input
@@ -80,15 +97,38 @@ const FOOTERS_AFTER_A_SUBAGENT = {
  * @returns The rows, top to bottom.
  */
 export function renderScreen(view: ScreenView, width = DEFAULT_WIDTH): string[] {
-  const shown = view.startUpDialog
-    ? renderStartUpDialog(
-        view.startUpDialog.kind,
-        view.startUpDialog.selected,
-        view.startUpDialog.subjects,
-        width,
-      )
-    : [...facts(view), ...(view.dialog ? [] : inputBox(view, width))];
-  return [...shown, ...(view.farewell ?? [])];
+  return drawScreen(view, width).rows;
+}
+
+/**
+ * Draws the screen as {@link renderScreen} does, and gives where the
+ * terminal's cursor goes: where the input box's cursor is, as Claude Code
+ * puts it; nowhere in particular when no box shows.
+ *
+ * @param view - What to show.
+ * @param width - The terminal's width, for the rules.
+ */
+export function drawScreen(view: ScreenView, width = DEFAULT_WIDTH): DrawnScreen {
+  const farewell = view.farewell ?? [];
+  if (view.startUpDialog) {
+    const { kind, selected, subjects } = view.startUpDialog;
+    return {
+      rows: [...renderStartUpDialog(kind, selected, subjects, width), ...farewell],
+      cursor: undefined,
+    };
+  }
+  const shownFacts = facts(view);
+  if (view.dialog) return { rows: [...shownFacts, ...farewell], cursor: undefined };
+  const box = inputBox(view, width);
+  // Once the session started, the box has a rule above it.
+  const cursorIndex = (view.state === 'starting' ? 0 : 1) + view.box.cursor.row;
+  return {
+    rows: [...shownFacts, ...box, ...farewell],
+    cursor: {
+      rowsUp: box.length - 1 - cursorIndex + farewell.length,
+      column: view.box.cursor.column,
+    },
+  };
 }
 
 function facts(view: ScreenView): string[] {

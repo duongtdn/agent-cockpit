@@ -8,6 +8,7 @@ export type Key =
   | { readonly kind: 'kill-line' }
   | { readonly kind: 'yank' }
   | { readonly kind: 'end-of-line' }
+  | { readonly kind: 'yank-pop' }
   | { readonly kind: 'up' }
   | { readonly kind: 'down' }
   | { readonly kind: 'other' };
@@ -88,6 +89,7 @@ export function createKeyDecoder(): KeyDecoder {
 
   function readAfterEsc(character: string): Key | undefined {
     if (character === '\r') return { kind: 'line-break' };
+    if (character === 'y') return { kind: 'yank-pop' };
     if (character === ESC) {
       progress = 'after-esc';
       return { kind: 'escape' };

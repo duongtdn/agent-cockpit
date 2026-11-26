@@ -238,8 +238,9 @@ wraps them, at most 15 rows around the cursor with `↑ N more` and `↓ N more`
 on the rules, `History n/m` while a past prompt shows; Up and Down by
 screen row (Up from the first into the history of its own prompts, Down
 back to the draft), Ctrl+E to the end of the line, Ctrl+U back to the start
-of the screen row (or the line break), Ctrl+Y what kills in a row killed,
-Backspace, ESC CR; a `!` into an empty box turns shell mode on, Backspace or
+of the screen row (or the line break), Ctrl+Y what kills in a row killed
+and Alt+Y right after it the kill before, Backspace, ESC CR; the terminal's
+cursor put on the box's; a `!` into an empty box turns shell mode on, Backspace or
 Ctrl+U on the empty box off. A prompt taken is trimmed of blanks and line
 breaks at its end and of U+2063 at its ends; a tab typed is dropped. A
 permission dialog is drawn 400 ms after its `PermissionRequest` (the keys
@@ -250,7 +251,8 @@ It refuses Enter in shell mode, Down past the box while a background task
 runs (Claude Code moves to the task), Up into a history it did not make
 alone (a resume, another conversation of the project, after a command, a
 withdrawn prompt or a task's turn), any key on a dialog but text, Enter and
-Esc, and characters of other scripts than Latin.
+Esc, Alt+Y but right after a yank or past the oldest kill, and characters
+of other scripts than Latin.
 
 The fake agent is held to the real one by
 `test/contract/fake-agent-parity.test.ts`: each scenario is played once on

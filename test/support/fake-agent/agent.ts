@@ -165,6 +165,7 @@ const UNDRAWN_BOX: DrawnBox = {
   below: undefined,
   looksEmpty: true,
   inShellMode: false,
+  cursor: { row: 0, column: 0 },
 };
 
 /** Thrown inside a turn to end it as an interruption does: with no hook. */

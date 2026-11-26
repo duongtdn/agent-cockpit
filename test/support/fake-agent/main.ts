@@ -11,7 +11,7 @@ import { createHookRunner, type HookRunner } from './hook-runner.ts';
 import { type HookSettings, parseHookSettings } from './hook-settings.ts';
 import { createKeyDecoder, type Key } from './keys.ts';
 import { type PlayedPermissions, parsePermissions } from './permission-settings.ts';
-import { renderScreen, type ScreenView } from './screen.ts';
+import { drawScreen, type ScreenView } from './screen.ts';
 import { readScript } from './script.ts';
 import { startReleased } from './start-gate.ts';
 import { type TaskFiles, tasksReleased } from './tasks.ts';
@@ -132,8 +132,12 @@ function settingsOf(commandLine: CommandLine): PlayedSettings {
   }
 }
 
+/** Draws the screen, then puts the terminal's cursor where Claude Code puts it: on the input box's. */
 function show(view: ScreenView): void {
-  process.stdout.write(CLEAR_SCREEN + renderScreen(view, process.stdout.columns).join('\r\n'));
+  const { rows, cursor } = drawScreen(view, process.stdout.columns);
+  const up = cursor === undefined || cursor.rowsUp === 0 ? '' : `\x1b[${cursor.rowsUp}A`;
+  const placed = cursor === undefined ? '' : `${up}\x1b[${cursor.column + 1}G`;
+  process.stdout.write(CLEAR_SCREEN + rows.join('\r\n') + placed);
 }
 
 /** Reads what the configuration shows at the start; what it cannot play ends the process at once. */

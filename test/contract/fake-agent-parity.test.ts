@@ -3,6 +3,7 @@ import { rmSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
 import { readScreen } from '../../src/claude-code/screen-reading.ts';
+import type { TerminalScreen } from '../../src/server/driver.ts';
 import type { AgentSession } from '../support/agent-session.ts';
 import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import type { Question, ReplyStep, ToolStep } from '../support/fake-agent/script.ts';
@@ -106,33 +107,39 @@ const SEPARATOR = '\u2063';
 /** A rule of the input box: plain, or saying what the box hides or which history entry it shows. */
 const BOX_RULE = /^─+$|^─── (?:[↑↓] \d+ more|History \d+\/\d+) ─+$/;
 
-/**
- * Gives the input box as a screen draws it: its rule above, its rows, its
- * rule below and the first row of the footer; `undefined` when the screen
- * shows no box, as while a dialog takes its place.
- */
-function drawnBox(screen: string): string[] | undefined {
-  const rows = screen.split('\n').map((row) => row.trimEnd());
+/** The input box as a screen draws it, and where the terminal's cursor is, its row counted from the rule above the box. */
+interface BoxSeen {
+  /** The rule above the box, its rows, the rule below and the first row of the footer. */
+  readonly rows: string[];
+  readonly cursor: { readonly row: number; readonly column: number };
+}
+
+/** Reads the input box of a screen; `undefined` when it shows none, as while a dialog takes its place. */
+function drawnBox({ text, cursor }: TerminalScreen): BoxSeen | undefined {
+  const rows = text.split('\n').map((row) => row.trimEnd());
   const bottom = rows.findLastIndex((row) => BOX_RULE.test(row));
   const top = rows.slice(0, Math.max(bottom, 0)).findLastIndex((row) => BOX_RULE.test(row));
   if (top === -1) return undefined;
-  return rows.slice(top, bottom + 2);
+  return {
+    rows: rows.slice(top, bottom + 2),
+    cursor: { row: cursor.row - top, column: cursor.column },
+  };
 }
 
 /** Waits until the input box drawn passes a check, and gives it. */
 function boxShowing(
   agent: ParityAgent,
   session: AgentSession,
-  check: (box: readonly string[]) => boolean,
-): Promise<string[]> {
+  check: (rows: readonly string[]) => boolean,
+): Promise<BoxSeen> {
   return agent.eventually(async () => {
-    const box = drawnBox(await session.screen());
-    expect(box !== undefined && check(box)).toBe(true);
-    return box as string[];
+    const box = drawnBox(await session.screenWithCursor());
+    expect(box !== undefined && check(box.rows)).toBe(true);
+    return box as BoxSeen;
   });
 }
 
-/** Waits until the input box drawn shows a row, and observes it. */
+/** Waits until the input box drawn shows a row, and observes it, with the cursor. */
 async function observeBox(
   agent: ParityAgent,
   session: AgentSession,
@@ -143,7 +150,7 @@ async function observeBox(
     if (typeof row === 'string') return shown === row;
     return row instanceof RegExp ? row.test(shown) : row(shown);
   };
-  agent.observe(what, await boxShowing(agent, session, (box) => box.some(matches)));
+  agent.observe(what, await boxShowing(agent, session, (rows) => rows.some(matches)));
 }
 
 /** Presses keys, then waits until the input box drawn is no longer what it was, and gives it. */
@@ -151,10 +158,10 @@ async function pressUntilRedrawn(
   agent: ParityAgent,
   session: AgentSession,
   ...keys: string[]
-): Promise<string[]> {
-  const before = JSON.stringify(drawnBox(await session.screen()));
+): Promise<BoxSeen> {
+  const before = JSON.stringify(drawnBox(await session.screenWithCursor())?.rows);
   await session.press(...keys);
-  return boxShowing(agent, session, (box) => JSON.stringify(box) !== before);
+  return boxShowing(agent, session, (rows) => JSON.stringify(rows) !== before);
 }
 
 /** Types a text as a person does, a line break as ESC CR. */
@@ -190,12 +197,12 @@ async function typeOverTheDraft(
   await session.press('C-e');
   await session.type(SEPARATOR);
   let kills = 0;
-  let box: string[];
+  let box: BoxSeen;
   do {
     box = await pressUntilRedrawn(agent, session, 'C-u');
     kills += 1;
     if (kills === 1 || kills === 5) agent.observe(`the box after kill ${kills}`, box);
-  } while (!looksEmpty(box));
+  } while (!looksEmpty(box.rows));
   agent.observe('the kills that emptied the box', kills);
   await typeAsAPerson(session, prompt);
   // The prompt's last characters end the last row it fills, wrapped or not.
@@ -672,6 +679,28 @@ agreeOn(
   },
 );
 
+agreeOn('the kill ring: Ctrl+Y yanks the last kill, Alt+Y right after it the kill before', {
+  script: [],
+  async play(agent) {
+    const session = await agent.startNew();
+    await agent.hook('SessionStart');
+    const steps: [typed: string | string[], row: string][] = [
+      ['the draft', '❯\u00a0the draft'],
+      [['C-u'], '❯'],
+      ['the prompt', '❯\u00a0the prompt'],
+      [['C-u'], '❯'],
+      [['C-y'], '❯\u00a0the prompt'],
+      [['M-y'], '❯\u00a0the draft'],
+    ];
+    for (const [typed, row] of steps) {
+      if (Array.isArray(typed)) await session.press(...typed);
+      else await session.type(typed);
+      await observeBox(agent, session, `after ${JSON.stringify(typed)}, the box shows ${row}`, row);
+    }
+    await terminated(agent, session);
+  },
+});
+
 agreeOn(
   '--resume of a conversation that never took a prompt, then of one whose transcript is gone: SessionEnd, no SessionStart',
   {
@@ -705,9 +734,9 @@ agreeOn(
       // The hook comes well before the dialog is drawn: these keys reach the box.
       await session.type('typed early');
       const dialogShown = await agent.eventually(async () => {
-        const screen = await session.screen();
+        const screen = await session.screenWithCursor();
         expect(drawnBox(screen)).toBeUndefined();
-        return screen;
+        return screen.text;
       });
       agent.observe('the screen with the dialog, as the driver reads it', readScreen(dialogShown));
       await session.type('typed on the dialog');

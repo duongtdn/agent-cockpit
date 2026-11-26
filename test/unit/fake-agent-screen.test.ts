@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createInputBox, type DrawnBox } from '../support/fake-agent/input-box.ts';
 import type { Key } from '../support/fake-agent/keys.ts';
-import { renderScreen } from '../support/fake-agent/screen.ts';
+import { drawScreen, renderScreen } from '../support/fake-agent/screen.ts';
 import { START_UP_DIALOGS } from '../support/fake-agent/start-up-dialogs.ts';
 
 const RULE = '─'.repeat(80);
@@ -180,6 +180,21 @@ describe("the fake agent's screen", () => {
       RULE,
       '  ! for shell mode',
     ]);
+  });
+
+  it("puts the terminal's cursor on the input box's, counted up from the last row", () => {
+    expect(drawScreen({ ...view, box: typed('one\ntwo') }).cursor).toEqual({
+      rowsUp: 2,
+      column: 5,
+    });
+    expect(drawScreen({ ...view, state: 'starting', box: typed('early') }).cursor).toEqual({
+      rowsUp: 0,
+      column: 7,
+    });
+    expect(
+      drawScreen({ ...view, state: 'waiting', dialog: { kind: 'permission', toolName: 'Bash' } })
+        .cursor,
+    ).toBeUndefined();
   });
 
   it('says on the rules what a scrolled box hides, three dashes in', () => {
