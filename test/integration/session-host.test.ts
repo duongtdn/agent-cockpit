@@ -802,6 +802,14 @@ describe('reading the screen', () => {
     expect(screen.inCopyMode).toBe(false);
     expect(screen.text.split('\n')).toEqual(['one', '', '  three', ...Array(27).fill('')]);
   });
+
+  it('gives where the cursor is', async () => {
+    await startScript('cursor', 'printf "one\\n\\n  three\\033[3;5H"; exec cat');
+
+    await expectScreen('cursor', 'three');
+
+    expect((await host.readScreen('cursor')).cursor).toEqual({ row: 2, column: 4 });
+  });
 });
 
 describe('a session scrolled back by a person', () => {

@@ -60,16 +60,22 @@ describe('reading tmux’s output', () => {
     expect(parseLines('')).toEqual([]);
   });
 
-  it('reads the screen: the copy-mode flag, then the rows', () => {
-    expect(parseScreen('0\nfirst\n\n  third\n\n')).toEqual({
+  it('reads the screen: the copy-mode flag and the cursor, then the rows', () => {
+    expect(parseScreen('0 7 2\nfirst\n\n  third\n\n')).toEqual({
       inCopyMode: false,
+      cursor: { row: 2, column: 7 },
       text: 'first\n\n  third\n',
     });
-    expect(parseScreen('1\nrow\n')).toEqual({ inCopyMode: true, text: 'row' });
+    expect(parseScreen('1 0 0\nrow\n')).toEqual({
+      inCopyMode: true,
+      cursor: { row: 0, column: 0 },
+      text: 'row',
+    });
   });
 
-  it('refuses a screen without its flag', () => {
+  it('refuses a screen without its flag or its cursor', () => {
     expect(() => parseScreen('row\n')).toThrow(/unexpected/);
+    expect(() => parseScreen('0\nrow\n')).toThrow(/unexpected/);
     expect(() => parseScreen('')).toThrow(/unexpected/);
   });
 

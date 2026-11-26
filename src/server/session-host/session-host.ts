@@ -46,6 +46,14 @@ export interface TextPacing {
   readonly pauseMs: number;
 }
 
+/** Where a terminal's cursor is, counted from 0. */
+export interface CursorPosition {
+  /** Its row, from the top of the visible screen. */
+  readonly row: number;
+  /** Its column, from the left. */
+  readonly column: number;
+}
+
 /** What a session's terminal shows. */
 export interface Screen {
   /**
@@ -53,6 +61,12 @@ export interface Screen {
    * of a row are dropped.
    */
   readonly text: string;
+  /**
+   * Where the terminal's cursor is, shown or hidden: a program that draws
+   * its own cursor, as Claude Code does in its input box, puts the
+   * terminal's there too.
+   */
+  readonly cursor: CursorPosition;
   /**
    * Whether a person scrolled the terminal back: it then shows its history
    * and takes keys as commands of that view, not as input of the program.

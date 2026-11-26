@@ -215,12 +215,12 @@ export function byteWrites(name: string, bytes: Uint8Array): string[][] {
 
 /**
  * The tmux arguments that read a session's screen: whether its pane is in a
- * mode, on a line, then the pane's visible rows. Read in one call, the two
- * describe the same moment.
+ * mode and where its cursor is, on a line, then the pane's visible rows.
+ * Read in one call, they describe the same moment.
  */
 export function screenArguments(name: string): string[] {
   return [
-    ...paneFormatArguments(name, '#{pane_in_mode}'),
+    ...paneFormatArguments(name, '#{pane_in_mode} #{cursor_x} #{cursor_y}'),
     ';',
     'capture-pane',
     '-p',

@@ -198,7 +198,11 @@ export function createFakeHost(): FakeHost {
     async readScreen(name) {
       screenReads += 1;
       if (!live.has(name)) throw new SessionHostError('no-session', `${name} does not live.`);
-      return { text: screens.get(name) ?? '', inCopyMode: scrolled.has(name) };
+      return {
+        text: screens.get(name) ?? '',
+        cursor: { row: 0, column: 0 },
+        inCopyMode: scrolled.has(name),
+      };
     },
     async attach(name: string, _size: TerminalSize) {
       const error = nextAttachError;

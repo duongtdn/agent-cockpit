@@ -75,15 +75,21 @@ function unexpected(what: string, stdout: string): SessionHostError {
 
 /**
  * Reads a screen from the output of the host's screen command: the pane's
- * mode flag on the first line, then the visible rows.
+ * mode flag and its cursor's column and row on the first line, then the
+ * visible rows.
  *
- * @throws `SessionHostError` `host-failed` when the output does not begin with the flag.
+ * @throws `SessionHostError` `host-failed` when the output does not begin
+ * with the flag and the cursor.
  */
 export function parseScreen(stdout: string): Screen {
-  const match = /^([01])\n(.*)$/s.exec(stdout);
+  const match = /^([01]) (\d+) (\d+)\n(.*)$/s.exec(stdout);
   if (match === null) throw unexpected('screen', stdout);
-  const [, flag, rows = ''] = match;
-  return { inCopyMode: flag === '1', text: rows.replace(/\n$/, '') };
+  const [, flag, column, row, rows = ''] = match;
+  return {
+    inCopyMode: flag === '1',
+    cursor: { row: Number(row), column: Number(column) },
+    text: rows.replace(/\n$/, ''),
+  };
 }
 
 /**

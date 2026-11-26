@@ -292,7 +292,7 @@ describe('the commands that send bytes', () => {
 });
 
 describe('the other commands', () => {
-  it('read the copy-mode flag, then the visible screen', () => {
+  it('read the copy-mode flag and the cursor, then the visible screen', () => {
     expect(screenArguments('s')).toEqual([
       'list-panes',
       '-t',
@@ -300,7 +300,7 @@ describe('the other commands', () => {
       '-f',
       '#{==:#{pane_index},0}',
       '-F',
-      '#{pane_in_mode}',
+      '#{pane_in_mode} #{cursor_x} #{cursor_y}',
       ';',
       'capture-pane',
       '-p',
