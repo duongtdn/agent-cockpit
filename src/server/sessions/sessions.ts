@@ -295,8 +295,10 @@ class SessionRegistry implements Sessions {
     if (entry?.phase !== 'launching' && entry?.phase !== 'live') return;
     const { events } = this.#options.driver.readHook({ key, path, body });
     for (const event of events) {
-      // Any hook at all proves the session can be observed.
+      // Any hook at all proves the session can be observed: a silent start
+      // whose kill failed is no longer one, and ends for its own reason.
       entry.heard = true;
+      delete entry.endedBecause;
       clearTimeout(entry.silentStart);
       if (event.type === 'ending') entry.agentSaid = event.reason;
       this.#update(entry, sessionAfter(entry.session, event, entry.launchedWithPrompt, now()));

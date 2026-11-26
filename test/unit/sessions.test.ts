@@ -399,6 +399,19 @@ describe('a hook that arrives while the cockpit ends a silent session', () => {
 
     expect(sessionOf()?.state).toBe('busy');
   });
+
+  it('records a later end for what it is, not `unobservable`, once the kill failed', async () => {
+    const { result } = await launched();
+    host.failNextKill(new SessionHostError('host-failed', 'tmux failed.'));
+    await vi.advanceTimersByTimeAsync(SILENT_START_MS);
+    await expect(result).rejects.toThrow(SessionHostError);
+    hook('/start-and-take');
+
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'lost' });
+  });
 });
 
 describe('closing the sessions core', () => {
