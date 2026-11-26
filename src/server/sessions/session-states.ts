@@ -97,6 +97,12 @@ function inTurn(course: SessionCourse, now: string): SessionCourse {
  * Whether an interruption was recorded before the last prompt was taken:
  * it ended the turn before, which the transcript tells later than the
  * hooks tell the next prompt.
+ *
+ * The agent's time and the cockpit's are read from one clock: the agent
+ * runs on the server's own host, under its tmux. An interruption recorded
+ * in the very millisecond the prompt was taken is no proof of an earlier
+ * turn, and ends the current one: a turn left `busy` with nothing more to
+ * tell would stay so.
  */
 function endsAnEarlierTurn(course: SessionCourse, recordedAt: string | undefined): boolean {
   if (recordedAt === undefined || course.promptTakenAt === undefined) return false;

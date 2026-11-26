@@ -270,6 +270,15 @@ describe('an interruption the transcript recorded', () => {
     expect(course.session).toEqual({ key: KEY, state: 'idle', since: NOW });
   });
 
+  it('ends the turn when it was recorded in the same millisecond as the last prompt was taken', () => {
+    const course = afterEvents({ session: busy }, [
+      { type: 'prompt-taken' },
+      { type: 'interrupted', at: NOW },
+    ]);
+
+    expect(course.session).toEqual({ key: KEY, state: 'idle', since: NOW });
+  });
+
   it('ended an earlier turn when it was recorded before the last prompt was taken: the new one stays busy', () => {
     const taken = afterEvents({ session: busy }, [{ type: 'prompt-taken' }]);
 
