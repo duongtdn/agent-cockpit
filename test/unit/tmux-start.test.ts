@@ -118,7 +118,7 @@ describe('the commands that start a session', () => {
       );
 
       expect(command).toContain(
-        " -c '/srv/app' -e 'HOME=/other' -e 'odd.name=1' -e 'PWD=/srv/app' -e 'TOKEN=a b;'\\''c'\\''' -e 'EMPTY=' -- ",
+        " -c '/srv/app' -e 'HOME=/other' -e 'odd.name=1' -e 'PWD=/srv/app' -e 'TOKEN=a b;'\\''c'\\''' -e 'EMPTY=' -e 'COLORTERM=truecolor' -- ",
       );
     });
 
@@ -138,6 +138,7 @@ describe('the commands that start a session', () => {
           TERM: 'xterm',
           TERM_PROGRAM: 'vscode',
           TERM_PROGRAM_VERSION: '1',
+          COLORTERM: '24bit',
           TMUX: '/tmp/tmux-1/default,1,0',
           TMUX_PANE: '%0',
           SHELL: '/bin/zsh',
@@ -147,7 +148,29 @@ describe('the commands that start a session', () => {
       });
 
       expect(command).toContain(
-        " -e 'KEPT=1' -e 'PWD=/srv/app' -- '/usr/bin/env' '-u' 'PATH' '--' ",
+        " -e 'KEPT=1' -e 'PWD=/srv/app' -e 'COLORTERM=truecolor' -- '/usr/bin/env' '-u' 'PATH' '--' ",
+      );
+    });
+
+    it('with COLORTERM=truecolor, whatever the process has and whatever is set', () => {
+      const command = sessionCommand(
+        { ...start, environment: { set: { COLORTERM: '24bit', SET: '1' }, remove: [] } },
+        { processEnvironment: { COLORTERM: 'other' }, serverVariables: ['COLORTERM'] },
+      );
+
+      expect(command).toContain(
+        " -c '/srv/app' -e 'PWD=/srv/app' -e 'COLORTERM=truecolor' -e 'SET=1' -- '/usr/bin/env' '-u' 'PATH' '--' ",
+      );
+    });
+
+    it('without COLORTERM when it is removed, as for the variables tmux sets', () => {
+      const command = sessionCommand(
+        { ...start, environment: { set: {}, remove: ['COLORTERM'] } },
+        { processEnvironment: { COLORTERM: 'other' } },
+      );
+
+      expect(command).toContain(
+        " -c '/srv/app' -e 'PWD=/srv/app' -- '/usr/bin/env' '-u' 'PATH' '-u' 'COLORTERM' '--' ",
       );
     });
 
@@ -161,7 +184,7 @@ describe('the commands that start a session', () => {
       );
 
       expect(command).toContain(
-        " -e 'PATH=/bin' -e 'LANG=C' -e 'PWD=/srv/app' -e 'SET=1' -- '/usr/bin/env' '-u' 'STALE' '-u' 'odd name' '-u' 'HOME' '-u' 'NOT_SET' '-u' 'TERM' '--' 'agent'",
+        " -e 'PATH=/bin' -e 'LANG=C' -e 'PWD=/srv/app' -e 'SET=1' -e 'COLORTERM=truecolor' -- '/usr/bin/env' '-u' 'STALE' '-u' 'odd name' '-u' 'HOME' '-u' 'NOT_SET' '-u' 'TERM' '--' 'agent'",
       );
     });
   });
@@ -178,8 +201,8 @@ describe('the commands that start a session', () => {
   it('give each variable one word, its name and its value', () => {
     const command = sessionCommand(start, { processEnvironment: { A: '1', B: '2' } });
 
-    expect(command.match(/ -e '/g)).toHaveLength(3);
-    expect(command).toContain(" -e 'A=1' -e 'B=2' -e 'PWD=/srv/app' -- ");
+    expect(command.match(/ -e '/g)).toHaveLength(4);
+    expect(command).toContain(" -e 'A=1' -e 'B=2' -e 'PWD=/srv/app' -e 'COLORTERM=truecolor' -- ");
   });
 
   it.each(['', 'a.b', 'a:b', 'a b', '=a', 'a*', 'a\nb', 'é'])('refuse the name %j', (name) => {

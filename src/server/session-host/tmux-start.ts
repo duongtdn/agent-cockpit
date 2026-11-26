@@ -118,13 +118,23 @@ function checkedLength(word: string, what: string): string {
 }
 
 /**
- * The variables tmux sets for a pane itself, over whatever a session is
- * started with (seen on tmux 3.2a): `TERM` (the `default-terminal` option),
+ * The variable that tells a program its terminal shows 24-bit colors, and
+ * the value that says so. The host passes those colors on to the page's
+ * terminal, so every session has it. tmux sets it for a pane itself, to
+ * this value, from 3.6 on; on an older tmux the host gives it.
+ */
+const COLOR_HINT = { name: 'COLORTERM', value: 'truecolor' } as const;
+
+/**
+ * The variables a pane has of its own, over whatever a session is started
+ * with. tmux sets (seen on 3.2a) `TERM` (the `default-terminal` option),
  * `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TMUX`, `TMUX_PANE`, and `SHELL`
- * (the server's `default-shell`).
+ * (the server's `default-shell`); the color hint is tmux's from 3.6 on and
+ * the host's before.
  */
 const PANE_VARIABLES: ReadonlySet<string> = new Set([
   'TERM',
+  COLOR_HINT.name,
   'TERM_PROGRAM',
   'TERM_PROGRAM_VERSION',
   'TMUX',
@@ -148,7 +158,7 @@ export interface StartContext {
 /**
  * The variables of a session's process, tmux's own aside: those of the
  * calling process, with the session's folder for working directory, then the
- * ones set, without the ones removed.
+ * ones set, then the color hint, without the ones removed.
  */
 function sessionVariables(options: StartOptions, context: StartContext): Map<string, string> {
   const variables = new Map<string, string>();
@@ -161,6 +171,8 @@ function sessionVariables(options: StartOptions, context: StartContext): Map<str
   for (const [name, value] of Object.entries(options.environment.set)) {
     variables.set(checkedVariableName(name), value);
   }
+  // Given on every tmux alike: one older than 3.6 does not set it itself.
+  variables.set(COLOR_HINT.name, COLOR_HINT.value);
   for (const name of options.environment.remove) variables.delete(checkedVariableName(name));
   return variables;
 }
@@ -204,8 +216,9 @@ function commandWords(options: StartOptions, removed: ReadonlySet<string>): stri
  * ones removed — whatever the tmux server's own environment holds: every
  * variable is given to the session, and `env` removes what the server alone
  * has. Only `TERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TMUX`,
- * `TMUX_PANE` and `SHELL` are tmux's to set, whatever is set here; a name
- * removed is removed among them too. Values are written in these commands
+ * `TMUX_PANE` and `SHELL` are tmux's to set, whatever is set here, and
+ * `COLORTERM` is `truecolor` (tmux's own from 3.6 on, the host's before);
+ * a name removed is removed among them too. Values are written in these commands
  * only, never in a process's arguments; names are.
  *
  * @param options - What the session is started with.

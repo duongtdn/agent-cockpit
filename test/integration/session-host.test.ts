@@ -146,9 +146,13 @@ async function surroundingsOf(
   return eventually(() => JSON.parse(readFileSync(file, 'utf8')) as Surroundings);
 }
 
-/** The variables tmux sets for a pane itself, whatever a session is started with. */
+/**
+ * The variables a pane has of its own, whatever a session is started with:
+ * tmux's, and `COLORTERM`, which tmux sets from 3.6 on and the host before.
+ */
 const PANE_VARIABLES = [
   'TERM',
+  'COLORTERM',
   'TERM_PROGRAM',
   'TERM_PROGRAM_VERSION',
   'TMUX',
@@ -165,6 +169,17 @@ function withProcessVariables(variables: Record<string, string>): void {
   Object.assign(process.env, variables);
   restorations.push(() => {
     for (const name of Object.keys(variables)) delete process.env[name];
+  });
+}
+
+/** Gives this process a variable, or none of that name, until the test ends; then what it had. */
+function withProcessVariable(name: string, value: string | undefined): void {
+  const before = process.env[name];
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+  restorations.push(() => {
+    if (before === undefined) delete process.env[name];
+    else process.env[name] = before;
   });
 }
 
@@ -453,11 +468,12 @@ describe('starting a session', () => {
 
   it('gives a session without a PATH none, and removes even what tmux sets', async () => {
     const { environment } = await surroundingsOf('bare', {
-      environment: { set: {}, remove: ['PATH', 'TERM_PROGRAM'] },
+      environment: { set: {}, remove: ['PATH', 'TERM_PROGRAM', 'COLORTERM'] },
     });
 
     expect(environment).not.toHaveProperty('PATH');
     expect(environment).not.toHaveProperty('TERM_PROGRAM');
+    expect(environment).not.toHaveProperty('COLORTERM');
   });
 
   it('sets the variables of the session’s terminal itself', async () => {
@@ -469,6 +485,18 @@ describe('starting a session', () => {
     expect(environment.TMUX).toContain(socketNameFor(appName));
     expect(environment.TMUX_PANE).toMatch(/^%\d+$/);
     expect(environment.TERM_PROGRAM).toBe('tmux');
+  });
+
+  it.each([
+    ['this process has none', undefined, {}],
+    ['this process has another', '24bit', {}],
+    ['another is set', undefined, { COLORTERM: '24bit' }],
+  ])('tells the program its terminal shows 24-bit colors, when %s', async (_when, own, set) => {
+    withProcessVariable('COLORTERM', own);
+
+    const { environment } = await surroundingsOf('colors', { environment: { set, remove: [] } });
+
+    expect(environment.COLORTERM).toBe('truecolor');
   });
 
   it('keeps the environments of sessions started together apart', async () => {

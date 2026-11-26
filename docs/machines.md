@@ -36,7 +36,8 @@ yet. What it does on the machine:
 - On that server only, the cockpit sets tmux up for a terminal shown in a
   page:
   - Programs see `TERM=tmux-256color` when the machine's terminal database
-    describes it, else `screen-256color`; 24-bit colors pass through.
+    describes it, else `screen-256color`, and `COLORTERM=truecolor`; 24-bit
+    colors pass through.
   - The mouse is on: the wheel scrolls the session's history.
   - There is no prefix key: Ctrl+B reaches the agent like any other key.
   - There is no status line: every row shows the agent's screen.
