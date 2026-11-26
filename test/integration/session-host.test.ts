@@ -630,7 +630,10 @@ describe('the sessions of the host', () => {
     await eventually(async () => expect(await host.isLive('exits')).toBe(false));
     expect(await host.processOf('exits')).toBeUndefined();
     expect(await host.list()).toEqual(['stays']);
-    expect(isRunning(exiting?.pid ?? 0)).toBe(false);
+    // tmux may report the session gone before it has reaped the command: a
+    // zombie still answers a signal, so its end is awaited.
+    expect(exiting).toBeDefined();
+    await eventually(() => expect(isRunning(exiting?.pid ?? 0)).toBe(false));
   });
 
   it('lose at once a session whose command cannot be run, its start not failing', async () => {
