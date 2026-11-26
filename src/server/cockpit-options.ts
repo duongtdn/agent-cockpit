@@ -67,8 +67,9 @@ export interface CockpitOptions {
    * is refused. A function that throws or rejects refuses the request, and
    * the failure goes to the cockpit's `error` handlers. `authorize: (req)
    * => cockpit.verify(req)` opens remote access by the link. A driver whose
-   * sessions reach an open network refuses it unless the app accepted that
-   * in the driver's options. It must settle: the request waits for it, and
+   * sessions are open — their commands reach the network beyond the
+   * allow-list, or their file tools write unasked — refuses it unless the
+   * app accepted that in the driver's options. It must settle: the request waits for it, and
    * the cockpit sets no time limit on it (bounding it is the app's); one
    * still pending when the cockpit closes is answered 503. It is asked once
    * a request: a request whose admission overlaps a renewal of the token
@@ -211,8 +212,8 @@ const options = z.object({
  * Checks `createCockpit`'s options: what this version takes, of the right
  * kinds, the jobs' ids unique, each job's driver part fitting the driver,
  * the app's folder an existing folder, and no cockpit opened beyond
- * loopback with a driver, or a job, whose sessions reach an open network
- * the app did not accept. An option or a job's field that a later version
+ * loopback with a driver, or a job, whose sessions are open (their network,
+ * or their unasked writes) and the app did not accept it. An option or a job's field that a later version
  * takes is refused rather than silently ignored.
  *
  * @param given - What the app gave, unchecked: an app in JavaScript gives anything.
@@ -249,9 +250,10 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
 }
 
 /**
- * Refuses a cockpit opened beyond loopback whose driver's sessions reach
- * the network beyond the allow-list without asking: they could read a token
- * that works from afar. The app accepts it in the driver's options.
+ * Refuses a cockpit opened beyond loopback whose driver's sessions act
+ * beyond its lines without asking — their network, or their file tools'
+ * writes: they could read a token that works from afar. The app accepts it
+ * in the driver's options.
  */
 function openNetworkIssues({ authorize, driver }: CockpitOptions): Issue[] {
   const refusal = openNetworkRefusal(authorize, driver.networkOf());
@@ -259,7 +261,7 @@ function openNetworkIssues({ authorize, driver }: CockpitOptions): Issue[] {
   return [
     {
       path: ['driver'],
-      message: `The cockpit is opened beyond loopback (authorize), and the driver's sessions reach an open network. ${refusal}`,
+      message: `The cockpit is opened beyond loopback (authorize), and the driver's sessions act beyond the cockpit's lines without asking the person. ${refusal}`,
     },
   ];
 }
@@ -276,7 +278,7 @@ function jobsPartIssues(options: CockpitOptions): Issue[] {
 
 /**
  * Checks a job's driver part, as the cockpit launches it: the driver's
- * check of its shape, then the network its sessions reach — refused, as
+ * check of its shape, then how far its sessions act unasked — refused, as
  * the driver's own options are, when the cockpit is opened beyond loopback
  * and the app did not accept it.
  *
@@ -299,14 +301,14 @@ export function jobPartIssues(
   return [
     {
       path: ['driver'],
-      message: `The cockpit is opened beyond loopback (authorize), and the sessions of the job ${JSON.stringify(job.id)} reach an open network. ${refusal}`,
+      message: `The cockpit is opened beyond loopback (authorize), and the sessions of the job ${JSON.stringify(job.id)} act beyond the cockpit's lines without asking the person. ${refusal}`,
     },
   ];
 }
 
 /**
- * Why a cockpit opened beyond loopback must not launch sessions with this
- * network: the driver's reason, when it is open and not accepted.
+ * Why a cockpit opened beyond loopback must not launch sessions of this
+ * reach: the driver's reason, when it is open and not accepted.
  */
 function openNetworkRefusal(
   authorize: CockpitOptions['authorize'],

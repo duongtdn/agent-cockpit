@@ -54,7 +54,7 @@ const SILENT_START_CAUSE =
   '(disableAllHooks, or managed settings that allow only their own), or the agent ' +
   'stopped before it took input.';
 
-/** How the app accepts an open network, and what it accepts: the end of every reason. */
+/** How the app accepts an open session, and what it accepts: the end of every reason. */
 const ACCEPTANCE =
   "With authorize, a token read from a browser's storage works from afar: " +
   'claudeCode({ acceptOpenNetwork: true }) accepts it.';
@@ -64,18 +64,30 @@ const ACCEPTANCE =
  * allow-list: its sandbox's proxies let a command through without asking,
  * where `default` asks.
  */
-const BYPASS_REASON =
+const BYPASS_NETWORK_REASON =
   'In bypassPermissions, a sandboxed command of Claude Code reaches the network beyond the ' +
   "cockpit's allow-list without asking: the app's other addresses, other local ports, the " +
-  "internet, and the person's files, a browser's stored token among them. " +
-  ACCEPTANCE;
+  "internet, and the person's files, a browser's stored token among them.";
 
 /**
  * The modes whose sandboxed commands were seen to ask, or to be refused,
  * before each reach beyond the allow-list — whatever a command names in
  * its `allowed_domains`.
  */
-const CONFINED_MODES: ReadonlySet<PermissionMode> = new Set(['default', 'acceptEdits', 'dontAsk']);
+const NETWORK_CONFINED_MODES: ReadonlySet<PermissionMode> = new Set([
+  'default',
+  'acceptEdits',
+  'dontAsk',
+]);
+
+/**
+ * Why a session in this mode reaches the network beyond the allow-list
+ * without asking; none when its commands ask or are refused there.
+ */
+function networkReason(mode: PermissionMode): string | undefined {
+  if (NETWORK_CONFINED_MODES.has(mode)) return undefined;
+  return mode === 'bypassPermissions' ? BYPASS_NETWORK_REASON : namedHostsReason(mode);
+}
 
 /**
  * Why a session in `plan` or `auto` reaches the network beyond the
@@ -89,7 +101,34 @@ function namedHostsReason(mode: PermissionMode): string {
     "cockpit's allow-list with no ask of the network once the command naming them in its " +
     'allowed_domains is approved, which the server-side check of auto mode (run in plan too) ' +
     "does without asking the person: other local ports, the internet, and the person's files, a " +
-    `browser's stored token among them. ${ACCEPTANCE}`
+    "browser's stored token among them."
+  );
+}
+
+/**
+ * Where the file tools of each mode that writes without asking the person
+ * write so. The file tools run in the agent's process, outside the
+ * sandbox, and a hook may run what they wrote; the other modes ask
+ * (`default`), refuse (`dontAsk`) or write nothing (`plan`).
+ */
+const UNASKED_WRITES: Readonly<Partial<Record<PermissionMode, string>>> = {
+  acceptEdits: 'inside the work folder',
+  auto: 'wherever its server-side check approves',
+  bypassPermissions: "anywhere but the files the cockpit's denies name",
+};
+
+/**
+ * Why a session in this mode acts as the person through its file tools;
+ * none when they write nothing the person was not asked about.
+ */
+function unaskedWritesReason(mode: PermissionMode): string | undefined {
+  const where = UNASKED_WRITES[mode];
+  if (where === undefined) return undefined;
+  return (
+    `In ${mode}, the file tools of Claude Code write files without asking the person, ${where}: ` +
+    "a script written there runs outside the sandbox once a hook of the project's or the " +
+    "person's runs it, and reaches what the person's own commands reach, a browser's stored " +
+    'token among them.'
   );
 }
 
@@ -105,11 +144,14 @@ function namedHostsReason(mode: PermissionMode): string {
  * scripts, agents and skills of a `.claude` folder, the person's plugins,
  * agents and skills).
  *
- * A session in `default`, `acceptEdits` or `dontAsk` counts as keeping
- * its network to the cockpit's allow-list (its sandboxed commands were
- * seen to ask, or to be refused, beyond it); one in `plan`, `auto` or
- * `bypassPermissions` counts as open, which an app opened beyond loopback
- * must accept.
+ * A session in `default` or `dontAsk` counts as confined: its sandboxed
+ * commands were seen to ask, or to be refused, beyond the cockpit's
+ * allow-list, and its file tools ask before a write or refuse it. One in
+ * `plan`, `auto` or `bypassPermissions` counts as open for its network (a
+ * sandboxed command was seen to reach beyond the allow-list unasked), and
+ * one in `acceptEdits`, `auto` or `bypassPermissions` for its writes (the
+ * file tools write without asking the person, outside the sandbox, files a
+ * hook may run): an app opened beyond loopback must accept an open mode.
  *
  * A launch with the sandbox asked for rejects with `CockpitError`
  * `sandbox-unavailable` when the agent would not find what the sandbox
@@ -125,7 +167,7 @@ function namedHostsReason(mode: PermissionMode): string {
  *
  * @param options - See {@link ClaudeCodeOptions}: the permission mode
  * (`default` when left out), the permission rules, the acceptance of an
- * open network, the model, the plugin, the sources of settings, whether
+ * open mode, the model, the plugin, the sources of settings, whether
  * other MCP servers load, and the sandbox.
  * @returns The driver.
  * @throws `CockpitError` `invalid-options` when the options do not fit,
@@ -188,12 +230,22 @@ function jobPart(part: ClaudeCodeJobPart): ClaudeCodeJobPart {
   return part;
 }
 
-/** The network of a session: the job's mode, else the app's; the acceptance always the app's. */
+/**
+ * The reach of a session — its commands' network and its file tools'
+ * writes — by the job's mode, else the app's; the acceptance always the
+ * app's.
+ */
 function networkOf(options: CheckedOptions, part?: DriverPart): SessionNetwork {
   const mode = laidOver(options, part as ClaudeCodeJobPart | undefined).permissionMode;
-  if (CONFINED_MODES.has(mode)) return { reach: 'confined' };
-  const reason = mode === 'bypassPermissions' ? BYPASS_REASON : namedHostsReason(mode);
-  return { reach: 'open', accepted: options.acceptOpenNetwork, reason };
+  const reasons = [networkReason(mode), unaskedWritesReason(mode)].filter(
+    (reason) => reason !== undefined,
+  );
+  if (reasons.length === 0) return { reach: 'confined' };
+  return {
+    reach: 'open',
+    accepted: options.acceptOpenNetwork,
+    reason: [...reasons, ACCEPTANCE].join(' '),
+  };
 }
 
 async function launchSession(launch: Launch, options: CheckedOptions): Promise<LaunchCommand> {

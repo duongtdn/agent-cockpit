@@ -424,8 +424,8 @@ describe("the driver's other parts", () => {
     expect(claudeCode().silentStartCause).toMatch(/SessionStart hook/);
   });
 
-  it.each(['default', 'acceptEdits', 'dontAsk'] as const)(
-    'keeps the network of a session in %s to the allow-list: it asks or refuses beyond it (contract 80, 81)',
+  it.each(['default', 'dontAsk'] as const)(
+    'counts a session in %s as confined: its commands ask or are refused beyond the allow-list (contract 80, 81), its file tools ask or refuse before a write',
     (permissionMode) => {
       expect(claudeCode({ permissionMode }).networkOf()).toEqual({ reach: 'confined' });
       expect(claudeCode({ permissionMode, acceptOpenNetwork: true }).networkOf()).toEqual({
@@ -438,8 +438,8 @@ describe("the driver's other parts", () => {
     expect(claudeCode().networkOf()).toEqual({ reach: 'confined' });
   });
 
-  it.each(['plan', 'auto', 'bypassPermissions'] as const)(
-    'counts the network of a session in %s as open, naming the mode, accepted only when the app says so',
+  it.each(['acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const)(
+    'counts a session in %s as open, naming the mode, accepted only when the app says so',
     (permissionMode) => {
       const refused = claudeCode({ permissionMode }).networkOf();
       const accepted = claudeCode({ permissionMode, acceptOpenNetwork: true }).networkOf();
@@ -451,6 +451,36 @@ describe("the driver's other parts", () => {
       });
       expect(refused).toMatchObject({ reason: expect.stringContaining('acceptOpenNetwork') });
       expect(accepted).toEqual({ ...refused, accepted: true });
+    },
+  );
+
+  it('counts a session in acceptEdits as open for its writes alone: its file tools write in the work folder unasked, its network asks (contract 80)', () => {
+    const { reason } = claudeCode({ permissionMode: 'acceptEdits' }).networkOf() as {
+      reason: string;
+    };
+
+    expect(reason).toMatch(/without asking the person/);
+    expect(reason).toMatch(/work folder/);
+    expect(reason).toMatch(/outside the sandbox/);
+    expect(reason).not.toMatch(/allowed_domains|reaches the network/);
+  });
+
+  it('counts a session in plan as open for its network alone: its file tools write nothing', () => {
+    const { reason } = claudeCode({ permissionMode: 'plan' }).networkOf() as { reason: string };
+
+    expect(reason).toMatch(/allowed_domains/);
+    expect(reason).not.toMatch(/file tools/);
+  });
+
+  it.each(['auto', 'bypassPermissions'] as const)(
+    'counts a session in %s as open for both its network and its writes, saying each',
+    (permissionMode) => {
+      const { reason } = claudeCode({ permissionMode }).networkOf() as { reason: string };
+
+      expect(reason).toMatch(/network/);
+      expect(reason).toMatch(/file tools/);
+      expect(reason).toMatch(/outside the sandbox/);
+      expect(reason.match(/acceptOpenNetwork/g)).toHaveLength(1);
     },
   );
 

@@ -58,7 +58,7 @@ export interface ClaudeCodeSandbox {
 /**
  * A job's driver part for Claude Code, as `claudeCode.job(…)`
  * builds it: laid over the app's options for the job's sessions. The
- * plugin, the environment and the acceptance of an open network stay the
+ * plugin, the environment and the acceptance of an open mode stay the
  * app's.
  */
 export interface ClaudeCodeJobPart {
@@ -75,8 +75,9 @@ export interface ClaudeCodeOptions {
   /**
    * The mode every session is launched in; `default` when left out. It is
    * always passed, so the person's own `defaultMode` never applies by
-   * accident. In `bypassPermissions` nothing asks before a file is written:
-   * the agent's own file tools act as the person, and the denies on the
+   * accident. In `acceptEdits` (inside the work folder), `auto` (where its
+   * check approves) and `bypassPermissions` nothing asks before a file is
+   * written: the agent's own file tools act as the person, and the denies on the
    * files that start code at its next launch are defense in depth, not a
    * boundary (a script a hook runs, a shell's startup file, is no file the
    * cockpit can name).
@@ -85,16 +86,20 @@ export interface ClaudeCodeOptions {
   /** Rules every session's settings carry, above the person's and the project's. */
   readonly permissions?: PermissionRules;
   /**
-   * Accepts that a session in `plan`, `auto` or `bypassPermissions` reaches
-   * the network beyond the cockpit's allow-list without asking the person —
-   * other local ports, the internet, the person's files — even when the
-   * app opens the cockpit beyond loopback (it gives `authorize`), where
-   * such a session could read a token that works from afar. Each was seen
-   * to: `bypassPermissions` always, `plan` and `auto` for the hosts an
-   * approved command names in its `allowed_domains`. `default`,
-   * `acceptEdits` and `dontAsk` ask or refuse, and need no acceptance.
-   * `false` when left out: `createCockpit` then refuses an open mode with
-   * `authorize`.
+   * Accepts a session in an open mode even when the app opens the cockpit
+   * beyond loopback (it gives `authorize`), where such a session could
+   * read a token that works from afar. A mode is open for its network
+   * when a sandboxed command reaches beyond the cockpit's allow-list
+   * without asking the person — other local ports, the internet, the
+   * person's files: `bypassPermissions` always, `plan` and `auto` for the
+   * hosts an approved command names in its `allowed_domains`, as each was
+   * seen to. A mode is open for its writes when its file tools write files
+   * without asking the person — `acceptEdits` inside the work folder,
+   * `auto` where its check approves, `bypassPermissions` anywhere the
+   * cockpit's denies do not name: they run outside the sandbox, and a hook
+   * may then run what they wrote. `default` and `dontAsk` ask or refuse,
+   * and need no acceptance. `false` when left out: `createCockpit` then
+   * refuses an open mode with `authorize`.
    */
   readonly acceptOpenNetwork?: boolean;
   /**

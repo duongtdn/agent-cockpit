@@ -60,10 +60,10 @@ const CONFIGURATION_FILE_PATTERN = '.claude*.json';
  * tools and the shell commands Claude Code recognizes; code the agent runs
  * outside the sandbox still writes (as for the state roots).
  *
- * They are defense in depth, not a boundary: in `bypassPermissions`
- * nothing asks first, and the agent's file tools act as the person, who
- * can name files that start code (a script a hook runs, a shell's startup
- * file) that no rule here names.
+ * They are defense in depth, not a boundary: in `acceptEdits` (inside the
+ * work folder), `auto` and `bypassPermissions` nothing asks first, and the
+ * agent's file tools act as the person, who can name files that start code
+ * (a script a hook runs, a shell's startup file) that no rule here names.
  *
  * @param persons - The person's own such files and folders, each by every
  * path that names it: see {@link PersonsStartUpFiles}.

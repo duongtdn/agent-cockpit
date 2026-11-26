@@ -234,9 +234,9 @@ answered 503. `authorize` should check a proof the person holds, never a header 
 client sets itself, and with a browser's WebSockets it receives no header of
 the page's: a cookie of the app's sign-in reaches it. TLS, accounts and
 sign-in are the app's. A cockpit opened this way is refused with a Claude
-Code driver in `plan`, `auto` or `bypassPermissions`, whose sessions reach
-the network without asking, unless the app accepts it with
-`claudeCode({ acceptOpenNetwork: true })`.
+Code driver in `acceptEdits`, `plan`, `auto` or `bypassPermissions`, whose
+sessions reach the network or write files without asking, unless the app
+accepts it with `claudeCode({ acceptOpenNetwork: true })`.
 
 A sign-in's cookie reaches every port of its host, so a page of any other
 server on the machine sends it too. The app's own routes that change
@@ -278,10 +278,10 @@ const cockpit = await createCockpit({
 
 The part's mode and model replace the driver's; its rules are added after
 the driver's, so the app's deny and ask rules always hold. The plugin, the
-sources of settings, the sandbox and the acceptance of an open network stay
+sources of settings, the sandbox and the acceptance of an open mode stay
 the app's. A part that does not fit is refused with `invalid-options`, at
-`createCockpit` and again when the job runs. A part whose mode opens the
-network (`plan`, `auto`, `bypassPermissions`) is refused in a cockpit
+`createCockpit` and again when the job runs. A part whose mode is open
+(`acceptEdits`, `plan`, `auto`, `bypassPermissions`) is refused in a cockpit
 opened beyond loopback, as the driver's own mode would be, unless the
 driver accepts it (`acceptOpenNetwork`).
 
@@ -384,9 +384,10 @@ lines that keep the agent from the cockpit's files, the app's port and
 the files the cockpit can name that start code at its next launch: its
 settings, its configuration files and `.mcp.json`, the hooks' scripts,
 agents and skills of a `.claude` folder, the person's plugins, agents and
-skills ([security](security.md#keeping-the-agent-out)). In
-`bypassPermissions` the agent's file tools act as the person: those denies
-are defense in depth, not a boundary.
+skills ([security](security.md#keeping-the-agent-out)). In `acceptEdits`
+(inside the work folder), `auto` and `bypassPermissions` the agent's file
+tools write unasked and act as the person: those denies are defense in
+depth, not a boundary.
 The person's own Claude Code settings still load below them, unless the app
 narrows them. Its options ([reference](api.md#claudecodeoptions)):
 
@@ -398,8 +399,9 @@ narrows them. Its options ([reference](api.md#claudecodeoptions)):
 - `pluginDir`: the app's own Claude Code plugin, for its sessions only.
 - `settingSources` and `otherMcpServers: false`: fewer of the person's and
   the project's settings, and none of their MCP servers.
-- `acceptOpenNetwork`: needed with a mode whose network is open, in a
-  cockpit opened beyond loopback ([security](security.md#each-modes-network)).
+- `acceptOpenNetwork`: needed with an open mode (its network, or its file
+  tools' unasked writes), in a cockpit opened beyond loopback
+  ([security](security.md#each-modes-network-and-writes)).
 - `sandbox`: the agent's sandbox, below.
 
 ### The sandbox

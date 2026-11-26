@@ -439,6 +439,36 @@ describe("a job's driver part", () => {
     });
   });
 
+  it('is refused at createCockpit in acceptEdits, whose file tools write unasked, when the cockpit is opened beyond loopback, unless the app accepts it', async () => {
+    const editing = {
+      ...explain,
+      id: 'editing',
+      key: ({ file }: { file: string }) => `editing-${file}`,
+      driver: claudeCode.job({ permissionMode: 'acceptEdits' }),
+    };
+    const jobs = [explainJob, editing as unknown as Job];
+
+    const refusal = await refusalOf(newCockpit({ jobs, authorize: () => true }));
+
+    expect(refusal).toMatchObject({
+      code: 'invalid-options',
+      issues: [
+        {
+          path: ['jobs', 1, 'driver'],
+          message: expect.stringMatching(/"editing".*without asking/s),
+        },
+      ],
+    });
+    const { cockpit, directory, host } = await newCockpit({
+      driver: claudeCode({ acceptOpenNetwork: true }),
+      jobs,
+      authorize: () => true,
+    });
+    writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
+    await cockpit.run('editing', { file: 'a' });
+    await screenShows(host, 'editing-a', 'mode: acceptEdits');
+  });
+
   it('is checked again as a run launches it: a part changed since to open the network is refused, nothing launched', async () => {
     // An app in JavaScript may write the part by hand, and keep it.
     const part: { permissionMode: string } = { permissionMode: 'default' };

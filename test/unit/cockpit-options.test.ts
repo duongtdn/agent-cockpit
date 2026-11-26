@@ -186,6 +186,38 @@ describe("createCockpit's options", () => {
     await expect(checkCockpitOptions({ ...valid(), driver: open })).resolves.toBeDefined();
   });
 
+  it.each(['default', 'dontAsk'] as const)(
+    'take a driver in %s with authorize: its sessions are confined',
+    async (permissionMode) => {
+      await expect(
+        checkCockpitOptions({
+          ...valid(),
+          driver: claudeCode({ permissionMode }),
+          authorize: () => true,
+        }),
+      ).resolves.toBeDefined();
+    },
+  );
+
+  it('refuse a driver in acceptEdits with authorize, saying its file tools write unasked, unless the app accepted it', async () => {
+    const authorize = () => true;
+
+    expect(
+      await optionIssues({
+        ...valid(),
+        driver: claudeCode({ permissionMode: 'acceptEdits' }),
+        authorize,
+      }),
+    ).toEqual([{ path: ['driver'], message: expect.stringMatching(/write.*without asking/) }]);
+    await expect(
+      checkCockpitOptions({
+        ...valid(),
+        driver: claudeCode({ permissionMode: 'acceptEdits', acceptOpenNetwork: true }),
+        authorize,
+      }),
+    ).resolves.toBeDefined();
+  });
+
   it('refuse a driver that does not say how far its sessions reach the network', async () => {
     const { networkOf: _left, ...withoutNetwork } = claudeCode();
 
@@ -237,7 +269,7 @@ describe("createCockpit's options", () => {
     );
   });
 
-  it.each(['plan', 'auto', 'bypassPermissions'] as const)(
+  it.each(['acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const)(
     "refuse a job in %s with authorize, naming the job, unless the app's driver accepted the open network",
     async (permissionMode) => {
       const job = { ...explain, id: 'free', driver: claudeCode.job({ permissionMode }) };

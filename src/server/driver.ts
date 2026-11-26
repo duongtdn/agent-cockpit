@@ -74,25 +74,34 @@ export interface Confinement {
 }
 
 /**
- * How far the commands of a driver's sessions reach the network without
- * asking the person, as the app set the driver.
+ * How far a driver's sessions act beyond the cockpit's lines without
+ * asking the person, as the app set the driver: whether their commands
+ * reach the network beyond the allow-list, and whether their file tools
+ * write files no one was asked about, which a hook may then run outside
+ * any sandbox.
  */
 export type SessionNetwork =
   /**
    * No further than the confinement's lines allow; beyond them, the agent
-   * asks or refuses, never reaches.
+   * asks or refuses, never reaches; and its file tools ask before a write,
+   * refuse it, or write nothing.
    */
   | { readonly reach: 'confined' }
   /**
-   * Beyond the allow-list, without asking: other local ports, the internet,
-   * the person's files. The cockpit then refuses to be opened beyond
-   * loopback unless the app accepted it in the driver's options.
+   * Beyond the lines, without asking: its commands reach the network
+   * beyond the allow-list (other local ports, the internet, the person's
+   * files), or its file tools write files unasked, or both. The cockpit
+   * then refuses to be opened beyond loopback unless the app accepted it in
+   * the driver's options.
    */
   | {
       readonly reach: 'open';
       /** Whether the app accepted it, in the driver's options. */
       readonly accepted: boolean;
-      /** Why, and how the app accepts it, in the driver's terms: the refusal's message. */
+      /**
+       * Why — its network, its unasked writes, or both — and how the app
+       * accepts it, in the driver's terms: the refusal's message.
+       */
       readonly reason: string;
     };
 
@@ -356,8 +365,10 @@ export interface Driver {
    */
   environmentIssues(environment: Readonly<Record<string, string>>): Promise<readonly Issue[]>;
   /**
-   * Tells how far the commands of a session reach the network without
-   * asking: the app's options, with a job's part laid over them.
+   * Tells how far a session acts beyond the cockpit's lines without
+   * asking: how far its commands reach the network, and whether its file
+   * tools write unasked; the app's options, with a job's part laid over
+   * them.
    *
    * @param part - The job's driver part, checked; none for the app's own options.
    * @returns The session's network.

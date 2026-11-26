@@ -60,8 +60,9 @@ Nothing is published yet.
   `origins` lists
   the origins allowed beyond `127.0.0.1` and `localhost`. `terminal: 'on' |
   'loopback' | 'off'` switches the terminal (`refused`, `'terminal-off'`).
-  `createCockpit` refuses `authorize` with a driver whose sessions reach an
-  open network the app did not accept.
+  `createCockpit` refuses `authorize` with a driver whose sessions are open
+  (their network, or their file tools' unasked writes) and the app did not
+  accept it.
 - `cockpit.verify(request)`, for the app's own API routes, and
   `cockpitHeaders()` from `./client`, the header a page sends them.
 - `cockpit.renewToken()`: a new token in force, the old one refused at once,
@@ -113,10 +114,13 @@ Nothing is published yet.
   `./claude-code`, with the types `ClaudeCodeOptions`, `PermissionMode` and
   `PermissionRules`: the Claude Code driver, which launches `claude` with settings of its own in the
   cockpit's state folder and without the inherited `CLAUDE_CODE_*` and
-  `CLAUDECODE` variables. A session in `default`, `acceptEdits` or
-  `dontAsk` counts as keeping its network to the cockpit's allow-list; one
-  in `plan`, `auto` or `bypassPermissions` as open, which an app opened
-  beyond loopback accepts with `acceptOpenNetwork: true`. `model` is the
+  `CLAUDECODE` variables. A session in `default` or `dontAsk` counts as
+  confined; one in `plan`, `auto` or `bypassPermissions` as open for its
+  network (a sandboxed command reaches beyond the cockpit's allow-list
+  unasked), and one in `acceptEdits`, `auto` or `bypassPermissions` for its
+  writes (the file tools write files unasked, outside the sandbox, which a
+  hook may run): an app opened beyond loopback accepts an open mode with
+  `acceptOpenNetwork: true`, and the refusal's reason says which. `model` is the
   sessions' model (`--model`); `pluginDir` the app's plugin
   (`--plugin-dir`, an existing folder); `settingSources` the only sources
   of settings read below the session's own (`--setting-sources`);
@@ -134,7 +138,8 @@ Nothing is published yet.
   even when asked, so that it cannot plant a hook, an MCP server or a
   plugin that would run outside the sandbox at the next start (a project's
   `.mcp.json` runs with no one asked in `bypassPermissions`). In
-  `bypassPermissions` the agent's file tools act as the person: the denies
+  `acceptEdits` (inside the work folder), `auto` and `bypassPermissions`
+  the agent's file tools write unasked and act as the person: the denies
   are defense in depth, not a boundary. A `CLAUDE_CONFIG_DIR` or
   a `HOME` those denies could miss (relative, or holding a character a
   permission rule reads as its own) is refused with `invalid-options`
