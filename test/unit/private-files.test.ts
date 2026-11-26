@@ -1,8 +1,20 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createPrivateFileOnce, writePrivateFile } from '../../src/server/state/private-files.ts';
+import {
+  asideTarget,
+  createPrivateFileOnce,
+  writePrivateFile,
+} from '../../src/server/state/private-files.ts';
 
 let folder: string;
 
@@ -22,6 +34,25 @@ describe('writePrivateFile', () => {
     expect(readFileSync(path, 'utf8')).toBe('new');
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readdirSync(folder)).toEqual(['f']);
+  });
+
+  it('leaves nothing aside when it cannot put the file in place', async () => {
+    mkdirSync(join(folder, 'taken'));
+    writeFileSync(join(folder, 'taken', 'inside'), '');
+    await expect(writePrivateFile(join(folder, 'taken'), 'new')).rejects.toThrow();
+    expect(readdirSync(folder)).toEqual(['taken']);
+  });
+});
+
+describe('asideTarget', () => {
+  it('names the file an aside was written for', () => {
+    expect(asideTarget('f.json.0b6f1c52-4bd5-4a53-9a0e-3c8e9c1f2d7a')).toBe('f.json');
+  });
+
+  it('names none for a file that is no aside', () => {
+    expect(asideTarget('f.json')).toBeUndefined();
+    expect(asideTarget('f.json.tmp')).toBeUndefined();
+    expect(asideTarget('.0b6f1c52-4bd5-4a53-9a0e-3c8e9c1f2d7a')).toBeUndefined();
   });
 });
 

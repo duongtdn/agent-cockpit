@@ -2,9 +2,25 @@ import { randomUUID } from 'node:crypto';
 import { link, rename, rm, writeFile } from 'node:fs/promises';
 import { readOwnFile, type UntrustedStateError } from './own-files.js';
 
+/** What follows a file's name in the name of the file written aside for it. */
+const ASIDE_SUFFIX = /\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** Where a file is written before it is put in place: beside it, so that the move is atomic. */
 function asideOf(path: string): string {
   return `${path}.${randomUUID()}`;
+}
+
+/**
+ * Tells which file a file was written aside for: one a write left there
+ * when its process died before putting it in place.
+ *
+ * @param name - A file's name in a folder.
+ * @returns The name of the file it was written for; `undefined` when it is
+ * no file written aside.
+ */
+export function asideTarget(name: string): string | undefined {
+  const suffix = ASIDE_SUFFIX.exec(name);
+  return suffix && suffix.index > 0 ? name.slice(0, suffix.index) : undefined;
 }
 
 /**
@@ -14,11 +30,18 @@ function asideOf(path: string): string {
  *
  * @param path - The file.
  * @param content - What it holds.
+ * @throws The file system's error when it cannot be written or put in
+ * place: the file there stays as it was, and nothing is left aside.
  */
 export async function writePrivateFile(path: string, content: string): Promise<void> {
   const aside = asideOf(path);
-  await writeFile(aside, content, { mode: 0o600, flag: 'wx' });
-  await rename(aside, path);
+  try {
+    await writeFile(aside, content, { mode: 0o600, flag: 'wx' });
+    await rename(aside, path);
+  } catch (error) {
+    await rm(aside, { force: true });
+    throw error;
+  }
 }
 
 /**
