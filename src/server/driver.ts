@@ -331,7 +331,9 @@ export interface Driver {
    *
    * @param environment - The environment the launch starts from: its `PATH` finds the agent.
    * @returns The version and how it stands against {@link testedRange}, or
-   * that no agent was found.
+   * that no agent was found, or that the one found cannot be run, and why
+   * (a failure a launch refuses with `agent-not-found`, never an error of
+   * its own).
    */
   agentVersion(environment: Readonly<Record<string, string>>): Promise<AgentVersion>;
   /**

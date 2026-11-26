@@ -338,6 +338,31 @@ describe("the agent's version", () => {
     expect(cockpit.sessions.list()).toEqual([]);
   });
 
+  it('refuses a run whose agent cannot say its version: `agent-not-found` with why, 503 on the wire, never a bare 500', async () => {
+    vi.stubEnv('FAKE_AGENT_VERSION', 'not-a-version');
+    const app = await startNodeHttpApp('127.0.0.1');
+    cleanups.push(() => app.close());
+    const { cockpit } = await newCockpit({ port: app.port });
+    app.serve(cockpit);
+    const token = new URL(cockpit.link('http://127.0.0.1/')).hash.replace('#cockpit=', '');
+
+    expect(cockpit.status()).toEqual({ tested: false, testedRange: TESTED_RANGE });
+    const reply = await post(
+      `${app.base}/run`,
+      { jobId: 'explain', args: { file: 'a' } },
+      { token },
+    );
+
+    expect(reply.status).toBe(503);
+    expect(JSON.parse(reply.body).error).toMatchObject({
+      code: 'agent-not-found',
+      command: 'claude',
+      message: expect.stringContaining('claude --version printed no version'),
+    });
+    expect(reply.body).not.toContain('not-a-version');
+    expect(cockpit.sessions.list()).toEqual([]);
+  });
+
   it('runs an agent newer than the tested range, and tells the app once, at the first launch', async () => {
     vi.stubEnv('FAKE_AGENT_VERSION', '99.0.0');
     const { cockpit, directory } = await newCockpit();

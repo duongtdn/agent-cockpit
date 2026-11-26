@@ -1,8 +1,10 @@
+import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -11,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { agentVersionReader } from '../../src/claude-code/agent-version.ts';
 import { claudeCode } from '../../src/claude-code/index.ts';
 import { TESTED_RANGE } from '../../src/claude-code/tested-range.ts';
 
@@ -74,12 +77,69 @@ describe("the Claude Code driver's reading of the agent's version", () => {
     });
   });
 
-  it('fails when the agent prints no version, or exits with an error', async () => {
-    agentPrinting('Claude Code');
-    await expect(claudeCode().agentVersion({ PATH: folder })).rejects.toThrow('no version');
+  it('reads a suffixed build as untested, and keeps its suffix', async () => {
+    agentPrinting('2.1.340-beta (Claude Code)');
 
-    writeFileSync(join(folder, 'claude'), '#!/bin/sh\nexit 70\n');
-    await expect(claudeCode().agentVersion({ PATH: folder })).rejects.toMatchObject({ code: 70 });
+    expect(await claudeCode().agentVersion({ PATH: folder })).toEqual({
+      found: true,
+      version: '2.1.340-beta',
+      standing: 'untested',
+    });
+  });
+
+  it('tells an agent that prints no version, or exits with an error, as one that cannot be run: why, and what it printed', async () => {
+    agentPrinting('Claude Code');
+    expect(await claudeCode().agentVersion({ PATH: folder })).toEqual({
+      found: false,
+      command: 'claude',
+      failure: { reason: 'claude --version printed no version', output: 'Claude Code\n' },
+    });
+
+    writeFileSync(join(folder, 'claude'), '#!/bin/sh\necho broken >&2\nexit 70\n');
+    expect(await claudeCode().agentVersion({ PATH: folder })).toEqual({
+      found: false,
+      command: 'claude',
+      failure: { reason: 'claude --version exited with status 70', output: 'broken\n' },
+    });
+  });
+
+  it('gives up on an agent that does not answer in time, ending it and what it started', async () => {
+    const marker = join(folder, 'still-running');
+    writeFileSync(
+      join(folder, 'claude'),
+      `#!/bin/sh\necho starting\nsh -c 'sleep 5; touch "$1"' sh '${marker}'\n`,
+    );
+    chmodSync(join(folder, 'claude'), 0o755);
+    const read = agentVersionReader(TESTED_RANGE, 200);
+
+    const started = Date.now();
+    expect(await read({ PATH: `${folder}:/usr/bin:/bin` })).toEqual({
+      found: false,
+      command: 'claude',
+      failure: { reason: 'claude --version did not answer within 0.2 s', output: 'starting\n' },
+    });
+    expect(Date.now() - started).toBeLessThan(2000);
+    // What the agent started was ended with it: nothing is left to leave a mark.
+    const grandchildren = spawnSync('pgrep', ['-f', marker], { encoding: 'utf8' });
+    expect(grandchildren.stdout).toBe('');
+  });
+
+  it('cuts what an agent printed to a few kilobytes', async () => {
+    writeFileSync(
+      join(folder, 'claude'),
+      '#!/bin/sh\nhead -c 100000 /dev/zero | tr "\\0" x\nexit 1\n',
+    );
+    chmodSync(join(folder, 'claude'), 0o755);
+
+    const reading = await claudeCode().agentVersion({ PATH: `${folder}:/usr/bin:/bin` });
+
+    expect(reading).toMatchObject({
+      found: false,
+      failure: { reason: 'claude --version exited with status 1' },
+    });
+    const { output } = (reading as { failure: { output: string } }).failure;
+    expect(output.length).toBeLessThanOrEqual(4096 + 20);
+    expect(output).toMatch(/…$/);
   });
 
   it('skips what the PATH holds under the name but cannot run: a folder, a file not executable', async () => {
@@ -137,9 +197,42 @@ describe("the Claude Code driver's version cache", () => {
   it('keeps no failure: an agent that failed is run again', async () => {
     const driver = claudeCode();
     agentPrinting('Claude Code');
-    await expect(driver.agentVersion({ PATH: folder })).rejects.toThrow('no version');
+    expect(await driver.agentVersion({ PATH: folder })).toMatchObject({ found: false });
 
-    await expect(driver.agentVersion({ PATH: folder })).rejects.toThrow('no version');
+    expect(await driver.agentVersion({ PATH: folder })).toMatchObject({ found: false });
+    expect(runs()).toBe(2);
+  });
+
+  it('runs it again once replaced by another file, its time of change kept', async () => {
+    const driver = claudeCode();
+    const program = agentPrinting('2.1.332 (Claude Code)');
+    // A time of change in whole seconds, which a file is given again exactly.
+    const mtime = new Date('2026-01-01T00:00:00Z');
+    utimesSync(program, mtime, mtime);
+    await driver.agentVersion({ PATH: folder });
+
+    const replacement = join(folder, 'replacement');
+    mkdirSync(replacement);
+    agentPrinting('999.0.0 (Claude Code)', replacement);
+    utimesSync(join(replacement, 'claude'), mtime, mtime);
+    renameSync(join(replacement, 'claude'), program);
+
+    expect(await driver.agentVersion({ PATH: folder })).toMatchObject({ version: '999.0.0' });
+    expect(runs()).toBe(2);
+  });
+
+  it('runs it again once rewritten in place, its time of change set back', async () => {
+    const driver = claudeCode();
+    const program = agentPrinting('2.1.332 (Claude Code)');
+    // A time of change in whole seconds, which a file is given again exactly.
+    const mtime = new Date('2026-01-01T00:00:00Z');
+    utimesSync(program, mtime, mtime);
+    await driver.agentVersion({ PATH: folder });
+
+    agentPrinting('999.0.0 (Claude Code)');
+    utimesSync(program, mtime, mtime);
+
+    expect(await driver.agentVersion({ PATH: folder })).toMatchObject({ version: '999.0.0' });
     expect(runs()).toBe(2);
   });
 

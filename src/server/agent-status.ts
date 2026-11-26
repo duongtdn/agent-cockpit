@@ -27,9 +27,13 @@ export interface CockpitStatus {
   readonly testedRange: TestedRange;
 }
 
-/** What `cockpit.on('untested-version', …)` gives: a version newer than any tested. */
+/**
+ * What `cockpit.on('untested-version', …)` gives: a version no contract
+ * test ran on that still runs — newer than any tested, or a suffixed build
+ * (`2.1.340-beta`) not older than the range.
+ */
 export interface UntestedVersion {
-  /** The agent's version, newer than the range's newest. */
+  /** The agent's version: newer than the range's newest, or a suffixed build. */
   readonly agentVersion: string;
   /** The driver's tested range. */
   readonly testedRange: TestedRange;
@@ -42,15 +46,32 @@ export type AgentVersion =
       readonly found: false;
       /** The command the driver looked for, as `agent-not-found` names it. */
       readonly command: string;
+      /**
+       * Why an agent found cannot be run, when one was: it failed, hung or
+       * printed no version. Absent when none was found.
+       */
+      readonly failure?: AgentFailure;
     }
   | {
       /** The agent answered with its version. */
       readonly found: true;
       /** Its version, as the agent gave it. */
       readonly version: string;
-      /** How it stands against the driver's tested range. */
-      readonly standing: 'tested' | 'newer' | 'older';
+      /**
+       * How it stands against the driver's tested range: within it, newer,
+       * older, or `untested` for a build the range does not name (a
+       * version with a suffix, such as `2.1.340-beta`, not older than it).
+       */
+      readonly standing: 'tested' | 'newer' | 'older' | 'untested';
     };
+
+/** Why an agent found cannot be run, as the driver tells it. */
+export interface AgentFailure {
+  /** What went wrong, in the driver's words: the message of `agent-not-found`. */
+  readonly reason: string;
+  /** What the agent printed, cut short: the server's alone, never on the wire. */
+  readonly output: string;
+}
 
 /** The cockpit's knowledge of the agent's version. */
 export interface AgentStatus {
@@ -65,12 +86,13 @@ export interface AgentStatus {
   record(reading: AgentVersion): void;
   /**
    * Admits the agent a launch would run: records the reading, tells the
-   * handlers of a version newer than the range the first time a launch runs
-   * it, and refuses an agent that is missing or older than the range.
+   * handlers of an untested version (newer than the range, or a suffixed
+   * build) the first time a launch runs it, and refuses an agent that is missing or older than the range.
    *
    * @param reading - What the driver read for the launch.
    * @throws `CockpitError` `agent-not-found` (`command`) when no agent was
-   * found; `agent-too-old` (`found`, `oldestTested`) when it is older than
+   * found, or the one found cannot be run (the reason in the message, its
+   * output in the error's `cause`); `agent-too-old` (`found`, `oldestTested`) when it is older than
    * the range.
    */
   admit(reading: AgentVersion): void;
@@ -122,13 +144,7 @@ export function createAgentStatus(
     record,
     admit(reading) {
       record(reading);
-      if (!reading.found) {
-        throw new CockpitError(
-          'agent-not-found',
-          `The agent's command ${reading.command} is not found on the PATH it is launched with.`,
-          { command: reading.command },
-        );
-      }
+      if (!reading.found) throw agentNotFound(reading.command, reading.failure);
       if (reading.standing === 'older') {
         throw new CockpitError(
           'agent-too-old',
@@ -136,7 +152,7 @@ export function createAgentStatus(
           { found: reading.version, oldestTested: testedRange.oldest },
         );
       }
-      if (reading.standing === 'newer') tell(reading.version);
+      if (reading.standing === 'newer' || reading.standing === 'untested') tell(reading.version);
     },
     onUntested(handler) {
       // A handler given twice is two subscriptions, each removed by its own function.
@@ -147,4 +163,19 @@ export function createAgentStatus(
       };
     },
   };
+}
+
+function agentNotFound(command: string, failure: AgentFailure | undefined): CockpitError {
+  if (failure === undefined) {
+    return new CockpitError(
+      'agent-not-found',
+      `The agent's command ${command} is not found on the PATH it is launched with.`,
+      { command },
+    );
+  }
+  return new CockpitError(
+    'agent-not-found',
+    `The agent's command ${command} is found but cannot be run: ${failure.reason}.`,
+    { command, cause: new Error(failure.output) },
+  );
 }

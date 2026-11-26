@@ -75,6 +75,46 @@ describe("the cockpit's status of the agent", () => {
     expect(handler).toHaveBeenCalledOnce();
   });
 
+  it('tells each handler of a suffixed build once, as of a newer version: no test ran on it', () => {
+    const status = createAgentStatus(RANGE);
+    const handler = vi.fn();
+    status.onUntested(handler);
+
+    status.admit({ found: true, version: '2.1.332-beta', standing: 'untested' });
+    status.admit({ found: true, version: '2.1.332-beta', standing: 'untested' });
+
+    expect(handler.mock.calls).toEqual([[{ agentVersion: '2.1.332-beta', testedRange: RANGE }]]);
+    expect(status.current()).toEqual({
+      agentVersion: '2.1.332-beta',
+      tested: false,
+      testedRange: RANGE,
+    });
+  });
+
+  it('refuses a launch with an agent found that cannot be run: agent-not-found, why in the message, what it printed in the cause only', () => {
+    const status = createAgentStatus(RANGE);
+    status.record({ found: true, version: '2.1.332', standing: 'tested' });
+    let refusal: unknown;
+    try {
+      status.admit({
+        found: false,
+        command: 'claude',
+        failure: { reason: 'claude --version exited with status 70', output: 'a secret path' },
+      });
+    } catch (error) {
+      refusal = error;
+    }
+
+    expect(isCockpitError(refusal, 'agent-not-found')).toBe(true);
+    expect(refusal).toMatchObject({
+      command: 'claude',
+      message: expect.stringContaining('claude --version exited with status 70'),
+    });
+    expect((refusal as Error).cause).toEqual(new Error('a secret path'));
+    expect(JSON.stringify(refusal)).not.toContain('a secret path');
+    expect(status.current()).toEqual({ tested: false, testedRange: RANGE });
+  });
+
   it('admits a tested version, telling nothing', () => {
     const status = createAgentStatus(RANGE);
     const handler = vi.fn();

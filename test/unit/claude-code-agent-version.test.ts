@@ -17,6 +17,12 @@ describe("the agent's version against the tested range", () => {
     ['2.1.329', 'older'],
     ['2.0.999', 'older'],
     ['1.99.99', 'older'],
+    // A suffixed build is one no test ran on, whatever its numbers: unless they are older.
+    ['2.1.330-beta', 'untested'],
+    ['2.1.331-rc.1', 'untested'],
+    ['2.1.332+local', 'untested'],
+    ['2.1.340-beta', 'untested'],
+    ['2.1.329-beta', 'older'],
   ] as const)('counts %s as %s', (version, standing) => {
     expect(standingOf(version, RANGE)).toBe(standing);
   });
@@ -27,7 +33,23 @@ describe("the agent's answer to --version", () => {
     expect(parseVersion('2.1.332 (Claude Code)\n')).toBe('2.1.332');
   });
 
-  it.each(['', 'Claude Code', 'v2.1', '2.1 (Claude Code)'])('reads no version in %j', (text) => {
+  it.each([
+    ['2.1.340-beta (Claude Code)\n', '2.1.340-beta'],
+    ['2.1.340-rc.1+build.7 (Claude Code)', '2.1.340-rc.1+build.7'],
+    ['2.1.340+local', '2.1.340+local'],
+  ])('gives a version with a suffix as printed: %j', (printed, version) => {
+    expect(parseVersion(printed)).toBe(version);
+  });
+
+  it.each([
+    '',
+    'Claude Code',
+    'v2.1',
+    '2.1 (Claude Code)',
+    '2.1.340- (Claude Code)',
+    '2.1.340-beta!',
+    '2.1.340beta',
+  ])('reads no version in %j', (text) => {
     expect(parseVersion(text)).toBeUndefined();
   });
 });
