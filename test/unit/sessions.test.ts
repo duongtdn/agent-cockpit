@@ -4,9 +4,12 @@ import { SessionHostError } from '../../src/server/session-host/session-host-err
 import {
   createSessions,
   LIVENESS_INTERVAL_MS,
+  PROMPT_BOUND_MS,
+  READY_BOUND_MS,
+  SCREEN_INTERVAL_MS,
   type Sessions,
   SessionsClosedError,
-  SILENT_START_MS,
+  START_DEADLINE_MS,
 } from '../../src/server/sessions/sessions.ts';
 import { CockpitError, isCockpitError } from '../../src/shared/cockpit-error.ts';
 import type { RunResult, Session } from '../../src/shared/session.ts';
@@ -19,6 +22,7 @@ import {
   STUB_COMMAND,
   type StubDriver,
   stubFolders,
+  stubScreen,
 } from '../support/sessions-doubles.ts';
 
 const T0 = new Date('2026-11-26T10:00:00.000Z');
@@ -305,10 +309,10 @@ describe('a launch that fails', () => {
 });
 
 describe('a launch whose agent never reports', () => {
-  it(`is ended after ${SILENT_START_MS / 1000} s and refused \`unobservable\`, with the driver's cause`, async () => {
+  it(`is ended after ${START_DEADLINE_MS / 1000} s with nothing on its screen, and refused \`unobservable\`, with the driver's cause`, async () => {
     const { result } = await launched();
 
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS - 1);
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS - 1);
     expect(host.kills).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
 
@@ -318,7 +322,7 @@ describe('a launch whose agent never reports', () => {
     expect(sessionOf()).toEqual({
       key: KEY,
       state: 'ended',
-      since: new Date(T0.getTime() + SILENT_START_MS).toISOString(),
+      since: new Date(T0.getTime() + START_DEADLINE_MS).toISOString(),
       canResume: true,
       reason: 'unobservable',
     });
@@ -333,18 +337,16 @@ describe('a launch whose agent never reports', () => {
     held.open();
     await settle();
 
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS - 1);
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS - 1);
     expect(host.kills).toEqual([]);
   });
 
   it('is not ended once the agent reported ready, even before it took the prompt', async () => {
-    const { result } = await launched();
+    await launched();
     hook('/ready');
 
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS * 2);
-    hook('/prompt-taken');
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS * 2);
 
-    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
     expect(host.kills).toEqual([]);
   });
 
@@ -353,13 +355,357 @@ describe('a launch whose agent never reports', () => {
     const { result } = await launched();
     host.failNextKill(failure);
 
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS);
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS);
 
     await expect(result).rejects.toBe(failure);
     expect(sessionOf()?.state).toBe('starting');
     host.exit(KEY);
     await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
     expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'unobservable' });
+  });
+});
+
+/** The time `ms` after the launch, as `since` holds it. */
+function at(ms: number): string {
+  return new Date(T0.getTime() + ms).toISOString();
+}
+
+/** Lets the screen be read once more: the next read is at most one interval away. */
+const nextRead = () => vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+
+describe("a launch's screen, read until its agent's first hook", () => {
+  it(`is read every ${SCREEN_INTERVAL_MS} ms from the launch, and no more once a hook came`, async () => {
+    await launched();
+
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+    expect(host.screenReads).toBe(4);
+
+    hook('/ready');
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+    expect(host.screenReads).toBe(4);
+  });
+
+  it('makes the session wait in the terminal at a dialog, named; the run resolves at `waiting`', async () => {
+    const { result } = await launched();
+    host.show(KEY, stubScreen('trust-folder'));
+
+    await nextRead();
+
+    await expect(result).resolves.toEqual({ action: 'started', state: 'waiting' });
+    expect(sessionOf()).toEqual({
+      key: KEY,
+      state: 'waiting',
+      since: at(SCREEN_INTERVAL_MS),
+      pending: [{ kind: 'terminal', dialog: 'trust-folder' }],
+    });
+  });
+
+  it('names no dialog the driver does not know', async () => {
+    const { result } = await launched();
+    host.show(KEY, stubScreen('dialog'));
+
+    await nextRead();
+
+    await expect(result).resolves.toEqual({ action: 'started', state: 'waiting' });
+    expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'terminal' }] });
+  });
+
+  it("follows the dialog's name while it waits, its `since` kept, and tells only a change", async () => {
+    await launched(KEY, {});
+    const seen: Session[][] = [];
+    sessions.follow((list) => seen.push([...list]));
+    host.show(KEY, stubScreen('onboarding'));
+    await nextRead();
+    await nextRead();
+
+    host.show(KEY, stubScreen('login'));
+    await nextRead();
+    await nextRead();
+
+    expect(seen.map((list) => list[0])).toEqual([
+      { key: KEY, state: 'starting', since: at(0) },
+      {
+        key: KEY,
+        state: 'waiting',
+        since: at(SCREEN_INTERVAL_MS),
+        pending: [{ kind: 'terminal', dialog: 'onboarding' }],
+      },
+      {
+        key: KEY,
+        state: 'waiting',
+        since: at(SCREEN_INTERVAL_MS),
+        pending: [{ kind: 'terminal', dialog: 'login' }],
+      },
+    ]);
+  });
+
+  it('waits as long as the dialog shows: a person may answer at any time', async () => {
+    await launched();
+    host.show(KEY, stubScreen('trust-folder'));
+
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS * 6);
+
+    expect(host.kills).toEqual([]);
+    expect(sessionOf()?.state).toBe('waiting');
+  });
+
+  it('goes on once the person answered: `idle` at the first hook, launched with no prompt', async () => {
+    await launched(KEY, {});
+    host.show(KEY, stubScreen('trust-folder'));
+    await nextRead();
+    const seen: string[] = [];
+    sessions.follow((list) => seen.push(list[0]?.state ?? 'none'));
+    host.show(KEY, stubScreen('ready'));
+    await nextRead();
+
+    hook('/ready');
+
+    expect(seen).toEqual(['waiting', 'idle']);
+    expect(sessionOf()).toEqual({ key: KEY, state: 'idle', since: at(SCREEN_INTERVAL_MS * 2) });
+  });
+
+  it('goes on once the person answered: `starting` at the first hook, `busy` when the prompt is taken', async () => {
+    await launched();
+    host.show(KEY, stubScreen('bypass-permissions'));
+    await nextRead();
+    const seen: string[] = [];
+    sessions.follow((list) => seen.push(list[0]?.state ?? 'none'));
+
+    hook('/ready');
+    hook('/prompt-taken');
+
+    expect(seen).toEqual(['waiting', 'starting', 'busy']);
+  });
+
+  it('is `ended`, `declined`, with its dialog, when the process goes from the dialog with no hook', async () => {
+    const { result } = await launched();
+    host.show(KEY, stubScreen('trust-folder'));
+    await nextRead();
+    await expect(result).resolves.toMatchObject({ state: 'waiting' });
+
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    expect(sessionOf()).toMatchObject({
+      state: 'ended',
+      reason: 'declined',
+      dialog: 'trust-folder',
+    });
+  });
+
+  it('is `declined` when the agent says it ends as it leaves the dialog', async () => {
+    await launched();
+    host.show(KEY, stubScreen('bypass-permissions'));
+    await nextRead();
+
+    hook('/ending');
+    expect(sessionOf()?.state).toBe('waiting');
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    expect(sessionOf()).toMatchObject({
+      state: 'ended',
+      reason: 'declined',
+      dialog: 'bypass-permissions',
+    });
+  });
+
+  it('is `declined` with no dialog named when the driver did not know it', async () => {
+    await launched();
+    host.show(KEY, stubScreen('dialog'));
+    await nextRead();
+
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'declined' });
+    expect(sessionOf()).not.toHaveProperty('dialog');
+  });
+
+  it('is `lost` when the process goes once the dialog was answered and the input box shows', async () => {
+    await launched();
+    host.show(KEY, stubScreen('trust-folder'));
+    await nextRead();
+    host.show(KEY, stubScreen('ready'));
+    await nextRead();
+
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'lost' });
+    expect(sessionOf()).not.toHaveProperty('dialog');
+  });
+
+  it('is `lost` when the process goes past the dialog, after its first hook', async () => {
+    await launched();
+    host.show(KEY, stubScreen('trust-folder'));
+    await nextRead();
+    hook('/ready');
+
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'lost' });
+  });
+
+  it("takes no screen a person scrolled back for the agent's", async () => {
+    await launched();
+    host.show(KEY, stubScreen('trust-folder'));
+    host.scrollBack(KEY, true);
+    await nextRead();
+    expect(sessionOf()?.state).toBe('starting');
+
+    host.scrollBack(KEY, false);
+    await nextRead();
+    expect(sessionOf()?.state).toBe('waiting');
+  });
+
+  it('goes on reading after a read failed', async () => {
+    await launched();
+    host.exit(KEY);
+    await nextRead();
+    host.leave(KEY);
+    host.show(KEY, stubScreen('login'));
+
+    await nextRead();
+
+    expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ dialog: 'login' }] });
+  });
+});
+
+describe("a launch's deadline", () => {
+  it(`comes ${READY_BOUND_MS / 1000} s after the input box first shows, sooner than with nothing on screen`, async () => {
+    const { result } = await launched();
+    host.show(KEY, stubScreen('ready'));
+
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS + READY_BOUND_MS - 1);
+    expect(host.kills).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(result).rejects.toMatchObject({ code: 'unobservable', key: KEY });
+    expect(sessionOf()).toMatchObject({
+      state: 'ended',
+      reason: 'unobservable',
+      since: at(SCREEN_INTERVAL_MS + READY_BOUND_MS),
+    });
+  });
+
+  it('gives a box first seen late its whole bound', async () => {
+    await launched();
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS - 2 * SCREEN_INTERVAL_MS);
+    host.show(KEY, stubScreen('ready'));
+    await nextRead();
+
+    await vi.advanceTimersByTimeAsync(READY_BOUND_MS - 1);
+    expect(host.kills).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(host.kills).toEqual([KEY]);
+  });
+
+  it('starts again when a dialog leaves the screen, from then', async () => {
+    const { result } = await launched();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS * 2);
+    await expect(result).resolves.toMatchObject({ state: 'waiting' });
+    host.show(KEY, '');
+    await nextRead();
+
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS - 1);
+    expect(host.kills).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(host.kills).toEqual([KEY]);
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'unobservable' });
+  });
+
+  it('ends a session whose dialog was answered and whose hooks never come, the box showing', async () => {
+    await launched();
+    host.show(KEY, stubScreen('trust-folder'));
+    await nextRead();
+    host.show(KEY, stubScreen('ready'));
+    await nextRead();
+
+    await vi.advanceTimersByTimeAsync(READY_BOUND_MS);
+
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'unobservable' });
+  });
+});
+
+describe('a launch prompt that no hook says was taken', () => {
+  async function ready(): Promise<{ result: Promise<RunResult> }> {
+    const launch = await launched();
+    hook('/ready');
+    return launch;
+  }
+
+  it(`is waited for ${PROMPT_BOUND_MS / 1000} s after the agent is ready, then read on screen: the input box back is \`idle\``, async () => {
+    const { result } = await ready();
+    host.show(KEY, stubScreen('ready'));
+
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS - 1);
+    expect(sessionOf()?.state).toBe('starting');
+    expect(host.screenReads).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(result).resolves.toEqual({ action: 'started', state: 'idle' });
+    expect(sessionOf()).toEqual({ key: KEY, state: 'idle', since: at(PROMPT_BOUND_MS) });
+  });
+
+  it('waits in the terminal while a panel shows, then is `idle` once the box is back', async () => {
+    const { result } = await ready();
+    host.show(KEY, stubScreen('dialog'));
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS);
+    await expect(result).resolves.toEqual({ action: 'started', state: 'waiting' });
+    expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'terminal' }] });
+
+    host.show(KEY, stubScreen('ready'));
+    await nextRead();
+
+    expect(sessionOf()).toMatchObject({ state: 'idle' });
+    const reads = host.screenReads;
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+    expect(host.screenReads).toBe(reads);
+  });
+
+  it('is `busy` when the screen shows neither: the agent works on it, and its hooks tell the rest', async () => {
+    const { result } = await ready();
+
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS);
+
+    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+    hook('/turn-ended');
+    expect(sessionOf()?.state).toBe('idle');
+  });
+
+  it('is not read when the prompt is taken in time', async () => {
+    const { result } = await ready();
+    hook('/prompt-taken');
+
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS * 2);
+
+    await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
+    expect(host.screenReads).toBe(0);
+  });
+
+  it('is not waited for when the launch gave none', async () => {
+    await launched(KEY, {});
+    hook('/ready');
+
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS * 2);
+
+    expect(sessionOf()?.state).toBe('idle');
+    expect(host.screenReads).toBe(0);
+  });
+
+  it('is read no more once the session ended', async () => {
+    await ready();
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS);
+
+    expect(host.screenReads).toBe(0);
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'lost' });
   });
 });
 
@@ -380,7 +726,7 @@ describe('a hook that arrives while the agent is being started on the host', () 
 
     held.open();
     await expect(result).resolves.toEqual({ action: 'started', state: 'busy' });
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS * 2);
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS * 2);
     expect(host.kills).toEqual([]);
   });
 
@@ -403,7 +749,7 @@ describe('a hook that arrives while the cockpit ends a silent session', () => {
   it('changes nothing: the run is refused `unobservable` and the session ends so', async () => {
     const { result } = await launched();
     const kill = host.holdNextKill();
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS);
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS);
 
     hook('/start-and-take');
     await settle();
@@ -417,7 +763,7 @@ describe('a hook that arrives while the cockpit ends a silent session', () => {
   it('is heard again once the kill failed: the session still lives', async () => {
     const { result } = await launched();
     host.failNextKill(new SessionHostError('host-failed', 'tmux failed.'));
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS);
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS);
     await expect(result).rejects.toThrow(SessionHostError);
 
     hook('/start-and-take');
@@ -428,7 +774,7 @@ describe('a hook that arrives while the cockpit ends a silent session', () => {
   it('records a later end for what it is, not `unobservable`, once the kill failed', async () => {
     const { result } = await launched();
     host.failNextKill(new SessionHostError('host-failed', 'tmux failed.'));
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS);
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS);
     await expect(result).rejects.toThrow(SessionHostError);
     hook('/start-and-take');
 
@@ -451,7 +797,7 @@ describe('closing the sessions core', () => {
     sessions.close();
 
     await closedRun(result);
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS * 2);
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS * 2);
     expect(host.kills).toEqual([]);
     expect(host.listings).toBe(0);
   });
@@ -467,7 +813,7 @@ describe('closing the sessions core', () => {
 
     await closedRun(result);
     expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(SILENT_START_MS * 2);
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS * 2);
     expect(host.kills).toEqual([]);
     expect(host.listings).toBe(0);
   });

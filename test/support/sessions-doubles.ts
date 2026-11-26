@@ -5,6 +5,7 @@ import type {
   HookRequest,
   Launch,
   LaunchCommand,
+  ScreenReading,
 } from '../../src/server/driver.ts';
 import type {
   Attachment,
@@ -14,6 +15,7 @@ import type {
 } from '../../src/server/session-host/session-host.ts';
 import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import type { HookAccess, SessionFolders } from '../../src/server/sessions/sessions.ts';
+import type { StartupDialog } from '../../src/shared/session.ts';
 import { DRIVER_DEFAULTS } from './driver-defaults.ts';
 
 /** What a deferred host call waits for: the test settles it. */
@@ -75,6 +77,12 @@ export interface FakeHost extends SessionHost {
   readonly listings: number;
   /** The attachments given, in order. */
   readonly attachments: FakeAttachment[];
+  /** How many times a screen was read. */
+  readonly screenReads: number;
+  /** Makes a session's screen show the text from now on: blank until then. */
+  show(name: string, text: string): void;
+  /** Makes the session's screen read as scrolled back by a person, or not. */
+  scrollBack(name: string, scrolled: boolean): void;
   /** Makes a session live, as one left by an earlier run. */
   leave(name: string): void;
   /** Makes a session gone, as when its process exits. */
@@ -103,6 +111,9 @@ export function createFakeHost(): FakeHost {
   const kills: string[] = [];
   const attachments: FakeAttachment[] = [];
   let listings = 0;
+  let screenReads = 0;
+  const screens = new Map<string, string>();
+  const scrolled = new Set<string>();
   let nextStart: { error?: unknown; gate?: Gate } = {};
   let nextList: Gate | undefined;
   let listsFail = false;
@@ -119,6 +130,12 @@ export function createFakeHost(): FakeHost {
     get listings() {
       return listings;
     },
+    get screenReads() {
+      return screenReads;
+    },
+    show: (name, text) => void screens.set(name, text),
+    scrollBack: (name, scrolledBack) =>
+      void (scrolledBack ? scrolled.add(name) : scrolled.delete(name)),
     leave: (name) => void live.add(name),
     exit: (name) => void live.delete(name),
     failNextStart(error) {
@@ -178,7 +195,11 @@ export function createFakeHost(): FakeHost {
     sendText: unused,
     sendKeys: unused,
     sendBytes: unused,
-    readScreen: unused,
+    async readScreen(name) {
+      screenReads += 1;
+      if (!live.has(name)) throw new SessionHostError('no-session', `${name} does not live.`);
+      return { text: screens.get(name) ?? '', inCopyMode: scrolled.has(name) };
+    },
     async attach(name: string, _size: TerminalSize) {
       const error = nextAttachError;
       nextAttachError = undefined;
@@ -211,11 +232,32 @@ export const STUB_EVENTS: Readonly<Record<string, readonly DriverEvent[]>> = {
   '/turn-ended': [{ type: 'turn-ended', lastMessage: 'Done.' }],
   '/turn-ended-silently': [{ type: 'turn-ended' }],
   '/agent-exit': [{ type: 'ending', reason: 'agent-exit' }],
+  '/ending': [{ type: 'ending', reason: 'lost' }],
   '/start-and-take': [{ type: 'ready' }, { type: 'prompt-taken' }],
   '/background': [],
 };
 
-/** A driver for tests: it launches what it is told and reads hooks by their path alone. */
+/**
+ * The screens a stub driver reads: `ready`, `dialog` (one it does not
+ * know), `dialog:<name>`; any other text shows nothing.
+ */
+export function stubScreen(reading: 'ready' | 'dialog' | StartupDialog): string {
+  return reading === 'ready' || reading === 'dialog' ? reading : `dialog:${reading}`;
+}
+
+function readStubScreen(text: string): ScreenReading {
+  if (text === 'ready') return { shows: 'ready' };
+  if (text === 'dialog') return { shows: 'dialog' };
+  if (text.startsWith('dialog:')) {
+    return { shows: 'dialog', dialog: text.slice('dialog:'.length) as StartupDialog };
+  }
+  return { shows: 'nothing' };
+}
+
+/**
+ * A driver for tests: it launches what it is told, reads hooks by their
+ * path alone and screens as {@link stubScreen} writes them.
+ */
 export interface StubDriver extends Driver {
   /** Every launch it was asked for, in order. */
   readonly launches: Launch[];
@@ -244,6 +286,7 @@ export function createStubDriver(): StubDriver {
     terminalKeys: [],
     silentStartCause: 'The stub agent sent no hook.',
     ...DRIVER_DEFAULTS,
+    readScreen: readStubScreen,
     failNextLaunch(error) {
       nextLaunchError = error;
     },

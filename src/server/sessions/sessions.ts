@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { CockpitError } from '../../shared/cockpit-error.js';
 import {
+  type EndedSession,
   type EndReason,
   isSessionKey,
   type RunResult,
@@ -19,9 +20,11 @@ import type {
   AgentEndReason,
   Confinement,
   Driver,
+  DriverEvent,
   HookAddress,
   HookRequest,
   LaunchCommand,
+  ScreenReading,
 } from '../driver.js';
 import type {
   Attachment,
@@ -31,15 +34,21 @@ import type {
 } from '../session-host/session-host.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
 import { LivenessWatch } from './liveness-watch.js';
+import { ScreenWatch } from './screen-watch.js';
 import { sessionAfter } from './session-states.js';
+import { type DialogShown, StartUpWatch } from './start-up-watch.js';
+
+export { SCREEN_INTERVAL_MS } from './screen-watch.js';
+export { READY_BOUND_MS, START_DEADLINE_MS } from './start-up-watch.js';
 
 /**
- * How long a launched agent has to report it is ready before the cockpit
- * ends it as one it cannot observe (ADR-0035). Far above the slowest start
- * seen, about 2 s on a loaded machine; a start-up dialog, which also holds
- * the report back, is read from the screen first in a later version.
+ * How long after its first hook an agent launched with a prompt has to say
+ * it took the prompt, before the cockpit reads its screen instead. Claude
+ * Code's `UserPromptSubmit` comes 0.1–0.17 s after its `SessionStart`; a
+ * local command (`/help`, `/clear`, `/context`) given as the prompt fires
+ * none, and only the screen tells what the agent does then.
  */
-export const SILENT_START_MS = 30_000;
+export const PROMPT_BOUND_MS = 5_000;
 
 /**
  * How often the host is listed to see sessions that are gone. A session's
@@ -152,13 +161,16 @@ export interface Sessions {
    *
    * @param run - See {@link SessionRun}.
    * @returns `{ action: 'started' }` with the state the session left
-   * `starting` for: `busy` (the prompt taken), `idle` (no prompt), or
-   * `ended` (the agent was gone before it reported).
+   * `starting` for: `busy` (the prompt taken), `idle` (no prompt, or one
+   * the agent took without a turn), `waiting` (a dialog in the terminal,
+   * which a person must answer), or `ended` (the agent was gone before it
+   * reported: `declined` when it left a dialog).
    * @throws `TypeError` for a key that is no session key.
    * @throws `CockpitError` `wrong-state` when the key has a session, whatever
-   * its state, for now; `unobservable` when the agent reported nothing within
-   * {@link SILENT_START_MS}: the session was ended. What the driver's launch
-   * rejects with, such as `agent-not-found`.
+   * its state, for now; `unobservable` when the agent reported nothing and
+   * showed no dialog by {@link START_DEADLINE_MS}, or within
+   * {@link READY_BOUND_MS} of showing its input box: the session was ended.
+   * What the driver's launch rejects with, such as `agent-not-found`.
    * @throws `SessionsClosedError` when the core is closed before the run
    * settles, or was closed before it: a launch not yet on the host stops,
    * one already there goes on, unwatched.
@@ -270,9 +282,17 @@ interface Entry {
   endedBecause?: EndReason;
   /** Why the agent said it was ending. */
   agentSaid?: AgentEndReason;
-  /** Whether any hook of the agent's was heard: it can be observed. */
+  /**
+   * Whether a hook of the agent's other than its end was heard: it can be
+   * observed, and it is past its start-up dialogs.
+   */
   heard: boolean;
-  silentStart?: NodeJS.Timeout;
+  /** Reads the screen from the launch until {@link heard}. */
+  startUp?: StartUpWatch;
+  /** Reads the screen once the launch prompt was not taken in time. */
+  promptBound?: NodeJS.Timeout;
+  /** Reads the screen while a panel the prompt opened waits for a key. */
+  panel?: ScreenWatch;
 }
 
 class SessionRegistry implements Sessions {
@@ -308,13 +328,13 @@ class SessionRegistry implements Sessions {
     if (entry?.phase !== 'launching' && entry?.phase !== 'live') return;
     const { events } = this.#options.driver.readHook({ key, path, body });
     for (const event of events) {
-      // Any hook at all proves the session can be observed: a silent start
-      // whose kill failed is no longer one, and ends for its own reason.
-      entry.heard = true;
-      delete entry.endedBecause;
-      clearTimeout(entry.silentStart);
+      const before = this.#sessionAfterStartUp(entry, event);
+      // The agent says it ends, the session goes on until its process is
+      // gone: declining a dialog may say so too, before any other hook.
       if (event.type === 'ending') entry.agentSaid = event.reason;
-      this.#update(entry, sessionAfter(entry.session, event, entry.launchedWithPrompt, now()));
+      else this.#hear(entry);
+      this.#update(entry, sessionAfter(before, event, entry.launchedWithPrompt, now()));
+      if (event.type === 'ready') this.#awaitPrompt(entry);
     }
   }
 
@@ -350,7 +370,7 @@ class SessionRegistry implements Sessions {
     this.#closed = true;
     this.#watch.close();
     for (const entry of this.#entries.values()) {
-      clearTimeout(entry.silentStart);
+      stopReadingTheScreen(entry);
       entry.departure.reject(new SessionsClosedError(entry.key));
     }
   }
@@ -432,8 +452,122 @@ class SessionRegistry implements Sessions {
     // Closed while the host started it: the session goes on, unwatched.
     if (this.#closed) return;
     this.#watch.watch(entry.key);
-    if (!entry.heard) {
-      entry.silentStart = setTimeout(() => void this.#endSilent(entry), SILENT_START_MS);
+    if (!entry.heard) this.#watchStartUp(entry);
+  }
+
+  /**
+   * Reads the screen until the agent's first hook: a dialog makes the
+   * session wait in the terminal, and a start with neither is ended at the
+   * watch's deadline.
+   */
+  #watchStartUp(entry: Entry): void {
+    entry.startUp = new StartUpWatch({
+      read: () => this.#readScreen(entry.key),
+      onDialog: (shown) => this.#waitInTerminal(entry, shown),
+      onDeadline: () => void this.#endUnobservable(entry),
+    });
+    entry.startUp.start();
+  }
+
+  /**
+   * The agent is heard past its start: any hook proves it can be observed,
+   * so a silent start whose kill failed is no longer one, and ends for its
+   * own reason; the screen is no longer read.
+   */
+  #hear(entry: Entry): void {
+    entry.heard = true;
+    delete entry.endedBecause;
+    stopReadingTheScreen(entry);
+  }
+
+  /**
+   * The session an event of the agent applies to: a session that waited in
+   * the terminal for a start-up dialog is `starting` again once the agent
+   * goes on, whose hooks come only once every dialog is answered.
+   */
+  #sessionAfterStartUp(entry: Entry, event: DriverEvent): Session {
+    const { session } = entry;
+    const pastDialog = event.type !== 'ending' && !entry.heard && session.state === 'waiting';
+    if (!pastDialog) return session;
+    return { key: session.key, state: 'starting', since: now() };
+  }
+
+  /**
+   * Bounds the wait for a launch prompt once the agent is ready: a local
+   * command fires no hook when the agent takes it, so the screen tells.
+   */
+  #awaitPrompt(entry: Entry): void {
+    if (!entry.launchedWithPrompt || entry.session.state !== 'starting') return;
+    entry.promptBound = setTimeout(() => void this.#readForPrompt(entry), PROMPT_BOUND_MS);
+  }
+
+  /**
+   * Reads what became of a launch prompt no hook said was taken: the input
+   * box back means the agent took it without a turn (a local command), and
+   * waits for the next (`idle`); a panel waits for a person's key in the
+   * terminal (`waiting`, until the box is back); anything else, the agent
+   * works on it (`busy`), and its hooks tell the rest.
+   */
+  async #readForPrompt(entry: Entry): Promise<void> {
+    const reading = await this.#readScreen(entry.key);
+    if (entry.phase !== 'live' || entry.session.state !== 'starting') return;
+    switch (reading?.shows) {
+      case 'ready':
+        this.#update(entry, { key: entry.key, state: 'idle', since: now() });
+        return;
+      case 'dialog':
+        this.#waitInTerminal(entry, reading.dialog === undefined ? {} : { dialog: reading.dialog });
+        this.#watchPanel(entry);
+        return;
+      default:
+        this.#update(entry, { key: entry.key, state: 'busy', since: now() });
+    }
+  }
+
+  /** Reads the screen until the panel the launch prompt opened is closed: then `idle`. */
+  #watchPanel(entry: Entry): void {
+    const panel = new ScreenWatch({
+      read: () => this.#readScreen(entry.key),
+      onReading: (reading) => {
+        if (reading.shows === 'dialog') this.#waitInTerminal(entry, reading);
+        if (reading.shows !== 'ready') return;
+        panel.stop();
+        this.#update(entry, { key: entry.key, state: 'idle', since: now() });
+      },
+    });
+    entry.panel = panel;
+    panel.start();
+  }
+
+  /**
+   * Makes the session wait for a person in the terminal, naming the dialog
+   * when the driver knows it; a session already waiting for the same keeps
+   * its `since`, and one whose dialog changed (onboarding, then login)
+   * keeps it too: it waits all along.
+   */
+  #waitInTerminal(entry: Entry, { dialog }: DialogShown): void {
+    const { session } = entry;
+    if (session.state === 'waiting' && session.pending[0]?.dialog === dialog) return;
+    this.#update(entry, {
+      key: entry.key,
+      state: 'waiting',
+      since: session.state === 'waiting' ? session.since : now(),
+      pending: [dialog === undefined ? { kind: 'terminal' } : { kind: 'terminal', dialog }],
+    });
+  }
+
+  /**
+   * Reads what the session's screen shows, as the driver tells it:
+   * `undefined` when it cannot be read, or shows a person's scrolling back
+   * rather than the agent's screen.
+   */
+  async #readScreen(key: string): Promise<ScreenReading | undefined> {
+    try {
+      const screen = await this.#options.host.readScreen(key);
+      return screen.inCopyMode ? undefined : this.#options.driver.readScreen(screen.text);
+    } catch {
+      // Gone, or the host failed: the liveness watch tells the one, the next read the other.
+      return undefined;
     }
   }
 
@@ -454,7 +588,7 @@ class SessionRegistry implements Sessions {
   }
 
   /** Ends a session whose agent never reported: the cockpit keeps none it cannot observe. */
-  async #endSilent(entry: Entry): Promise<void> {
+  async #endUnobservable(entry: Entry): Promise<void> {
     entry.endedBecause = 'unobservable';
     // From here the run's outcome is `unobservable`: a late hook changes nothing.
     entry.phase = 'killing';
@@ -483,7 +617,7 @@ class SessionRegistry implements Sessions {
     const entry = this.#entries.get(key);
     if (entry?.phase !== 'live' && entry?.phase !== 'killing') return;
     entry.phase = 'going';
-    clearTimeout(entry.silentStart);
+    stopReadingTheScreen(entry);
     this.#watch.unwatch(key);
     this.#options.hooks.revoke(key);
     const canResume = await this.#options.driver
@@ -491,13 +625,7 @@ class SessionRegistry implements Sessions {
       // A conversation the driver cannot find is one it cannot resume.
       .catch(() => false);
     entry.phase = 'ended';
-    this.#update(entry, {
-      key,
-      state: 'ended',
-      since: now(),
-      canResume,
-      reason: entry.endedBecause ?? entry.agentSaid ?? 'lost',
-    });
+    this.#update(entry, { key, state: 'ended', since: now(), canResume, ...endOf(entry) });
   }
 
   #setPhase(entry: Entry, phase: Phase): void {
@@ -516,6 +644,28 @@ class SessionRegistry implements Sessions {
     const sessions = this.list();
     for (const follower of this.#followers) follower(sessions);
   }
+}
+
+/**
+ * Why a session whose process is gone ended: the cockpit's own reason
+ * first; then a start-up dialog the screen showed last, before any hook
+ * past it, which the person declined (the agent may say it ends as it
+ * goes, as Claude Code does on the bypass warning); then the agent's word.
+ */
+function endOf(entry: Entry): Pick<EndedSession, 'reason' | 'dialog'> {
+  if (entry.endedBecause !== undefined) return { reason: entry.endedBecause };
+  const declined = entry.heard ? undefined : entry.startUp?.dialogShown;
+  if (declined === undefined) return { reason: entry.agentSaid ?? 'lost' };
+  return declined.dialog === undefined
+    ? { reason: 'declined' }
+    : { reason: 'declined', dialog: declined.dialog };
+}
+
+/** Stops every read of the session's screen, and every wait for one. */
+function stopReadingTheScreen(entry: Entry): void {
+  entry.startUp?.stop();
+  entry.panel?.stop();
+  clearTimeout(entry.promptBound);
 }
 
 function wrongState(session: Session): CockpitError<'wrong-state'> {
