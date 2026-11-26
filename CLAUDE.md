@@ -20,7 +20,13 @@ src/
   terminal/     `./terminal`: the mounted terminal (xterm.js)
   shared/       what both sides use: CockpitError, the wire's types
 test/
-  unit/  integration/  contract/  live/  e2e/  support/
+  unit/         no process, no terminal
+  integration/  real tmux; the fake agent, the test doubles' own tests
+  contract/     the real agent against the scripted API (below)
+  pack/         what `npm pack` would ship
+  support/      fake-api/ (a scripted Messages API), fake-agent/ (a program
+                run in place of Claude Code), real-agent/ (the pinned
+                agent's runner), hooks/ (a hook receiver, for both agents)
 examples/       example apps: the demos and the end-to-end fixtures
 docs/           guide.md, api.md, security.md, machines.md
 ```
@@ -44,8 +50,9 @@ built-ins: `server/`, `fastify/`, `claude-code/` and `channel-server/` only.
   the coverage gate (90% of `src/`): only real tmux exercises the code that
   speaks to it, so the gate counts both.
 - `pnpm test` (unit, quick), `pnpm test:integration` (real tmux),
-  `pnpm test:contract` (the real agent, below), `pnpm test:e2e`,
-  `pnpm test:live` (the real model; by hand only).
+  `pnpm test:contract` (the real agent, below), `pnpm test:pack` (after a
+  build). The end-to-end and the live suites (`test/e2e/`, `test/live/`:
+  the real model, by hand only) are not written yet.
 - `pnpm build`, `pnpm typecheck`, `pnpm lint` (Biome, which also formats).
 
 ## The contract suite
@@ -58,7 +65,10 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   one exact version, allowed to run its install script in
   `pnpm-workspace.yaml` (without it the package holds no binary). The suite
   runs that binary, never the `claude` of the `PATH`. Moving to another
-  version is a change of the pin, with the suite green on it.
+  version is a change of the pin, in a commit of its own:
+  `pnpm add --save-dev --save-exact @anthropic-ai/claude-code@<version>`,
+  then `pnpm test:contract` green on it, then `package.json` and
+  `pnpm-lock.yaml` committed together.
 - **It needs no login and no network**: every test gets a temporary `HOME`
   and `CLAUDE_CONFIG_DIR`, a fake API key, a fake API and a hook receiver on
   loopback ports of its own, and its own tmux socket
@@ -66,9 +76,24 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   could reach Anthropic or the person's configuration.
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
+- **A test is written with `test/contract/harness.ts`**:
+  `startContractAgent()` gives it an API double to script, a hook receiver
+  and a runner, and ends them with the test. Its title is the behavior's
+  number, a dash between two spaces (`1 — …`), then the behavior: the results
+  are read from the titles, and a test titled otherwise is left out of them.
 - Each run writes `test-results/contract.json` (git-ignored; CI keeps it as
   an artifact): the agent's version, the date, each behavior's number, title
   and outcome.
+
+## The fake agent
+
+The integration tests run `test/support/fake-agent/` as a session's command
+in place of Claude Code, with Claude Code's command line: it fires the hooks
+of its `--settings` file, takes keys and writes a transcript, playing the
+script a test writes in the session's folder. It plays only what was observed
+of Claude Code; asked for anything else it shows why and exits with status
+70 — extend it from evidence, never from a guess. It is TypeScript that Node
+runs as it is, so the integration tests need Node 22.18 or later.
 
 ## How code is written here
 

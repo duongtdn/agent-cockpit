@@ -59,6 +59,12 @@ pnpm install
 pnpm check    # typecheck, lint, tests, build, and what npm would pack
 ```
 
+The tests need tmux 3.2a or later and Node 22.18 or later. Some run the real
+Claude Code, a development dependency at one exact version, against a
+scripted API on the machine itself: they need no login, send nothing to
+Anthropic, and leave the person's own Claude Code and its configuration
+alone. [CLAUDE.md](CLAUDE.md) has the conventions.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

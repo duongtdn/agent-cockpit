@@ -106,7 +106,8 @@ const EXIT_POLL_MS = 20;
 
 /**
  * Starts a runner: makes its temporary root (the agent's `HOME`, its
- * configuration folder, a trusted work folder, the settings file) and names
+ * configuration folder, a trusted work folder, its temporary folder, the
+ * settings file) and names
  * a tmux socket no other run has. Nothing runs until a launch.
  *
  * @param options - The API's address and the sessions' settings.
