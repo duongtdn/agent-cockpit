@@ -14,7 +14,7 @@ import type { CockpitOptions } from '../cockpit-options.js';
 import type { FailureSite } from '../failures.js';
 import { readBodyWithin } from './body.js';
 import { type BridgedSessions, bridgeTerminal } from './pty-bridge.js';
-import { refusalOf, tokenRefusalOf } from './request-checks.js';
+import { type AccessRules, admissionOf, type Reach, terminalRefusalOf } from './request-checks.js';
 import { headerToken, subprotocolToken } from './request-token.js';
 import { requestRouteOf, socketRouteOf } from './router.js';
 import {
@@ -39,7 +39,7 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 
 /** What the handler serves the browser's requests with. */
 export interface HandlerOptions {
-  /** The app's token's constant-time comparison. */
+  /** The app's token's constant-time comparison: a local request needs the token. */
   readonly tokenMatches: (candidate: string | undefined) => boolean;
   /** Runs a job, as `cockpit.run` does. */
   readonly run: (jobId: string, args: unknown) => Promise<RunResult>;
@@ -75,6 +75,16 @@ export interface Handler {
   /** Serves a WebSocket upgrade under the mount. */
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
+   * Closes every browser-facing WebSocket — the sessions' followers and
+   * every terminal — so that each reconnect passes the checks again, as a
+   * renewal of the app's token needs (a live terminal is a shell). A
+   * handshake whose admission is under way is checked again. Later
+   * requests are served as before.
+   *
+   * @returns A promise fulfilled once every terminal is detached.
+   */
+  closeAllSockets(): Promise<void>;
+  /**
    * Refuses every later request, closes every WebSocket and detaches every
    * terminal.
    *
@@ -85,8 +95,10 @@ export interface Handler {
 
 /**
  * Creates the handler: every request, HTTP or upgrade, passes the request
- * checks and carries the app's token before it is routed, so that nothing
- * of the routes shows to a request that would be refused.
+ * checks — the app's `authorize` for a remote one, the app's token for a
+ * local one — before it is routed, so that nothing of the routes shows to
+ * a request that would be refused; the terminal's switch then applies to
+ * the terminal's routes.
  *
  * @param options - See {@link HandlerOptions}.
  */
@@ -98,29 +110,62 @@ export function createHandler(options: HandlerOptions): Handler {
     handleProtocols: () => WIRE_SUBPROTOCOL,
   });
   const bridges = new Set<Promise<void>>();
+  const rules: AccessRules = {
+    origins: options.origins,
+    ...(options.authorize === undefined ? {} : { authorize: options.authorize }),
+    tokenMatches: options.tokenMatches,
+    reportAuthorizeFailure: (cause) => options.reportFailure('authorize', cause),
+  };
   let closed = false;
+  // Counts the closings of every socket: an admission that began before one
+  // is made again, since what admitted it (the token, `authorize`) may have
+  // changed.
+  let socketClosings = 0;
 
   const handle: Handler['handle'] = (request, response) => {
     if (closed) return writeAnswer(response, { status: 503 });
-    const refusal =
-      refusalOf(request) ?? tokenRefusalOf(headerToken(request), options.tokenMatches);
-    if (refusal) return writeAnswer(response, errorAnswer(refusal));
-    serve(request, options).then(
-      (answer) => writeAnswer(response, answer),
+    admissionOf(request, headerToken(request), rules)
+      .then((admission) => {
+        if (closed) return { status: 503 };
+        if ('refused' in admission) return errorAnswer(admission.refused);
+        return serve(request, admission.admitted, options);
+      })
+      .then(
+        (answer) => writeAnswer(response, answer),
+        (error: unknown) => {
+          if (!isCockpitError(error)) options.reportFailure('handler', error);
+          writeAnswer(response, answerOfFailure(error));
+        },
+      );
+  };
+
+  const admitUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    const closingsBefore = socketClosings;
+    admissionOf(request, subprotocolToken(request), rules).then(
+      (admission) => {
+        if (closed) return refuseUpgrade(socket, { status: 503 });
+        if (socketClosings !== closingsBefore) return admitUpgrade(request, socket, head);
+        if ('refused' in admission) return refuseUpgrade(socket, errorAnswer(admission.refused));
+        upgradeAdmitted(request, socket, head, admission.admitted);
+      },
       (error: unknown) => {
-        if (!isCockpitError(error)) options.reportFailure('handler', error);
-        writeAnswer(response, answerOfFailure(error));
+        options.reportFailure('handler', error);
+        refuseUpgrade(socket, { status: 500 });
       },
     );
   };
 
-  const upgrade: Handler['upgrade'] = (request, socket, head) => {
-    if (closed) return refuseUpgrade(socket, { status: 503 });
-    const refusal =
-      refusalOf(request) ?? tokenRefusalOf(subprotocolToken(request), options.tokenMatches);
-    if (refusal) return refuseUpgrade(socket, errorAnswer(refusal));
+  const upgradeAdmitted = (
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    reach: Reach,
+  ) => {
     const route = socketRouteOf(request.url ?? '');
     if (route === undefined) return refuseUpgrade(socket, { status: 404 });
+    const refusal =
+      route.route === 'terminal' ? terminalRefusalOf(options.terminal, reach) : undefined;
+    if (refusal) return refuseUpgrade(socket, errorAnswer(refusal));
     sockets.handleUpgrade(request, socket, head, (webSocket) => {
       if (route.route === 'follow-sessions') {
         followSessions(webSocket, options.sessions);
@@ -132,19 +177,38 @@ export function createHandler(options: HandlerOptions): Handler {
     });
   };
 
+  const closeAllSockets = async (): Promise<void> => {
+    socketClosings += 1;
+    // Terminated, not closed with a handshake: a peer that never answers
+    // the close must not keep a shell.
+    for (const client of sockets.clients) client.terminate();
+    await Promise.all(bridges);
+  };
+
   return {
     handle,
-    upgrade,
+    upgrade(request, socket, head) {
+      // Node leaves an upgraded socket without an error listener: one is
+      // needed while the admission is under way, or a reset peer would
+      // crash the server.
+      socket.on('error', () => socket.destroy());
+      if (closed) return refuseUpgrade(socket, { status: 503 });
+      admitUpgrade(request, socket, head);
+    },
+    closeAllSockets,
     async close() {
       closed = true;
-      for (const client of sockets.clients) client.terminate();
-      await Promise.all(bridges);
+      await closeAllSockets();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
     },
   };
 }
 
-async function serve(request: IncomingMessage, options: HandlerOptions): Promise<WireAnswer> {
+async function serve(
+  request: IncomingMessage,
+  reach: Reach,
+  options: HandlerOptions,
+): Promise<WireAnswer> {
   const route = requestRouteOf(request.method ?? '', request.url ?? '');
   switch (route.route) {
     case 'run':
@@ -155,9 +219,12 @@ async function serve(request: IncomingMessage, options: HandlerOptions): Promise
     }
     case 'wrong-method':
       return { status: 405, headers: { allow: route.allow } };
+    case 'terminal-probe': {
+      const refusal = terminalRefusalOf(options.terminal, reach);
+      return refusal ? errorAnswer(refusal) : UPGRADE_REQUIRED;
+    }
     case 'upgrade-required':
-    case 'terminal-probe':
-      return { status: 426, headers: { upgrade: 'websocket' } };
+      return UPGRADE_REQUIRED;
     case 'unknown':
       return { status: 404 };
   }
@@ -185,6 +252,8 @@ function runRequestOf(text: string): RunRequest {
   }
   return body as RunRequest;
 }
+
+const UPGRADE_REQUIRED: WireAnswer = { status: 426, headers: { upgrade: 'websocket' } };
 
 function json(value: unknown): WireAnswer {
   return { status: 200, body: JSON.stringify(value) };
