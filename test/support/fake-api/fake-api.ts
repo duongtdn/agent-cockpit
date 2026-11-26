@@ -22,6 +22,13 @@ export type FakeApiOptions = {
    * that offer no tools.
    */
   readonly isSideRequest?: SideRequestRule;
+  /**
+   * The turn a conversation request gets when the script holds no answer
+   * left: a demo's one answer to whatever is asked, so that a person may run
+   * as many sessions as they like. Without it, such a request is refused
+   * and counts as unexpected.
+   */
+  readonly fallback?: Turn;
 };
 
 /** How a held turn ended: the test released it, or the connection closed first. */
@@ -171,7 +178,7 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
       case 'conversation':
         conversationCount += 1;
         conversationRequests.add(exchange.request);
-        answerFromScript(exchange, script.shift());
+        answerFromScript(exchange, script.shift() ?? options.fallback);
         break;
     }
   }

@@ -462,6 +462,21 @@ describe('what the script did not foresee', () => {
     api.assertScriptUsedUp();
   });
 
+  it('answers with the fallback turn a demo gives when the script holds none, and finds nothing unexpected', async () => {
+    const api = await start({ fallback: turn('The one answer') });
+    api.script(turn('Scripted first'));
+
+    const first = await (await post(api, conversation('one', { stream: false }))).json();
+    const second = await (await post(api, conversation('two', { stream: false }))).json();
+    const third = await (await post(api, conversation('three', { stream: false }))).json();
+
+    expect(first.content).toEqual([{ type: 'text', text: 'Scripted first' }]);
+    expect(second.content).toEqual([{ type: 'text', text: 'The one answer' }]);
+    expect(third.content).toEqual([{ type: 'text', text: 'The one answer' }]);
+    expect(third.id).not.toBe(second.id);
+    api.assertNothingUnexpected();
+  });
+
   it('reports the scripted answers left unused, on demand', async () => {
     const api = await start();
     api.script(turn('used'), turn('Left over', toolUse('Bash')), apiError(529), heldTurn());
