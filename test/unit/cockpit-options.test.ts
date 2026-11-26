@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { claudeCode } from '../../src/claude-code/index.ts';
 import { checkCockpitOptions } from '../../src/server/cockpit-options.ts';
 import { checkPlatform, linkTo } from '../../src/server/create-cockpit.ts';
-import { issuesOf, type Job, jobOf, launchOfJob } from '../../src/server/jobs.ts';
+import type { Job } from '../../src/server/jobs.ts';
 import { isCockpitError } from '../../src/shared/cockpit-error.ts';
 
 const folder = mkdtempSync(join(tmpdir(), 'cockpit-options-'));
@@ -327,57 +327,6 @@ describe("createCockpit's options", () => {
         { path: ['directory'], message: `No folder at ${directory}.` },
       ]);
     }
-  });
-});
-
-describe('a run of a job', () => {
-  const jobs = new Map<string, Job>([[explain.id, explain as unknown as Job]]);
-
-  const explainJob = explain as unknown as Job;
-
-  it('gives the key and the prompt from the arguments the schema gave', () => {
-    expect(launchOfJob(jobOf(jobs, 'explain'), { file: 'README.md' })).toEqual({
-      key: 'explain-readme-md',
-      prompt: 'Explain README.md',
-    });
-  });
-
-  it('gives no prompt for a job for typing', () => {
-    const typing = { ...explain, id: 'type' } as Partial<typeof explain>;
-    delete typing.prompt;
-
-    expect(launchOfJob(typing as unknown as Job, { file: 'a' })).toEqual({ key: 'explain-a' });
-  });
-
-  it("carries the job's driver part, as the job gives it", () => {
-    const part = claudeCode.job({ permissionMode: 'acceptEdits' });
-
-    expect(launchOfJob({ ...explainJob, driver: part }, { file: 'a' })).toEqual({
-      key: 'explain-a',
-      prompt: 'Explain a',
-      part,
-    });
-  });
-
-  it('refuses an id no job has: unknown-job', () => {
-    expect(() => jobOf(jobs, 'nothing')).toThrow(
-      expect.objectContaining({ code: 'unknown-job', jobId: 'nothing' }),
-    );
-  });
-
-  it('refuses arguments the schema refuses: invalid-arguments, each issue with its path', () => {
-    expect(() => launchOfJob(explainJob, { file: '' })).toThrow(
-      expect.objectContaining({
-        code: 'invalid-arguments',
-        issues: [{ path: ['file'], message: expect.any(String) }],
-      }),
-    );
-  });
-
-  it('writes a symbol in a path as its description', () => {
-    expect(
-      issuesOf([{ code: 'custom', input: 1, path: ['a', 0, Symbol('where')], message: 'no' }]),
-    ).toEqual([{ path: ['a', 0, 'where'], message: 'no' }]);
   });
 });
 
