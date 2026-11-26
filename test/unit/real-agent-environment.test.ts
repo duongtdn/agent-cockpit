@@ -100,4 +100,11 @@ describe("the real agent's configuration", () => {
       projects: { '/tmp/r/work': { hasTrustDialogAccepted: true } },
     });
   });
+
+  it('leaves out a piece of that recipe, for the dialog it spares', () => {
+    expect(agentConfiguration(folders, ['folder-trust'])).not.toHaveProperty('projects');
+    expect(agentConfiguration(folders, ['key-approval'])).not.toHaveProperty(
+      'customApiKeyResponses',
+    );
+  });
 });

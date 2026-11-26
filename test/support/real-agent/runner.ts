@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { createTmuxSessionHost } from '../../../src/server/session-host/tmux-session-host.ts';
 import { type AgentSession, sessionOf } from '../agent-session.ts';
 import { pinnedAgentBinary } from './binary.ts';
-import { agentEnvironment, onlyTheseVariables, variablesAfter } from './environment.ts';
+import {
+  agentEnvironment,
+  onlyTheseVariables,
+  type RecipePiece,
+  variablesAfter,
+} from './environment.ts';
 import { type AgentLaunch, assertStaysLocal, loopbackOrigin } from './guard.ts';
 import { agentFoldersOutside, createAgentFolders, tearDownRun } from './run-root.ts';
 
@@ -20,12 +25,24 @@ export interface RealAgentRunnerOptions {
    * what the launch rules let pass, its hooks and its permissions.
    */
   readonly settings: object;
+  /**
+   * The pieces of the configuration that starts the agent at its input
+   * prompt left out, each for the start-up dialog it spares; none by default.
+   */
+  readonly leftOutOfRecipe?: readonly RecipePiece[];
+  /**
+   * Variables the agent gets beside the ones that keep it local, each of
+   * which the launch rules must let pass; none by default.
+   */
+  readonly variables?: Readonly<Record<string, string>>;
 }
 
 /** What a test chooses about one launch. */
 export interface LaunchOptions {
   /** The prompt on the command line, after `--`; none starts the session idle. */
   readonly prompt?: string;
+  /** The session's permission mode; `default` when left out. */
+  readonly permissionMode?: string;
 }
 
 /** Runs the pinned agent for one test, in folders and on a tmux socket of its own. */
@@ -69,7 +86,8 @@ const TERMINAL_SIZE = { columns: 120, rows: 40 };
 
 /**
  * Starts a runner: makes its temporary root (the agent's `HOME`, its
- * configuration folder, a trusted work folder, its temporary folder) and
+ * configuration folder, a work folder trusted unless the test says otherwise,
+ * its temporary folder) and
  * names a tmux socket no other run has. Nothing runs until a launch.
  *
  * @param options - The API's address and the sessions' settings.
@@ -81,8 +99,8 @@ export async function startRealAgentRunner(
   options: RealAgentRunnerOptions,
 ): Promise<RealAgentRunner> {
   const apiOrigin = loopbackOrigin(options.apiBaseUrl);
-  const folders = await createAgentFolders();
-  const environment = agentEnvironment(folders, apiOrigin);
+  const folders = await createAgentFolders(options.leftOutOfRecipe);
+  const environment = { ...agentEnvironment(folders, apiOrigin), ...options.variables };
   const host = createTmuxSessionHost({ appName: `real-agent-${randomUUID()}` });
   const processIds: number[] = [];
   let launches = 0;
@@ -90,7 +108,7 @@ export async function startRealAgentRunner(
 
   async function launch(
     conversation: readonly [option: '--session-id' | '--resume', id: string],
-    { prompt }: LaunchOptions,
+    { prompt, permissionMode = 'default' }: LaunchOptions,
   ): Promise<AgentSession> {
     const changes = onlyTheseVariables(environment, process.env);
     const checked: AgentLaunch = {
@@ -101,7 +119,7 @@ export async function startRealAgentRunner(
         '--settings',
         JSON.stringify(options.settings),
         '--permission-mode',
-        'default',
+        permissionMode,
         '--model',
         'haiku',
         ...(prompt === undefined ? [] : ['--', prompt]),

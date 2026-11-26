@@ -3,16 +3,24 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
-import { type AgentFolders, agentConfiguration, ROOT_NAME_PREFIX } from './environment.ts';
+import {
+  type AgentFolders,
+  agentConfiguration,
+  type RecipePiece,
+  ROOT_NAME_PREFIX,
+} from './environment.ts';
 
 /**
  * Makes the temporary root of a run of the real agent, and its folders: the
  * agent's `HOME`, its configuration folder with a configuration that starts
  * it at its input prompt, a trusted work folder, its temporary folder.
  *
+ * @param leftOut - The pieces of that configuration left out; none by default.
  * @returns The folders; the caller removes the root.
  */
-export async function createAgentFolders(): Promise<AgentFolders> {
+export async function createAgentFolders(
+  leftOut: readonly RecipePiece[] = [],
+): Promise<AgentFolders> {
   // Resolved: the agent looks a folder's trust up by its resolved path.
   const root = await mkdtemp(join(await realpath(tmpdir()), ROOT_NAME_PREFIX));
   const inside = {
@@ -25,7 +33,7 @@ export async function createAgentFolders(): Promise<AgentFolders> {
   const folders = { root, ...inside };
   await writeFile(
     join(folders.configFolder, '.claude.json'),
-    JSON.stringify(agentConfiguration(folders)),
+    JSON.stringify(agentConfiguration(folders, leftOut)),
   );
   return folders;
 }

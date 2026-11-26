@@ -11,6 +11,7 @@ import {
   type AgentSession,
   type LaunchOptions,
   type RealAgentRunner,
+  type RealAgentRunnerOptions,
   startRealAgentRunner,
 } from '../support/real-agent/runner.ts';
 import { runAll } from '../support/run-all.ts';
@@ -73,6 +74,16 @@ export interface ContractAgent {
    */
   end(session: AgentSession, signal: 'SIGTERM' | 'SIGKILL'): Promise<void>;
   /**
+   * Waits until a session's agent exits by itself, as the test expects it
+   * to: the waits no longer fail on that session being gone. Called before
+   * what makes it leave, so that its end is never taken for an unexpected one.
+   *
+   * @param session - A session that lives.
+   * @returns Fulfilled once the session is gone.
+   * @throws Error as every wait of the agent's.
+   */
+  exits(session: AgentSession): Promise<void>;
+  /**
    * Keeps, in the test's results, the Enters a submit pressed before the one
    * the agent took: no failure, since the driver absorbs a lost Enter, but
    * what a run should show.
@@ -99,6 +110,8 @@ export interface ContractAgentOptions {
    * command runs without an ask. A test of the ask itself gives its own.
    */
   readonly permissions?: object;
+  /** What the runner leaves out of the configuration and gives the agent beside it: see {@link RealAgentRunnerOptions}. */
+  readonly runner?: Pick<RealAgentRunnerOptions, 'leftOutOfRecipe' | 'variables'>;
 }
 
 /** Far longer than the agent takes (a start is under a second), short enough to fail with the reason. */
@@ -155,6 +168,7 @@ export async function startContractAgent(
   const runner = await startRealAgentRunner({
     apiBaseUrl: api.baseUrl,
     settings: sessionSettings(hooks, permissions),
+    ...options.runner,
   });
   closers.push(() => runner.close());
   finalChecks.push(() => expect(runner.leftOutsideRoot()).toEqual([]));
@@ -211,6 +225,10 @@ export function drivenAgent(parts: DrivenAgentParts): DrivenAgent {
     end: async (session, signal) => {
       sessions.expectEndOf(session);
       process.kill(await session.processId(), signal);
+      await waits.waitFor(`the session ${session.name} to be gone`, session.ended);
+    },
+    exits: async (session) => {
+      sessions.expectEndOf(session);
       await waits.waitFor(`the session ${session.name} to be gone`, session.ended);
     },
     noteLostEnters: (lost) => {
@@ -426,7 +444,7 @@ const ENTER_PRESSES = 3;
 
 /** What a submit gave. */
 export interface Submitted {
-  /** The `UserPromptSubmit` hook, which carries the prompt. */
+  /** The hook that confirms the submit: `UserPromptSubmit`, which carries the prompt, unless the submit said another. */
   readonly hook: ReceivedHook;
   /** How many Enters it took: more than one when the agent lost one. */
   readonly enters: number;
@@ -455,7 +473,8 @@ export async function submitPrompt(
 
 /**
  * Submits what an idle session's input box holds as the driver does: Enter,
- * then a few seconds for the `UserPromptSubmit`; when none came and the box
+ * then a few seconds for the `UserPromptSubmit` (or the event that confirms
+ * a local command, such as `PreCompact` for `/compact`); when none came and the box
  * still holds the text, Enter again, up to three times. The agent has been
  * seen to miss an Enter, so a submit is confirmed, never assumed. Each Enter
  * before the one taken is noted in the test's results.
@@ -464,6 +483,7 @@ export async function submitPrompt(
  * @param session - An idle session, the text in its input box.
  * @param stillHolds - Tells whether the box, as {@link inputBoxText} gives
  * it, still holds the text: once it does not, the text was taken.
+ * @param confirmation - The event that tells the text was taken; `UserPromptSubmit` by default.
  * @returns The hook that carries the text, and the Enters it took.
  * @throws Error when the box still holds the text after the last Enter, or
  * as every wait of the agent's.
@@ -472,16 +492,17 @@ export async function submitInputBox(
   agent: DrivenAgent,
   session: AgentSession,
   stillHolds: (box: string) => boolean,
+  confirmation = 'UserPromptSubmit',
 ): Promise<Submitted> {
   // Claimed once, before the first Enter: whichever Enter is taken, its hook is this one. It
   // never fails and keeps no timer, so nothing runs on when the submit throws.
-  const submitted = agent.hooks.next('UserPromptSubmit');
+  const submitted = agent.hooks.next(confirmation);
   for (let enters = 1; ; enters++) {
     await session.press('Enter');
     // Each Enter has a few seconds of its own; the agent's wait adds only its failing fast.
     const hook = await waitAWhile(
       agent,
-      `a UserPromptSubmit after Enter ${enters}`,
+      `a ${confirmation} after Enter ${enters}`,
       submitted,
       SUBMIT_PATIENCE_MS,
     );
@@ -490,12 +511,12 @@ export async function submitInputBox(
     if (box === undefined || !stillHolds(box)) {
       // Out of the box, the text was taken and its hook is on its way: another Enter would be
       // the agent's next key. The hook gets the agent's whole patience from now.
-      const late = await agent.waitFor('the UserPromptSubmit of a text the box let go', submitted);
+      const late = await agent.waitFor(`the ${confirmation} of a text the box let go`, submitted);
       return noted(agent, { hook: late, enters });
     }
     if (enters === ENTER_PRESSES) {
       throw new Error(
-        `The input box still holds ${JSON.stringify(box)} after ${ENTER_PRESSES} Enters, ${SUBMIT_PATIENCE_MS} ms apart, and no UserPromptSubmit came.`,
+        `The input box still holds ${JSON.stringify(box)} after ${ENTER_PRESSES} Enters, ${SUBMIT_PATIENCE_MS} ms apart, and no ${confirmation} came.`,
       );
     }
   }

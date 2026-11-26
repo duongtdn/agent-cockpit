@@ -119,6 +119,43 @@ describe('scripted turns', () => {
     expect(second.id).not.toBe(first.id);
   });
 
+  it("answers a subagent's conversation from its own script, whatever the order its requests come in", async () => {
+    const api = await start();
+    api.script(turn('Main'));
+    api.scriptConversation('Count the files.', turn('Sub one'), turn('Sub two'));
+    const opening = (text: string) => [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '<system-reminder>…</system-reminder>' },
+          { type: 'text', text },
+        ],
+      },
+    ];
+    const textOf = async (body: unknown) => (await (await post(api, body)).json()).content[0].text;
+
+    const sub = await textOf(
+      conversation('', { stream: false, messages: opening('Count the files.') }),
+    );
+    const main = await textOf(conversation('start a task', { stream: false }));
+    const subAgain = await textOf(
+      conversation('', {
+        stream: false,
+        messages: [...opening('Count the files.'), { role: 'assistant', content: 'Sub one' }],
+      }),
+    );
+
+    expect([sub, main, subAgain]).toEqual(['Sub one', 'Main', 'Sub two']);
+    api.assertScriptUsedUp();
+  });
+
+  it('counts the answers of every conversation among those never asked for', async () => {
+    const api = await start();
+    api.scriptConversation('Count the files.', turn('Sub one'));
+
+    expect(() => api.assertScriptUsedUp()).toThrow(/never asked for \(1\)/);
+  });
+
   it('reports the usage scripted', async () => {
     const api = await start();
     api.script(withUsage(turn('Big'), { input_tokens: 150_000, output_tokens: 42 }));

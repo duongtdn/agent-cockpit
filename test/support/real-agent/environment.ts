@@ -73,19 +73,34 @@ export function agentEnvironment(folders: AgentFolders, apiOrigin: string): Reco
 }
 
 /**
+ * A piece of the configuration with which the agent starts at its input
+ * prompt: each spares one start-up dialog, which the agent shows, before
+ * any hook, when the piece is left out.
+ */
+export type RecipePiece = 'folder-trust' | 'key-approval';
+
+/**
  * Gives the content of the agent's `.claude.json` with which it starts at
  * its input prompt: each key spares one dialog (the onboarding, the question
  * about the API key, the trust in the folder), and no dialog fires a hook.
  *
  * @param folders - The run's folders; the work folder must be given resolved,
  * as the agent looks its trust up by the resolved path.
+ * @param leftOut - The pieces left out, for a test of the dialog each spares; none by default.
  * @returns The configuration, to write as JSON.
  */
-export function agentConfiguration(folders: AgentFolders): object {
+export function agentConfiguration(
+  folders: Pick<AgentFolders, 'workFolder'>,
+  leftOut: readonly RecipePiece[] = [],
+): object {
   return {
     hasCompletedOnboarding: true,
-    customApiKeyResponses: { approved: [FAKE_API_KEY.slice(-KEY_SUFFIX_LENGTH)] },
-    projects: { [folders.workFolder]: { hasTrustDialogAccepted: true } },
+    ...(leftOut.includes('key-approval')
+      ? {}
+      : { customApiKeyResponses: { approved: [FAKE_API_KEY.slice(-KEY_SUFFIX_LENGTH)] } }),
+    ...(leftOut.includes('folder-trust')
+      ? {}
+      : { projects: { [folders.workFolder]: { hasTrustDialogAccepted: true } } }),
   };
 }
 

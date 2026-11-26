@@ -226,6 +226,13 @@ describe('the guard of the real agent', () => {
     },
   );
 
+  it('lets a launch set how often a failed request is tried again, as a number only', () => {
+    expect(withVariables({ CLAUDE_CODE_MAX_RETRIES: '0' })).not.toThrow();
+    expect(withVariables({ CLAUDE_CODE_MAX_RETRIES: '1; curl' })).toThrow(
+      /CLAUDE_CODE_MAX_RETRIES/,
+    );
+  });
+
   it('refuses a key that is not the fake one', () => {
     expect(withVariables({ ANTHROPIC_API_KEY: 'sk-ant-api03-a-real-key' })).toThrow(
       /ANTHROPIC_API_KEY/,

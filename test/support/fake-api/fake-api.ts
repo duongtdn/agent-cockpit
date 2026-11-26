@@ -8,6 +8,7 @@ import {
   type LoggedRequest,
   offersNoTools,
   parseBody,
+  type RequestMessage,
   requestKind,
   type SideRequestRule,
 } from './requests.ts';
@@ -54,6 +55,17 @@ export type FakeApi = {
    * @param answers - Turns, API errors, cut streams and held turns, in order.
    */
   script(...answers: readonly ScriptedAnswer[]): void;
+  /**
+   * Adds answers to the script of another conversation than the session's
+   * own: a subagent's, which the agent runs beside it. Its requests are told
+   * by their first message, which holds the subagent's prompt; each takes
+   * the next answer scripted for it, never one of {@link FakeApi.script}'s,
+   * whatever the order the two conversations' requests arrive in.
+   *
+   * @param prompt - The text the conversation's first message holds: the prompt the subagent was given.
+   * @param answers - Its answers, in order.
+   */
+  scriptConversation(prompt: string, ...answers: readonly ScriptedAnswer[]): void;
   /**
    * Gives every request received so far, in order, without any header.
    *
@@ -134,6 +146,7 @@ const UNSCRIPTED_ERROR = { status: 403, errorType: 'permission_error' };
 export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeApi> {
   const isSideRequest = options.isSideRequest ?? offersNoTools;
   const script: ScriptedAnswer[] = [];
+  const otherConversations = new Map<string, ScriptedAnswer[]>();
   const log: LoggedRequest[] = [];
   const conversationRequests = new Arrivals<LoggedRequest>();
   const heldRequests = new Arrivals<HeldRequest>();
@@ -178,7 +191,7 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
       case 'conversation':
         conversationCount += 1;
         conversationRequests.add(exchange.request);
-        answerFromScript(exchange, script.shift() ?? options.fallback);
+        answerFromScript(exchange, scriptOf(exchange.request).shift() ?? options.fallback);
         break;
     }
   }
@@ -201,6 +214,13 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
         hold(exchange, scripted);
         break;
     }
+  }
+
+  /** The script a request answers from: its conversation's, when one was scripted apart. */
+  function scriptOf(request: LoggedRequest): ScriptedAnswer[] {
+    const opening = textsOf(request.body?.messages?.[0]);
+    const prompt = [...otherConversations.keys()].find((text) => opening.includes(text));
+    return prompt === undefined ? script : (otherConversations.get(prompt) as ScriptedAnswer[]);
   }
 
   function refuseUnscripted(exchange: Exchange): void {
@@ -271,6 +291,9 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
     script: (...answers) => {
       script.push(...answers);
     },
+    scriptConversation: (prompt, ...answers) => {
+      otherConversations.set(prompt, [...(otherConversations.get(prompt) ?? []), ...answers]);
+    },
     requests: () => [...log],
     unknownRequests: () => log.filter((request) => request.kind === 'unknown'),
     conversationRequest: (number) => conversationRequests.nth(number),
@@ -280,7 +303,7 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
     },
     unexpectedRequest: () => firstUnscripted,
     assertScriptUsedUp: () => {
-      const unused = script.map(describeAnswer);
+      const unused = [script, ...otherConversations.values()].flat().map(describeAnswer);
       if (unused.length > 0) throw listed('Scripted answers never asked for', unused);
     },
     close: () => {
@@ -291,6 +314,15 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
       return closed;
     },
   };
+}
+
+/** Every text of a message, its blocks' joined: what a test can name a conversation by. */
+function textsOf(message: RequestMessage | undefined): string {
+  if (message === undefined) return '';
+  if (typeof message.content === 'string') return message.content;
+  return message.content
+    .map((block) => (typeof block.text === 'string' ? block.text : ''))
+    .join('\n');
 }
 
 function asksForStream(exchange: Exchange): boolean {

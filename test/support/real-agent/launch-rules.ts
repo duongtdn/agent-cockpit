@@ -91,6 +91,9 @@ export function plainLoopbackOrigin(text: string): string | undefined {
   return hasOnlyAnOrigin ? url.origin : undefined;
 }
 
+const aWholeNumber: Check<string> = (value) =>
+  /^\d{1,3}$/.test(value) ? undefined : 'not a whole number of three digits at most';
+
 const aLoopbackOrigin: Check<string> = (value) =>
   plainLoopbackOrigin(value) === value
     ? undefined
@@ -131,6 +134,8 @@ export const VARIABLE_RULES: Readonly<Record<string, VariableRule>> = {
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: required(exactly('1')),
   CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: required(exactly('1')),
   DISABLE_AUTOUPDATER: required(exactly('1')),
+  // How often a failed request is tried again: a test of a failed turn needs it few.
+  CLAUDE_CODE_MAX_RETRIES: optional(aWholeNumber),
   PATH: optional(allowedAsIs),
   LANG: optional(allowedAsIs),
   ...Object.fromEntries(TERMINAL_VARIABLES.map((name) => [name, theTerminals])),
