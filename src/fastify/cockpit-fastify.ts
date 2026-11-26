@@ -9,7 +9,9 @@ import type { Cockpit } from '../server/create-cockpit.js';
  * Wiring only: every request under the prefix goes to `cockpit.handle`, its
  * body unread (Fastify parses none of it), and every WebSocket upgrade
  * under the prefix to `cockpit.upgrade`, the prefix removed from the URL
- * for both. Upgrades elsewhere are left to the app.
+ * for both. Upgrades elsewhere are left to the app's own upgrade handling;
+ * when the app has none, they are ended, as Node ends every upgrade of a
+ * server that listens to none.
  *
  * @param cockpit - The cockpit, as `createCockpit` gave it.
  * @returns The plugin to register.
@@ -30,7 +32,13 @@ export function cockpitFastify(cockpit: Pick<Cockpit, 'handle' | 'upgrade'>): Fa
 
     const upgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
       const url = underPrefix(request.url ?? '', prefix);
-      if (url === undefined) return;
+      if (url === undefined) {
+        // Node ends an upgrade only when no listener takes it; this listener
+        // takes them all, so it ends the stray ones when it is the only one.
+        // Another listener — the app's WebSockets — keeps every one it gets.
+        if (fastify.server.listenerCount('upgrade') === 1) socket.destroy();
+        return;
+      }
       request.url = url;
       cockpit.upgrade(request, socket, head);
     };

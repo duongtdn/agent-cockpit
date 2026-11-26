@@ -351,6 +351,14 @@ describe('the Fastify adapter', () => {
     expect(JSON.parse(echoed.body)).toEqual({ echoed: { a: 1 } });
   });
 
+  it('ends an upgrade outside its prefix when the app handles no upgrade itself, as Node would', async () => {
+    const { cockpit, token } = await newCockpit();
+    const { base } = await mount(onFastify, cockpit);
+    const root = base.replace(MOUNT, '');
+
+    expect(await openSocket(ws(root, '/elsewhere'), { token })).toEqual({ destroyed: true });
+  });
+
   it('leaves upgrades outside its prefix to the app', async () => {
     const { cockpit, token } = await newCockpit();
     const app = Fastify();
