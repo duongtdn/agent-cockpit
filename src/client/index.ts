@@ -7,4 +7,14 @@
 
 export type { CockpitErrorCode, CockpitErrorFields, Issue } from '../shared/cockpit-error.js';
 export { CockpitError, isCockpitError } from '../shared/cockpit-error.js';
-export type { Pending, SessionState, StartupDialog } from '../shared/session.js';
+export type {
+  EndReason,
+  Pending,
+  RunResult,
+  Session,
+  SessionState,
+  StartupDialog,
+} from '../shared/session.js';
+export type { CockpitClient, CockpitClientOptions } from './create-cockpit-client.js';
+export { createCockpitClient } from './create-cockpit-client.js';
+export type { FollowOptions } from './follow-sessions.js';
