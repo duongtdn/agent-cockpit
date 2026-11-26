@@ -257,8 +257,6 @@ export async function measureReach(
     ),
     turn('Measured.'),
   );
-  await (await import('node:fs')).promises.mkdir('/tmp/cockpit-diagnostics', { recursive: true });
-  (await import('node:fs')).appendFileSync(DIAG, `==== ${Date.now()} measure ${mode}\n`);
   await cockpit.say('try each address');
   const asked = await answerUntilTheTurnEnds(cockpit, probes);
   const said = toolResults(cockpit.api).map((result) => result.text);
@@ -297,7 +295,7 @@ async function answerUntilTheTurnEnds(
   const asked = new Set<number>();
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
-    const screen = await logged(terminal, 'loop');
+    const screen = await terminal.screen();
     const dialog = dialogOn(screen);
     if (dialog === undefined) {
       if (eventsRead(cockpit).includes('Stop')) return asked;
@@ -331,37 +329,10 @@ const YES_SELECTED = /❯ Yes/u;
  * Approves a command: down to "Yes", then Enter once "Yes" shows selected. An
  * Enter on "No" would refuse the command and interrupt the turn.
  */
-const DIAG = '/tmp/cockpit-diagnostics/screens.log';
-let lastLogged = '';
-async function logged(terminal: { screen(): Promise<string> }, note: string): Promise<string> {
-  const s = await terminal.screen();
-  const fs = await import('node:fs');
-  fs.mkdirSync('/tmp/cockpit-diagnostics', { recursive: true });
-  if (s !== lastLogged)
-    fs.appendFileSync(
-      DIAG,
-      `---- ${Date.now()} ${note}\n${s
-        .split('\n')
-        .filter((l) => l.trim() !== '')
-        .join('\n')}\n`,
-    );
-  else fs.appendFileSync(DIAG, `---- ${Date.now()} ${note} (same)\n`);
-  lastLogged = s;
-  return s;
-}
 async function approveTheCommand(terminal: {
   screen(): Promise<string>;
   press(...keys: string[]): Promise<void>;
 }): Promise<void> {
-  const original = terminal;
-  terminal = {
-    press: (...k: string[]) => {
-      void (async () =>
-        (await import('node:fs')).appendFileSync(DIAG, `---- ${Date.now()} press ${k}\n`))();
-      return original.press(...k);
-    },
-    screen: () => logged(original, 'approve'),
-  };
   const deadline = Date.now() + ANSWER_PATIENCE_MS;
   while (!YES_SELECTED.test(await terminal.screen())) {
     if (Date.now() > deadline) throw new Error('"Yes" never showed selected in the approval.');

@@ -65,31 +65,6 @@ function transcriptPathOf(commandLine: CommandLine, cwd: string): string {
 }
 
 /** Ends the process at once on settings it has no evidence for, as on anything else it cannot play. */
-import { appendFileSync as diagAppend, mkdirSync as diagMkdir } from 'node:fs';
-
-const DIAG_FILE = `/tmp/cockpit-diagnostics/${process.pid}.log`;
-function diag(line: string): void {
-  try {
-    diagAppend(DIAG_FILE, `${Date.now()} ${line}\n`);
-  } catch {}
-}
-diagMkdir('/tmp/cockpit-diagnostics', { recursive: true });
-diag(`start ${process.argv.slice(2).join(' ')}`);
-for (const args of [
-  ['-V'],
-  ['show', '-gv', 'extended-keys'],
-  ['show', '-gv', 'extended-keys-format'],
-  ['display', '-p', '#{pane_key_mode}'],
-]) {
-  try {
-    diag(
-      `tmux ${args.join(' ')}: ${(await import('node:child_process')).execFileSync('tmux', args, { encoding: 'utf8', stdio: 'pipe' }).trim()}`,
-    );
-  } catch (e) {
-    diag(`tmux ${args.join(' ')} failed: ${String(e).slice(0, 200)}`);
-  }
-}
-process.on('exit', (code) => diag(`exit ${code}`));
 function refuseToPlay(error: unknown): never {
   process.stderr.write(`fake agent: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(CANNOT_PLAY_STATUS);
@@ -111,9 +86,6 @@ function settingsOf(commandLine: CommandLine): PlayedSettings {
 }
 
 function show(view: ScreenView): void {
-  diag(
-    `show dialog=${view.startUpDialog?.kind}:${view.startUpDialog?.selected} state=${view.state} problem=${view.problem}`,
-  );
   process.stdout.write(CLEAR_SCREEN + renderScreen(view, process.stdout.columns).join('\r\n'));
 }
 
@@ -160,7 +132,6 @@ function takeKeys(agent: FakeAgent): void {
 
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding('utf8').on('data', (chunk: string) => {
-    diag(`chunk ${JSON.stringify(chunk)}`);
     clearTimeout(settling);
     press(decoder.decode(chunk));
     if (decoder.awaitsMore()) settling = setTimeout(() => press(decoder.settle()), ESCAPE_WAIT_MS);
