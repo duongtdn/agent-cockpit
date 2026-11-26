@@ -1,3 +1,5 @@
+import { type ChildProcess, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -143,4 +145,32 @@ describe('the app’s lock', () => {
     await expect(attempt).rejects.toEqual(locked('another-user'));
     await expect(attempt).rejects.toThrow(/another user/);
   });
+
+  it('names the process that holds its name bound without listening, after the wait', async () => {
+    const id = '0123456789abcdef0123456789abcdef';
+    writeFileSync(join(folder, 'lock-id'), id, { mode: 0o600 });
+    const squatter = await bindWithoutListening(`agent-cockpit-${process.getuid?.()}-${id}`);
+    try {
+      await expect(takeAppLock(folder, { waitMs: 100 })).rejects.toEqual(locked(squatter.pid ?? 0));
+    } finally {
+      squatter.kill();
+    }
+  });
 });
+
+/**
+ * A process that binds an abstract socket's name and never listens on it:
+ * the name is taken, though no listener holds it.
+ */
+async function bindWithoutListening(name: string): Promise<ChildProcess> {
+  const program = [
+    'import socket, sys',
+    's = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)',
+    `s.bind(b"\\0${name}")`,
+    'print("BOUND", flush=True)',
+    'sys.stdin.read()',
+  ].join('\n');
+  const child = spawn('python3', ['-c', program], { stdio: ['pipe', 'pipe', 'inherit'] });
+  await once(child.stdout, 'data');
+  return child;
+}

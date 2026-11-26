@@ -54,7 +54,8 @@ export interface LockOptions {
  * @returns The lock, held.
  * @throws `CockpitError` `cockpit-locked` when the lock is still held at the
  * end of the wait: `holder` is the holder's pid as the kernel tells it, or
- * `another-user` when the socket's listener is none of the user's processes.
+ * `another-user` when the socket that holds the name — listening or not —
+ * is none of the user's processes.
  * The file system's error when the state folder's id cannot be read or
  * created, or is damaged.
  */
@@ -67,11 +68,10 @@ export async function takeAppLock(folder: string, options: LockOptions = {}): Pr
     if (server) return { release: () => close(server) };
     if (Date.now() >= deadline) {
       const owner = await abstractSocketOwner(name, procRoot);
-      // Gone since the bind failed: the holder has just exited; try once more.
-      if (owner.listening) throw lockedBy(owner.pid, folder);
-    } else {
-      await pause(RETRY_MS);
+      // Unbound since the bind failed: the holder has just exited; try again.
+      if (owner.bound) throw lockedBy(owner.pid, folder);
     }
+    await pause(RETRY_MS);
   }
 }
 
