@@ -51,7 +51,10 @@ export interface CockpitOptions {
    * the failure goes to the cockpit's `error` handlers. `authorize: (req)
    * => cockpit.verify(req)` opens remote access by the link. A driver whose
    * sessions reach an open network refuses it unless the app accepted that
-   * in the driver's options.
+   * in the driver's options. It must settle: the request waits for it, and
+   * the cockpit sets no time limit on it (bounding it is the app's); one
+   * still pending when the cockpit closes is answered 503. It is asked once
+   * a request: a renewal of the token while it runs keeps its verdict.
    */
   readonly authorize?: (request: IncomingMessage) => boolean | Promise<boolean>;
   /**

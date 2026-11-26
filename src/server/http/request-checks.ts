@@ -90,6 +90,27 @@ export async function admissionOf(
 }
 
 /**
+ * Checks again an admission given before the app's token was renewed: a
+ * local request was admitted by the old token, so it needs the new one; a
+ * remote one keeps the verdict `authorize` gave, which does not depend on
+ * the token, so the app's `authorize` is never asked twice for one
+ * request. A refusal stands.
+ *
+ * @param admission - What the checks made of the request before the renewal.
+ * @param token - The token the request carried.
+ * @param rules - See {@link AccessRules}: its comparison is with the new token.
+ * @returns The admission after the renewal.
+ */
+export function admissionAfterRenewal(
+  admission: Admission,
+  token: string | undefined,
+  rules: Pick<AccessRules, 'tokenMatches'>,
+): Admission {
+  if (!('admitted' in admission) || admission.admitted === 'remote') return admission;
+  return rules.tokenMatches(token) ? admission : { refused: noToken() };
+}
+
+/**
  * Applies the terminal's switch to a request the checks admitted
  * (ADR-0016): `'on'` lets every one through, `'loopback'` only a local
  * one, `'off'` none.

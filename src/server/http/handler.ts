@@ -14,7 +14,14 @@ import type { CockpitOptions } from '../cockpit-options.js';
 import type { FailureSite } from '../failures.js';
 import { readBodyWithin } from './body.js';
 import { type BridgedSessions, bridgeTerminal } from './pty-bridge.js';
-import { type AccessRules, admissionOf, type Reach, terminalRefusalOf } from './request-checks.js';
+import {
+  type AccessRules,
+  type Admission,
+  admissionAfterRenewal,
+  admissionOf,
+  type Reach,
+  terminalRefusalOf,
+} from './request-checks.js';
 import { headerToken, subprotocolToken } from './request-token.js';
 import { requestRouteOf, socketRouteOf } from './router.js';
 import {
@@ -78,15 +85,17 @@ export interface Handler {
    * Closes every browser-facing WebSocket — the sessions' followers and
    * every terminal — so that each reconnect passes the checks again, as a
    * renewal of the app's token needs (a live terminal is a shell). A
-   * handshake whose admission is under way is checked again. Later
-   * requests are served as before.
+   * handshake whose admission is under way is checked again for the token
+   * alone: a verdict of the app's `authorize` stands. Later requests are
+   * served as before.
    *
    * @returns A promise fulfilled once every terminal is detached.
    */
   closeAllSockets(): Promise<void>;
   /**
-   * Refuses every later request, closes every WebSocket and detaches every
-   * terminal.
+   * Refuses every later request, ends every request whose admission is
+   * under way (503: an `authorize` that never settles holds nothing open),
+   * closes every WebSocket and detaches every terminal.
    *
    * @returns A promise fulfilled once every terminal is detached.
    */
@@ -117,21 +126,54 @@ export function createHandler(options: HandlerOptions): Handler {
     reportAuthorizeFailure: (cause) => options.reportFailure('authorize', cause),
   };
   let closed = false;
-  // Counts the closings of every socket: an admission that began before one
-  // is made again, since what admitted it (the token, `authorize`) may have
-  // changed.
+  // Counts the closings of every socket: a handshake admitted before one is
+  // checked again, since the token that admitted it may have been renewed.
   let socketClosings = 0;
+  // Ends each request whose admission is under way: the app's `authorize`
+  // may never settle, and closing must not wait for it.
+  const admissionsUnderWay = new Set<() => void>();
+
+  /**
+   * Awaits a request's admission, unless the handler closes first: then
+   * `end` answers the request, and the admission, whenever it comes, is
+   * dropped.
+   *
+   * @returns The admission; `undefined` once the handler closed.
+   */
+  const awaitAdmission = (
+    admission: Promise<Admission>,
+    end: () => void,
+  ): Promise<Admission | undefined> =>
+    new Promise((resolve, reject) => {
+      const endNow = () => {
+        admissionsUnderWay.delete(endNow);
+        end();
+        resolve(undefined);
+      };
+      admissionsUnderWay.add(endNow);
+      admission.then(
+        (given) => {
+          if (admissionsUnderWay.delete(endNow)) resolve(given);
+        },
+        (error: unknown) => {
+          if (admissionsUnderWay.delete(endNow)) reject(error);
+        },
+      );
+    });
 
   const handle: Handler['handle'] = (request, response) => {
     if (closed) return writeAnswer(response, { status: 503 });
-    admissionOf(request, headerToken(request), rules)
+    const closing = () => writeAnswer(response, { status: 503 });
+    awaitAdmission(admissionOf(request, headerToken(request), rules), closing)
       .then((admission) => {
-        if (closed) return { status: 503 };
+        if (admission === undefined) return undefined;
         if ('refused' in admission) return errorAnswer(admission.refused);
         return serve(request, admission.admitted, options);
       })
       .then(
-        (answer) => writeAnswer(response, answer),
+        (answer) => {
+          if (answer !== undefined) writeAnswer(response, answer);
+        },
         (error: unknown) => {
           if (!isCockpitError(error)) options.reportFailure('handler', error);
           writeAnswer(response, answerOfFailure(error));
@@ -141,10 +183,13 @@ export function createHandler(options: HandlerOptions): Handler {
 
   const admitUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const closingsBefore = socketClosings;
-    admissionOf(request, subprotocolToken(request), rules).then(
-      (admission) => {
-        if (closed) return refuseUpgrade(socket, { status: 503 });
-        if (socketClosings !== closingsBefore) return admitUpgrade(request, socket, head);
+    const token = subprotocolToken(request);
+    const closing = () => refuseUpgrade(socket, { status: 503 });
+    awaitAdmission(admissionOf(request, token, rules), closing).then(
+      (given) => {
+        if (given === undefined) return;
+        const admission =
+          socketClosings === closingsBefore ? given : admissionAfterRenewal(given, token, rules);
         if ('refused' in admission) return refuseUpgrade(socket, errorAnswer(admission.refused));
         upgradeAdmitted(request, socket, head, admission.admitted);
       },
@@ -198,6 +243,7 @@ export function createHandler(options: HandlerOptions): Handler {
     closeAllSockets,
     async close() {
       closed = true;
+      for (const end of [...admissionsUnderWay]) end();
       await closeAllSockets();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
     },

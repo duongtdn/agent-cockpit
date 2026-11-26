@@ -65,6 +65,8 @@ interface Served {
   readonly asked: IncomingMessage[];
   readonly failures: { where: string; cause: unknown }[];
   readonly attachments: QuietAttachment[];
+  /** Closes the servers as an app does, waiting for every connection to end. */
+  closeServers(): Promise<void>;
 }
 
 const stops: (() => Promise<void>)[] = [];
@@ -85,10 +87,12 @@ async function serve(
   const asked: IncomingMessage[] = [];
   const failures: { where: string; cause: unknown }[] = [];
   const attachments: QuietAttachment[] = [];
+  const servers: Server[] = [];
   const listen = async (address: string): Promise<string> => {
     const server: Server = createServer((request, response) => handler?.handle(request, response));
     server.on('upgrade', (request, socket, head) => handler?.upgrade(request, socket, head));
     await new Promise<void>((resolve) => server.listen(0, address, resolve));
+    servers.push(server);
     stops.push(async () => {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
@@ -134,7 +138,12 @@ async function serve(
   });
   const served = handler;
   stops.push(() => served.close());
-  return { handler, local, lan, other, asked, failures, attachments };
+  const closeServers = async () => {
+    await Promise.all(
+      servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+    );
+  };
+  return { handler, local, lan, other, asked, failures, attachments, closeServers };
 }
 
 const ws = (base: string, path: string) => `${base.replace('http', 'ws')}${path}`;
@@ -523,29 +532,20 @@ describe('closing every browser-facing WebSocket, as a renewal of the token does
     expect(await everySurface(ALL, local, { token: TOKEN })).toEqual(served(ALL));
   });
 
-  it('checks again a handshake whose admission was under way when they closed', async () => {
+  it('checks again only the token of a handshake under way when they closed: authorize is asked once, its verdict kept', async () => {
     let release: (accepted: boolean) => void = () => {};
-    const answers: Promise<boolean>[] = [
-      new Promise((resolve) => {
-        release = resolve;
-      }),
-      Promise.resolve(false),
-    ];
-    const { handler, lan, asked } = await serve({
-      authorize: () => answers[asked.length - 1] ?? Promise.resolve(true),
-      origins: lanOrigin,
+    const pending = new Promise<boolean>((resolve) => {
+      release = resolve;
     });
+    const { handler, lan, asked } = await serve({ authorize: () => pending, origins: lanOrigin });
     const outcome = handshake(ws(lan, '/follow/sessions'), {});
     await eventually(() => expect(asked).toHaveLength(1));
 
     await handler.closeAllSockets();
     release(true);
 
-    expect(await outcome).toEqual({
-      status: 403,
-      error: expect.objectContaining({ code: 'refused', cause: 'remote' }),
-    });
-    expect(asked).toHaveLength(2);
+    expect(await outcome).toEqual({ status: 101 });
+    expect(asked).toHaveLength(1);
   });
 
   it('answers 503 to a request whose admission was under way when the handler closed', async () => {
@@ -563,5 +563,21 @@ describe('closing every browser-facing WebSocket, as a renewal of the token does
 
     expect(await http).toEqual({ status: 503 });
     expect(await upgrade).toEqual({ status: 503 });
+  });
+
+  it('ends every request whose authorize never settles when the handler closes: 503, and the server closes', async () => {
+    const { handler, lan, asked, closeServers } = await serve({
+      authorize: () => new Promise<boolean>(() => {}),
+      origins: lanOrigin,
+    });
+    const http = SURFACES['observation: GET sessions'].ask(lan, {});
+    const upgrade = handshake(ws(lan, '/follow/sessions'), {});
+    await eventually(() => expect(asked).toHaveLength(2));
+
+    await handler.close();
+
+    expect(await http).toEqual({ status: 503 });
+    expect(await upgrade).toEqual({ status: 503 });
+    await closeServers();
   });
 });
