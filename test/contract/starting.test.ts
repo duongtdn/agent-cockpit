@@ -59,5 +59,8 @@ it('3 — --resume <uuid> keeps the session id and the conversation', async () =
     await agent.waitFor('the second conversation request', agent.api.conversationRequest(2)),
   );
   expect(texts.filter((text) => said.includes(text))).toEqual(said);
-  expect(userTexts(resumed)).toEqual(['the earlier prompt', 'the later prompt']);
+  // The agent writes its transcript a moment behind its hooks: the prompt may follow the Stop.
+  await agent.eventually(() =>
+    expect(userTexts(resumed)).toEqual(['the earlier prompt', 'the later prompt']),
+  );
 });

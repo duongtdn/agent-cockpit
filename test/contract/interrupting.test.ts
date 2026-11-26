@@ -121,7 +121,8 @@ it('22 — Esc while the agent writes: the transcript records [Request interrupt
   expect(hooksOfTheEsc).toEqual([]);
   expect(idle).toMatchObject({ state: 'idle' });
   expect(answered).toMatchObject({ state: 'idle', lastMessage: 'Going on.' });
-  expect(userTexts(session)).toEqual(['think', INTERRUPTED, NEXT_PROMPT]);
+  // The agent writes its transcript a moment behind its hooks: the prompt may follow the Stop.
+  await eventually(() => expect(userTexts(session)).toEqual(['think', INTERRUPTED, NEXT_PROMPT]));
 });
 
 it('95 — the interruption marker carries the time the agent recorded it, earlier than the next prompt is taken: an Esc, then a prompt at once, leave the new turn busy, whenever the driver reads the marker', async () => {
@@ -160,7 +161,8 @@ it('95 — the interruption marker carries the time the agent recorded it, earli
   const answered = await sessionAfter(cockpit, 'idle', taken);
 
   expect(await first.ended).toBe('client-gone');
-  expect(userTexts(session)).toEqual(['think', INTERRUPTED, NEXT_PROMPT]);
+  // The agent writes its transcript a moment behind its hooks: the prompt may follow the Stop.
+  await eventually(() => expect(userTexts(session)).toEqual(['think', INTERRUPTED, NEXT_PROMPT]));
   expect(told.told).toEqual([{ type: 'interrupted', at: expect.any(String) }]);
   expect(statesOfTheNewTurn).not.toContain('idle');
   expect(busyNow?.state).toBe('busy');
