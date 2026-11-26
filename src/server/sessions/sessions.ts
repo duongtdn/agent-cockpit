@@ -320,6 +320,11 @@ interface Entry {
   compactionWatch?: ScreenWatch;
   /** Stops following what the agent tells outside its hooks. */
   stopFollowing?: () => void;
+  /**
+   * Stops following the conversations the agent moved away from while a
+   * turn was open, each still heard until no turn is.
+   */
+  readonly stopFollowingLeft: (() => void)[];
 }
 
 class SessionRegistry implements Sessions {
@@ -381,6 +386,7 @@ class SessionRegistry implements Sessions {
     entry.compactingFrom = course.compactingFrom;
     entry.promptTakenAt = course.promptTakenAt;
     this.#update(entry, course.session);
+    if (!isInTurn(entry.session)) stopFollowingTheConversationsLeft(entry);
     if (entry.compactingFrom === undefined) this.#stopWatchingTheCompaction(entry);
     else if (entry.compactionWatch === undefined) this.#watchTheCompaction(entry);
   }
@@ -389,7 +395,9 @@ class SessionRegistry implements Sessions {
    * Reads the screen while the session compacts from `idle`: the input box
    * back with no hook to say so (a compaction that failed, or that a
    * person interrupted) is its end, and the session returns to the state
-   * it left, as at `PostCompact`.
+   * it left, as at `PostCompact`. Claude Code draws its busy hint by the
+   * time it tells `PreCompact`, also while a slow hook of the person's
+   * runs: the first box read is the end, however soon it was interrupted.
    */
   #watchTheCompaction(entry: Entry): void {
     const watch = new ScreenWatch({
@@ -425,7 +433,10 @@ class SessionRegistry implements Sessions {
     entry.conversationId = conversationId;
     // Not followed yet, during the launch: the following starts on the new one.
     if (entry.stopFollowing === undefined) return;
-    entry.stopFollowing();
+    // An Esc and then a `/clear` within a poll of the driver's leave the
+    // interruption written only into the conversation left: it is heard
+    // until the turn open now is over, whichever conversation tells it.
+    entry.stopFollowingLeft.push(entry.stopFollowing);
     this.#follow(entry);
   }
 
@@ -469,7 +480,7 @@ class SessionRegistry implements Sessions {
     for (const entry of this.#entries.values()) {
       stopReadingTheScreen(entry);
       this.#stopWatchingTheCompaction(entry);
-      entry.stopFollowing?.();
+      stopFollowingEveryConversation(entry);
       entry.departure.reject(new SessionsClosedError(entry.key));
     }
   }
@@ -486,6 +497,7 @@ class SessionRegistry implements Sessions {
       session: { key, state: 'starting', since: now() },
       phase: 'reserved',
       heard: false,
+      stopFollowingLeft: [],
     };
     this.#entries.set(key, entry);
     return entry;
@@ -711,7 +723,7 @@ class SessionRegistry implements Sessions {
     entry.phase = 'going';
     stopReadingTheScreen(entry);
     this.#stopWatchingTheCompaction(entry);
-    entry.stopFollowing?.();
+    stopFollowingEveryConversation(entry);
     this.#watch.unwatch(key);
     this.#options.hooks.revoke(key);
     const canResume = await this.#options.driver
@@ -763,6 +775,20 @@ function stopReadingTheScreen(entry: Entry): void {
   entry.startUp?.stop();
   entry.promptWatch?.stop();
   clearTimeout(entry.promptBound);
+}
+
+/** Whether a turn of the agent's is open: at work, or waiting on a person's answer. */
+function isInTurn(session: Session): boolean {
+  return session.state === 'busy' || session.state === 'waiting';
+}
+
+function stopFollowingTheConversationsLeft(entry: Entry): void {
+  for (const stop of entry.stopFollowingLeft.splice(0)) stop();
+}
+
+function stopFollowingEveryConversation(entry: Entry): void {
+  entry.stopFollowing?.();
+  stopFollowingTheConversationsLeft(entry);
 }
 
 /** The conversation the session's agent works in now, as the driver is asked about it. */

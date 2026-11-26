@@ -1180,6 +1180,30 @@ describe('what the driver tells of a session outside its hooks', () => {
     expect(sessionOf()?.state).toBe('idle');
   });
 
+  it('still hears the conversation left while the turn open at the move is not over: an interruption recorded just before a `/clear` ends it', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+
+    hook(`${CONVERSATION_PATH}${CLEARED}`);
+    expect(driver.follows[0]?.stopped).toBe(false);
+    driver.follows[0]?.report([{ type: 'interrupted' }]);
+
+    expect(sessionOf()?.state).toBe('idle');
+    expect(driver.follows.map((following) => following.stopped)).toEqual([true, false]);
+  });
+
+  it('stops hearing the conversation left once the turn open at the move ended otherwise', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+    hook(`${CONVERSATION_PATH}${CLEARED}`);
+
+    hook('/turn-ended');
+
+    expect(driver.follows.map((following) => following.stopped)).toEqual([true, false]);
+  });
+
   it('asks whether the conversation the agent moved to can resume, once the session ended', async () => {
     const { result } = await launched();
     hook('/prompt-taken');
