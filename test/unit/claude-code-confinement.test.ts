@@ -377,20 +377,42 @@ describe('a configuration folder its denies could miss', () => {
     expect(await refusalWith(linked)).toMatchObject({ code: 'invalid-options' });
   });
 
-  it('is refused for a home that holds rule syntax when no configuration folder is named: the default one is under it', async () => {
-    const launch = launchOf(confinementOf());
+  it.each([
+    ['holds rule syntax', '/home/some*one', 'HOME gives the folder "/home/some*one", which holds'],
+    ['is relative', 'home/someone', 'HOME gives "home/someone", a relative folder'],
+  ])(
+    'is refused, once, for a home that %s when no configuration folder is named: the default one is under it',
+    async (_, home, why) => {
+      const launch = launchOf(confinementOf());
 
-    const refusal = await claudeCode()
-      .launch({ ...launch, environment: { PATH: '/usr/bin:/bin', HOME: '/home/some*one' } })
-      .then(
-        () => undefined,
-        (error: unknown) => error,
-      );
+      const refusal = await claudeCode()
+        .launch({ ...launch, environment: { PATH: '/usr/bin:/bin', HOME: home } })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
 
-    expect(refusal).toMatchObject({
-      code: 'invalid-options',
-      issues: [{ path: [], message: expect.stringContaining('HOME') }],
-    });
+      expect(refusal).toMatchObject({
+        code: 'invalid-options',
+        issues: [{ path: [], message: expect.stringContaining(why) }],
+      });
+    },
+  );
+
+  it("is refused when no configuration folder is named and the home's .claude leads to rule syntax", async () => {
+    const folder = realpathSync(files);
+    const real = join(folder, 'config[1]');
+    mkdirSync(real);
+    symlinkSync(real, join(folder, '.claude'));
+
+    expect(await claudeCode().environmentIssues({ HOME: folder })).toEqual([
+      {
+        path: [],
+        message: expect.stringContaining(
+          `The default configuration folder, .claude in HOME, is the folder ${JSON.stringify(join(folder, '.claude'))}, whose real path ${JSON.stringify(real)} holds`,
+        ),
+      },
+    ]);
   });
 
   it('lets a plain absolute folder pass, and tells createCockpit the same issues', async () => {

@@ -16,10 +16,13 @@ export interface PersonsStartUpFiles {
   readonly personsFolders: readonly string[];
 }
 
-/** A folder of the person's the denies name, and the variable that names it. */
+/** A folder of the person's the denies name, and how a refusal names it. */
 interface PersonsFolder {
-  readonly variable: string;
   readonly path: string;
+  /** How a refusal names the folder's source: the variable that gives it, or how the agent derives it. */
+  readonly givenBy: string;
+  /** Whether a problem of this folder is a problem of the home already told. */
+  readonly underHome: boolean;
 }
 
 /**
@@ -35,10 +38,13 @@ function personsFolders(environment: Readonly<Record<string, string>>): {
   const named = configured !== undefined && configured !== '';
   return {
     config: {
-      variable: named ? 'CLAUDE_CONFIG_DIR' : 'HOME',
       path: agentConfigFolder(environment),
+      givenBy: named
+        ? 'CLAUDE_CONFIG_DIR gives'
+        : 'The default configuration folder, .claude in HOME, is',
+      underHome: !named,
     },
-    home: { variable: 'HOME', path: homeOf(environment) },
+    home: { path: homeOf(environment), givenBy: 'HOME gives', underHome: false },
   };
 }
 
@@ -83,20 +89,28 @@ export async function personsFolderIssues(
   environment: Readonly<Record<string, string>>,
 ): Promise<Issue[]> {
   const { config, home } = personsFolders(environment);
-  const issues = await Promise.all(
-    [config, home].map(async ({ variable, path }) => {
-      if (!isAbsolute(path)) {
-        return [`${variable} gives ${JSON.stringify(path)}, a relative folder`];
-      }
-      const misread = (await givenAndRealPaths([path])).filter(holdsRuleSyntax);
-      return misread.map(
-        (found) =>
-          `${variable} gives the folder ${JSON.stringify(found)}, which holds a character a permission rule reads as its own (* ? [ ] { } ( ) \\ or a control character)`,
-      );
-    }),
-  );
-  return [...new Set(issues.flat())].map((why) => ({
+  const homeIssues = await folderIssues(home);
+  const configIssues = config.underHome && homeIssues.length > 0 ? [] : await folderIssues(config);
+  return [...homeIssues, ...configIssues].map((why) => ({
     path: [],
     message: `${why}: the rules that keep the agent from editing its own configuration could miss it.`,
   }));
+}
+
+/**
+ * Tells why the denies could miss one of the person's folders: at most
+ * one reason, the first of a relative path, the path as given holding
+ * rule syntax, or its real path holding it.
+ */
+async function folderIssues({ path, givenBy }: PersonsFolder): Promise<string[]> {
+  if (!isAbsolute(path)) return [`${givenBy} ${JSON.stringify(path)}, a relative folder`];
+  const found = (await givenAndRealPaths([path])).find(holdsRuleSyntax);
+  if (found === undefined) return [];
+  const where =
+    found === path
+      ? `the folder ${JSON.stringify(path)}, which`
+      : `the folder ${JSON.stringify(path)}, whose real path ${JSON.stringify(found)}`;
+  return [
+    `${givenBy} ${where} holds a character a permission rule reads as its own (* ? [ ] { } ( ) \\ or a control character)`,
+  ];
 }
