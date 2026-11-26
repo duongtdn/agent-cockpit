@@ -400,7 +400,11 @@ skills ([security](security.md#keeping-the-agent-out)). In `acceptEdits`
 tools write unasked and act as the person: those denies are defense in
 depth, not a boundary.
 The person's own Claude Code settings still load below them, unless the app
-narrows them. Its options ([reference](api.md#claudecodeoptions)):
+narrows them. One of theirs gives way in every session: the input box's
+editor is the standard one (`editorMode: "normal"`), so a person who uses
+vim mode does not have it in the cockpit's sessions — in vim's NORMAL mode,
+which the screen does not show, a prompt the cockpit types would run as
+vim's commands. Its options ([reference](api.md#claudecodeoptions)):
 
 - `permissionMode` and `permissions`: the mode every session runs in
   (`default` unless the app says), and the rules it writes above the

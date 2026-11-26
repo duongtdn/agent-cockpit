@@ -25,6 +25,12 @@ function documentOf(parts: Partial<SettingsParts> = {}): Document {
   return settingsDocument({ ...PARTS, ...parts }) as Document;
 }
 
+describe('the input box’s editor', () => {
+  it('is the standard one, whatever the person chose: the driver types into it', () => {
+    expect(settingsDocument(PARTS)).toHaveProperty('editorMode', 'normal');
+  });
+});
+
 describe("the channel's allow rule", () => {
   it('is written after the rules allowed, when the session has a channel', () => {
     expect(documentOf({ channelServer: 'curator' }).permissions.allow).toEqual([
@@ -136,9 +142,9 @@ describe('what the settings never hold', () => {
     ['without the sandbox', {}],
     ['with it', { sandbox: { excludedCommands: ['docker'] } }],
     ['with a channel', { channelServer: 'curator' }],
-  ])('%s: only hooks, permissions and the sandbox, no env', (_, parts) => {
+  ])('%s: only hooks, permissions, the sandbox and the editor, no env', (_, parts) => {
     const document = documentOf(parts);
 
-    expect(Object.keys(document).sort()).toEqual(['hooks', 'permissions', 'sandbox']);
+    expect(Object.keys(document).sort()).toEqual(['editorMode', 'hooks', 'permissions', 'sandbox']);
   });
 });

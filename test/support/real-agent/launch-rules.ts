@@ -255,6 +255,9 @@ export const SETTINGS_RULES: Readonly<Record<string, Check<unknown>>> = {
   // Every hook off, the cockpit's too: a session then reports nothing, and calls nobody more.
   disableAllHooks: (value) => (value === true ? undefined : 'not true'),
   apiKeyHelper: refused('it would run a program for a key'),
+  // The input box's editor, the driver's standard one or the person's vim: keys, nothing more.
+  editorMode: (value) =>
+    value === 'normal' || value === 'vim' ? undefined : 'neither normal nor vim',
   // The person's plugins switched on or off: what each holds is checked where it is installed,
   // in the configuration folder (pluginsProblem).
   enabledPlugins: (value) =>

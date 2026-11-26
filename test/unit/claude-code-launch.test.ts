@@ -381,7 +381,12 @@ describe('what a launch never writes', () => {
       );
       const settings = settingsOf(args);
 
-      expect(Object.keys(settings).sort()).toEqual(['hooks', 'permissions', 'sandbox']);
+      expect(Object.keys(settings).sort()).toEqual([
+        'editorMode',
+        'hooks',
+        'permissions',
+        'sandbox',
+      ]);
       expect(JSON.stringify(settings)).not.toMatch(
         /skipDangerousModePermissionPrompt|hasTrustDialogAccepted|hasCompletedOnboarding|"env"/,
       );

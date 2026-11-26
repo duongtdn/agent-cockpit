@@ -39,8 +39,8 @@ export interface SettingsParts extends PersonsStartUpFiles {
 /**
  * Writes the settings a session is launched with (`--settings`): the hooks
  * that report to the cockpit, the session's permission rules, the
- * confinement's lines, the sandbox the app asks for, and the channel's
- * allow rule when the session has a channel. Claude Code merges them above
+ * confinement's lines, the sandbox the app asks for, the channel's
+ * allow rule when the session has a channel, and the standard editor. Claude Code merges them above
  * the person's and the project's settings, hooks too; a deny wins over any
  * allow of any of them. They hold no `env` (the person's own still
  * applies) and no answer to a start-up dialog (the person answers those).
@@ -53,11 +53,21 @@ export interface SettingsParts extends PersonsStartUpFiles {
  * person's own settings may turn the sandbox on, and without it the
  * sandbox's lines change nothing.
  *
+ * The input box's editor is the standard one (`editorMode: "normal"`),
+ * whatever the person chose: in vim's NORMAL mode, which nothing on the
+ * screen shows, a typed prompt would run as vim's commands. It wins over
+ * the person's settings and turns `/vim` off in the cockpit's sessions.
+ *
  * @param parts - See {@link SettingsParts}.
  * @returns The settings, to write as JSON.
  */
 export function settingsDocument(parts: SettingsParts): object {
-  return { hooks: hooksOf(parts), permissions: permissionsOf(parts), sandbox: sandboxOf(parts) };
+  return {
+    hooks: hooksOf(parts),
+    permissions: permissionsOf(parts),
+    sandbox: sandboxOf(parts),
+    editorMode: 'normal',
+  };
 }
 
 function hooksOf(parts: SettingsParts): object {

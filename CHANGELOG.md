@@ -239,6 +239,9 @@ Nothing is published yet.
   field, argsSoFar?)` and `run`'s `{ fresh }`; the client calls them
   (`/send`, `/open`, `/jobs`, `/options`), which the handler does not
   serve yet.
+- Every Claude Code session's settings set the input box's editor to the
+  standard one (`editorMode: "normal"`): the person's vim mode is off in the
+  cockpit's sessions, where the cockpit types prompts.
 - `TerminalStatus` gains `held`: while the cockpit types a prompt into a
   session, the page's terminals attached to it keep sending what the
   person types, and the server keeps it, then passes it to the session

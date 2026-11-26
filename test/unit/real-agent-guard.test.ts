@@ -403,6 +403,14 @@ describe("the guard of the real agent's settings", () => {
     );
   });
 
+  it("lets the input box's editor pass as the standard one or vim, nothing else", () => {
+    expect(withSettings({ ...settings, editorMode: 'normal' })).not.toThrow();
+    expect(withSettings({ ...settings, editorMode: 'vim' })).not.toThrow();
+    expect(withSettings({ ...settings, editorMode: { command: 'x' } })).toThrow(
+      /"editorMode", neither normal nor vim/,
+    );
+  });
+
   it('refuses a setting that has no rule, and says where a rule is added', () => {
     expect(withSettings({ ...settings, forceLoginMethod: 'claudeai' })).toThrow(
       /settings.*"forceLoginMethod".*SETTINGS_RULES.*launch-rules\.ts/,
