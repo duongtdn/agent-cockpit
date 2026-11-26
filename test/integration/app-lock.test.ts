@@ -170,6 +170,10 @@ describe('the app’s lock', () => {
     const attempt = takeAppLock(folder, { waitMs: 0, procRoot: proc });
     await expect(attempt).rejects.toEqual(locked('another-user'));
     await expect(attempt).rejects.toThrow(/another user/);
+    // Whoever read the id may squat the name: the id is replaced by hand, never by a start.
+    await expect(attempt).rejects.toThrow(
+      `stop the app's servers, delete ${join(folder, 'lock-id')}, and start again`,
+    );
   });
 
   it('names the process that holds its name bound without listening, after the wait', async () => {

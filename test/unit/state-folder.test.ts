@@ -100,8 +100,9 @@ describe('openStateFolder', () => {
   });
 
   it('refuses a folder of another user, and says whose', async () => {
-    const path = join(root, 'my-app');
-    mkdirSync(path, { mode: 0o700 });
+    // The temporary folder itself, whose parent is root's (the system's
+    // temporary folder): seen as another user's, it alone is refused.
+    const path = root;
     const owner = statSync(path).uid;
     vi.spyOn(process, 'getuid').mockReturnValue(owner + 1);
     try {
@@ -115,6 +116,54 @@ describe('openStateFolder', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  describe('the folders above it', () => {
+    it('refuses a parent its group or others can write: they could swap the folder for theirs', async () => {
+      const parent = join(root, 'shared');
+      mkdirSync(parent);
+      chmodSync(parent, 0o775);
+      const path = join(parent, 'my-app');
+      await expect(openStateFolder(path)).rejects.toThrow(
+        expect.objectContaining({ name: 'UntrustedStateError', path: parent }),
+      );
+    });
+
+    it('refuses a parent others can write found through a symbolic link', async () => {
+      const shared = join(root, 'shared');
+      mkdirSync(shared);
+      chmodSync(shared, 0o757);
+      symlinkSync(shared, join(root, 'link'));
+      await expect(openStateFolder(join(root, 'link/my-app'))).rejects.toThrow(UntrustedStateError);
+    });
+
+    it('takes a parent anyone can write that has the sticky bit, as /tmp', async () => {
+      const parent = join(root, 'sticky');
+      mkdirSync(parent);
+      chmodSync(parent, 0o1777);
+      await openStateFolder(join(parent, 'my-app'));
+      expect(modeOf(join(parent, 'my-app'))).toBe(0o700);
+    });
+
+    it('refuses a parent of another user, though no one else can write it', async () => {
+      const parent = join(root, 'theirs');
+      mkdirSync(parent, { mode: 0o755 });
+      const path = join(parent, 'my-app');
+      mkdirSync(path, { mode: 0o700 });
+      vi.spyOn(process, 'getuid').mockReturnValue(statSync(root).uid + 1);
+      try {
+        await expect(openStateFolder(path)).rejects.toThrow(
+          expect.objectContaining({
+            name: 'UntrustedStateError',
+            // The first folder from the root down that is neither the user's nor root's.
+            path: root,
+            message: expect.stringContaining('another user'),
+          }),
+        );
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
   });
 
   describe('the sessions’ folders', () => {

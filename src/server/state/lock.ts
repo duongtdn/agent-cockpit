@@ -111,7 +111,8 @@ function lockedBy(pid: number | undefined, folder: string): CockpitError<'cockpi
   if (pid === undefined) {
     return new CockpitError(
       'cockpit-locked',
-      `A process of another user holds the lock of ${folder}: the cockpit cannot start until it lets go.`,
+      `A process of another user holds the lock of ${folder}: the cockpit cannot start until it lets go. ` +
+        `If its id may have been read, stop the app's servers, delete ${join(folder, LOCK_ID_FILE)}, and start again: a new id names a new lock.`,
       { holder: 'another-user' },
     );
   }

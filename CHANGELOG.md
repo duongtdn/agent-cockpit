@@ -29,11 +29,13 @@ Nothing is published yet.
   The state folder is the cockpit's own: one that exists must be the user's
   and is narrowed to the user alone, and each file read in it must be a
   regular file of the user's (never a symbolic link), else `invalid-options`;
-  a token's file others could read gives way to a new token.
+  a token's file others could read gives way to a new token. Every folder
+  above it must be the user's or root's, writable by others only with the
+  sticky bit, else `invalid-options`.
 - The app's lock: a Linux abstract unix socket named from an id in the state
   folder. A second process of the app waits 5 seconds, then rejects with
   `cockpit-locked`, whose `holder` is the holding process's id or
-  `'another-user'`.
+  `'another-user'` (its message says how to replace the lock's id).
 - The handler is mounted: it is given the requests under the app's prefix,
   the prefix removed from the URL. A path under the mount it does not know
   is answered 404, and an upgrade to one is refused; a `CockpitError` is

@@ -27,7 +27,9 @@ export interface CockpitOptions {
    * (`~/.local/state` when `XDG_STATE_HOME` is unset). It is the cockpit's
    * own, so private: created readable by the app's user alone when
    * missing; one that exists must be a folder of the user's, never a
-   * symbolic link, and is narrowed to the user alone. A file the cockpit
+   * symbolic link, and is narrowed to the user alone; every folder above
+   * it must be the user's or root's, writable by others only with the
+   * sticky bit. A file the cockpit
    * reads in it must be a regular file of the user's: one others could read
    * is narrowed, the app's token minted anew. Otherwise `createCockpit`
    * rejects with `invalid-options`.

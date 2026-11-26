@@ -66,6 +66,20 @@ request also carries the app's token, or is refused with `no-token`
   regular file of the user's, or the start is refused the same way. A
   token's file others had rights on is replaced by a new token, since the
   old one may have been read; the other files are narrowed to the user.
+- The folders above the state folder are checked too, as OpenSSH's
+  `StrictModes` does: from the root down, through the path as given and the
+  one its symbolic links lead to, each must be the user's or root's, and
+  writable by its group or others only with the sticky bit (as `/tmp`).
+  Otherwise another user could rename the state folder away and put a
+  folder of theirs in its place, with a session's settings whose hooks run
+  commands as the person; the start is refused (`invalid-options`).
+- The lock's name is made from an id in the state folder. A start never
+  replaces that id (a second process doing so while the first holds the
+  lock would run two cockpits), so an id others could read is narrowed but
+  kept. If another user then holds the lock's name, every start fails with
+  `cockpit-locked` and `holder: 'another-user'`; the remedy, which the
+  error's message says too: stop the app's servers, delete
+  `<state folder>/lock-id`, and start again.
 - `cockpit.link(pageUrl)` puts it in the page's link, in the fragment
   (`#cockpit=…`), which a browser never sends to a server.
 - The client and the terminal take it from the fragment, remove it from the
