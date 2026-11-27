@@ -4,7 +4,7 @@ import { readInputBoxView, readScreen } from '../../src/claude-code/screen-readi
 import type { ScreenReading } from '../../src/server/driver.ts';
 import type { AgentSession } from '../support/agent-session.ts';
 import { eventually as untilItHolds } from '../support/eventually.ts';
-import { heldTurn, toolUse, turn } from '../support/fake-api/index.ts';
+import { heldTurn, streamingTurn, toolUse, turn } from '../support/fake-api/index.ts';
 import { PATIENCE } from '../support/patience.ts';
 import {
   BYPASS_ACCEPTED,
@@ -246,4 +246,44 @@ it("120 — While a hook of a turn runs (UserPromptSubmit, PreToolUse, PostToolU
     expect(overDraft.spinner).toMatch(/…/u);
     expect(overDraft).toMatchObject({ footer: MODE_HINTS.default, reading: NOTHING });
   }
+});
+
+it("126 — While a reply streams over a draft in the input box, the screen shows no spinner's row and the footer is the mode's hint alone: the driver reads it as the input box free to type into, as it reads an idle session with that draft, though the turn runs (no Stop yet); no decision may rest on the screen then", async () => {
+  const agent = await startContractAgent();
+  // Long enough to stream on, a piece every 20 ms, for longer than the test reads.
+  const reply = Array.from(
+    { length: 300 },
+    (_, index) =>
+      `Line ${index + 1} of the reply: some words to wrap and stream, item ${index + 1}.`,
+  ).join('\n');
+  agent.api.script(streamingTurn(turn(reply)));
+  const session = await agent.startNew();
+  await agent.hook('SessionStart');
+  await submitPrompt(agent, session, 'go');
+  const streaming = await agent.waitFor('the reply held as it streams', agent.api.heldRequest());
+  await session.type(DRAFT);
+
+  // The spinner's row stays a moment past the first pieces of the reply.
+  const whileStreaming = await settled(
+    agent.eventually,
+    session,
+    DRAFT,
+    any,
+    (spinner) => spinner === undefined,
+  );
+  const eventsWhileStreaming = agent.hooks.events();
+  streaming.release();
+  await agent.hook('Stop');
+  await idleScreen(agent.eventually, session, DRAFT, MODE_HINTS.default as string);
+  const idle = seen(await session.screen());
+
+  expect(eventsWhileStreaming).toContain('UserPromptSubmit');
+  expect(eventsWhileStreaming).not.toContain('Stop');
+  expect(whileStreaming).toEqual({
+    spinner: undefined,
+    box: DRAFT,
+    footer: MODE_HINTS.default,
+    reading: INPUT_BOX,
+  });
+  expect(whileStreaming).toEqual(idle);
 });

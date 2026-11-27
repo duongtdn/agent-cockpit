@@ -195,7 +195,11 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   permission dialog drawn while a send types), `screen` (120: busy told
   from idle on screen, a draft in the box or none, in each mode the driver
   runs: the spinner's row above the box while a turn, a hook of it or a
-  compaction runs; the footer's `esc to interrupt` over an empty box only).
+  compaction runs; the footer's `esc to interrupt` over an empty box only;
+  126 the exception: a reply streamed over a draft draws no spinner's row,
+  and reads as the box free, as idle), `permission-dialog` (127 keys typed
+  as `PermissionRequest` arrives, before the dialog shows: they answer
+  nothing; after Esc the box holds them or nothing).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:
