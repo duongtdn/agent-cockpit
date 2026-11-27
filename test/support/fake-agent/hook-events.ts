@@ -185,6 +185,15 @@ export function stopFailure(error: TurnFailure, message: string): HookEvent {
   return event('StopFailure', { error, last_assistant_message: message });
 }
 
+/**
+ * A compaction the person asked for failed on an error of the API: seen of
+ * Claude Code, `StopFailure` with the `agent_id` of the compaction's own
+ * agent, of no type.
+ */
+export function compactionFailure(agentId: string, error: TurnFailure, message: string): HookEvent {
+  return event('StopFailure', { agent_id: agentId, ...stopFailure(error, message).fields });
+}
+
 /** A compaction the person asked for (`/compact`, no instructions) begins. */
 export function preCompact(): HookEvent {
   return event('PreCompact', { trigger: 'manual', custom_instructions: null });

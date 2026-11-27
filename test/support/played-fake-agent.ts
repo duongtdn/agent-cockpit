@@ -12,7 +12,10 @@ export interface Played {
   readonly events: HookEvent[];
   /** The names of the hook events fired, in order. */
   readonly fired: string[];
-  /** What the transcript recorded, in order: each prompt, reply and interruption marker. */
+  /**
+   * What the transcript recorded, in order: each prompt, reply and interruption marker; a
+   * command's `caveat`, its `/name`, and its `output: …` or `error: …`.
+   */
   readonly recorded: string[];
   /** The statuses the agent exited with: one at most, unless it went on after its exit. */
   readonly exits: number[];
@@ -106,6 +109,14 @@ export async function playFakeAgent({
       recordToolCall: () => {},
       recordInterruption: (marker) => recorded.push(marker),
       recordApiError: ({ message }) => recorded.push(message),
+      recordCommand: (command) => {
+        recorded.push('caveat');
+        if ('interrupted' in command) return;
+        recorded.push(`/${command.name}`);
+        recorded.push(
+          'output' in command ? `output: ${command.output}` : `error: ${command.error}`,
+        );
+      },
     },
     promptsTaken: 0,
     secondsSinceLastResponse: resumedAfterSeconds,

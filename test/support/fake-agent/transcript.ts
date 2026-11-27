@@ -24,7 +24,36 @@ export interface Transcript {
   recordInterruption(marker: InterruptionMarker): void;
   /** Records the error of the API a turn failed on, as the agent's last message: what it shows. */
   recordApiError(failure: { readonly error: string; readonly message: string }): void;
+  /**
+   * Records a local command once it ran, as Claude Code does: the caveat that
+   * the command is the person's own, then its name and its output or its
+   * error; an interrupted command, the caveat alone.
+   */
+  recordCommand(command: RanCommand): void;
 }
+
+/** A local command that ran, as the transcript records it. */
+export type RanCommand =
+  | {
+      /** The command's name, without its slash. */
+      readonly name: string;
+      /** What it printed. */
+      readonly output: string;
+    }
+  | {
+      /** The command's name, without its slash. */
+      readonly name: string;
+      /** The error it ended on. */
+      readonly error: string;
+    }
+  | {
+      /** The command was interrupted. */
+      readonly interrupted: true;
+    };
+
+/** The caveat Claude Code records with every local command. */
+const COMMAND_CAVEAT =
+  "<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.</local-command-caveat>";
 
 /**
  * Names the transcript of a conversation.
@@ -50,9 +79,10 @@ export function projectFolderName(cwd: string): string {
 
 /** An entry of a transcript, as the fake agent writes them. */
 interface Entry {
-  readonly type: 'user' | 'assistant';
+  readonly type: 'user' | 'assistant' | 'system';
   readonly timestamp: string;
-  readonly message: { readonly content: unknown };
+  readonly isMeta?: boolean;
+  readonly message?: { readonly content: unknown };
 }
 
 function entriesOf(path: string): Entry[] {
@@ -64,14 +94,22 @@ function entriesOf(path: string): Entry[] {
 }
 
 /**
- * Counts the prompts a conversation took.
+ * Counts the prompts a conversation took: each a `user` entry of text, a
+ * local command's name among them, but for the caveat (an entry of the
+ * agent's own) and a command's output.
  *
  * @param path - Its transcript; one that does not exist holds none.
  */
 export function countPrompts(path: string): number {
-  return entriesOf(path).filter(
-    (entry) => entry.type === 'user' && typeof entry.message.content === 'string',
-  ).length;
+  return entriesOf(path).filter((entry) => {
+    const content = entry.message?.content;
+    return (
+      entry.type === 'user' &&
+      entry.isMeta !== true &&
+      typeof content === 'string' &&
+      !content.startsWith('<local-command-')
+    );
+  }).length;
 }
 
 /**
@@ -95,16 +133,54 @@ export function secondsSinceLastResponse(path: string, now: Date): number | unde
  * @param sessionId - The conversation's id, which each entry carries.
  */
 export function openTranscript(path: string, sessionId: string): Transcript {
+  function append(entry: object): void {
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, `${JSON.stringify(entry)}\n`);
+  }
+
   function record(type: 'user' | 'assistant', content: unknown, marks: object = {}): void {
-    const entry = {
+    append({
       type,
       sessionId,
       timestamp: new Date().toISOString(),
       ...marks,
       message: { role: type, content },
-    };
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(entry)}\n`);
+    });
+  }
+
+  /** Seen of Claude Code: a command's error is an entry of its own, of the `system` type. */
+  function recordSystem(content: string, marks: object): void {
+    append({
+      type: 'system',
+      subtype: 'local_command',
+      content,
+      level: 'info',
+      timestamp: new Date().toISOString(),
+      isMeta: false,
+      ...marks,
+      sessionId,
+    });
+  }
+
+  function recordCommand(command: RanCommand): void {
+    record('user', COMMAND_CAVEAT, { isMeta: true, rowSource: 'harness' });
+    if ('interrupted' in command) return;
+    const { name } = command;
+    record(
+      'user',
+      `<command-name>/${name}</command-name>\n            <command-message>${name}</command-message>\n            <command-args></command-args>`,
+      { rowSource: 'local' },
+    );
+    if ('output' in command) {
+      record('user', `<local-command-stdout>${command.output}</local-command-stdout>`, {
+        rowSource: 'local',
+      });
+    } else {
+      recordSystem(`<local-command-stderr>${command.error}</local-command-stderr>`, {
+        commandRun: { command: name, args: '' },
+        commandOutcome: { kind: 'failed' },
+      });
+    }
   }
 
   return {
@@ -116,5 +192,6 @@ export function openTranscript(path: string, sessionId: string): Transcript {
     // Seen of Claude Code: an assistant entry marked as the API's error, the kind of error beside it.
     recordApiError: ({ error, message }) =>
       record('assistant', [{ type: 'text', text: message }], { isApiErrorMessage: true, error }),
+    recordCommand,
   };
 }

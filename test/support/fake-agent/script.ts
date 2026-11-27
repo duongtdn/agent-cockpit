@@ -60,6 +60,32 @@ export interface CompactStep {
 }
 
 /**
+ * Fail to compact the conversation, on the person's `/compact`, on an error
+ * of the API that the agent does not try again: the API answers the status.
+ * The turn of that command, alone in it.
+ */
+export interface FailedCompactStep {
+  readonly do: 'compact-fails';
+  /** The HTTP status the API answers. */
+  readonly status: number;
+}
+
+/**
+ * Compact the conversation, on the person's `/compact`, until the person
+ * interrupts it with Esc: the API holds the request. The turn of that
+ * command, alone in it.
+ */
+export interface StayingCompactStep {
+  readonly do: 'compact-stays';
+}
+
+/** A compaction, as a script plays it: done, failed, or until interrupted. */
+export type Compaction = CompactStep | FailedCompactStep | StayingCompactStep;
+
+/** The steps of a compaction. */
+export const COMPACTIONS: readonly string[] = ['compact', 'compact-fails', 'compact-stays'];
+
+/**
  * Start a subagent in the background with the `Agent` tool, and go on with
  * the turn. Once the turn ended (and the test let tasks run), the subagent
  * does its work, and its end starts the session's next turn by itself: a
@@ -86,7 +112,7 @@ export type Step =
   | ToolStep
   | QuestionStep
   | FailStep
-  | CompactStep
+  | Compaction
   | TaskStep
   | { readonly do: 'stay-busy' }
   | { readonly do: 'exit' };
@@ -94,7 +120,7 @@ export type Step =
 /** What the agent does with one prompt: steps, the last of which ends the turn. */
 export type Turn = readonly Step[];
 
-const ENDING_STEPS: readonly string[] = ['reply', 'stay-busy', 'exit', 'fail', 'compact'];
+const ENDING_STEPS: readonly string[] = ['reply', 'stay-busy', 'exit', 'fail', ...COMPACTIONS];
 
 /**
  * Reads a script: a JSON list of turns, each a list of steps.
@@ -103,8 +129,8 @@ const ENDING_STEPS: readonly string[] = ['reply', 'stay-busy', 'exit', 'fail', '
  * @returns The turns, in the order of the prompts they answer.
  * @throws `SyntaxError` for what is no JSON; `Error`, naming the turn and the
  * step, for a step the fake agent cannot play, an empty turn, a turn that
- * does not end with `reply`, `stay-busy`, `exit`, `fail` or `compact`, a step
- * after one of those, and a `compact` with another step in its turn.
+ * does not end with `reply`, `stay-busy`, `exit`, `fail` or a compaction, a
+ * step after one of those, and a compaction with another step in its turn.
  */
 export function parseScript(text: string): Turn[] {
   const turns: unknown = JSON.parse(text);
@@ -123,7 +149,7 @@ function readTurn(turn: unknown, name: string): Turn {
   if (end === -1)
     throw new Error(`${name} must end with a reply, stay-busy, exit, fail or compact`);
   if (end < steps.length - 1) throw new Error(`${name} goes on after step ${end + 1}`);
-  if (steps.length > 1 && steps.some((step) => step.do === 'compact')) {
+  if (steps.length > 1 && steps.some((step) => COMPACTIONS.includes(step.do))) {
     throw new Error(`${name} compacts: a compaction is a turn of its own`);
   }
   return steps;
@@ -146,6 +172,10 @@ function isStep(step: unknown): step is Step {
       return Number.isInteger(candidate.status);
     case 'compact':
       return typeof candidate.summary === 'string';
+    case 'compact-fails':
+      return Number.isInteger(candidate.status);
+    case 'compact-stays':
+      return true;
     case 'task':
       return isTask(candidate);
     case 'stay-busy':

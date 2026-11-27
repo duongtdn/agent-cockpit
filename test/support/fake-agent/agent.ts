@@ -7,6 +7,7 @@ import {
   afterPrompt,
   type BackgroundTask,
   bySubagent,
+  compactionFailure,
   type HookEvent,
   messageDisplay,
   permissionRequest,
@@ -32,7 +33,15 @@ import { createInputBox, type DrawnBox } from './input-box.ts';
 import type { Key } from './keys.ts';
 import { allowsEveryCallOf, deniedPathNamedBy } from './permission-settings.ts';
 import type { AgentState, Dialog, ScreenView, ShownStartUpDialog } from './screen.ts';
-import { type Step, type TaskStep, type ToolStep, type Turn, turnAt } from './script.ts';
+import {
+  COMPACTIONS,
+  type Compaction,
+  type Step,
+  type TaskStep,
+  type ToolStep,
+  type Turn,
+  turnAt,
+} from './script.ts';
 import {
   type DialogSubjects,
   START_UP_DIALOGS,
@@ -150,6 +159,12 @@ const DECLINED_STATUS = 1;
 
 /** The only local command the fake agent plays: the others were not observed, or not as typed. */
 const COMPACT_COMMAND = '/compact';
+
+/** What Claude Code draws after `/compact` put back into the input box: its argument's hint. */
+const COMPACT_ARGUMENT_HINT = '<optional custom summarization instructions>';
+
+/** The first words of what Claude Code records as the output of a compaction done. */
+const COMPACTED = 'Compacted (ctrl+o to see full summary)';
 
 /**
  * How long after `PermissionRequest` is sent the permission dialog is
@@ -280,8 +295,12 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   let ending = false;
   let subagentEnded = false;
   let compacting = false;
+  /** Ends a compaction that stays until the person's Esc; none while no such compaction runs. */
+  let interruptCompaction: (() => void) | undefined;
+  /** Whether the input box holds the command an interruption put back, drawn with its hint. */
+  let commandPutBack = false;
 
-  function view(drawnBox: DrawnBox = box.drawn()): ScreenView {
+  function view(drawnBox: DrawnBox = withHint(box.drawn())): ScreenView {
     return {
       sessionId: commandLine.sessionId,
       permissionMode: commandLine.permissionMode,
@@ -296,6 +315,13 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       startUpDialog: shownStartUpDialog(),
       farewell,
     };
+  }
+
+  /** The box as drawn, with the hint of a command put back after its first row. */
+  function withHint(drawnBox: DrawnBox): DrawnBox {
+    if (!commandPutBack) return drawnBox;
+    const [first = '', ...others] = drawnBox.rows;
+    return { ...drawnBox, rows: [`${first}  ${COMPACT_ARGUMENT_HINT}`, ...others] };
   }
 
   function shownStartUpDialog(): ShownStartUpDialog | undefined {
@@ -426,6 +452,14 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       pressOnDialog(dialog, key);
       return;
     }
+    if (commandPutBack) {
+      pressOnCommandPutBack(key);
+      return;
+    }
+    if (key.kind === 'escape' && interruptCompaction !== undefined) {
+      pressEscapeOnCompaction(interruptCompaction);
+      return;
+    }
     try {
       pressInBox(key);
     } catch (error) {
@@ -435,6 +469,32 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
     if (key.kind === 'enter') pressEnter();
     if (key.kind === 'escape') turn?.interrupt();
     show();
+  }
+
+  /**
+   * Plays a key on the command an interrupted compaction put back. Seen of
+   * Claude Code: Ctrl+U clears the box, hint and all. What any other key
+   * does there was not observed.
+   */
+  function pressOnCommandPutBack(key: Key): void {
+    if (key.kind !== 'kill-line') {
+      fail(
+        `the key ${key.kind} on ${COMPACT_COMMAND} put back after an interrupted compaction: what Claude Code does with it was not observed`,
+      );
+      return;
+    }
+    commandPutBack = false;
+    pressInBox(key);
+    show();
+  }
+
+  /** Interrupts a compaction on Esc, as seen of Claude Code over an empty input box only. */
+  function pressEscapeOnCompaction(interrupt: () => void): void {
+    if (box.text() !== '') {
+      fail('Esc over a draft while a compaction runs: what Claude Code does then was not observed');
+      return;
+    }
+    interrupt();
   }
 
   /**
@@ -636,6 +696,8 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       case 'task':
         return launchTask(next, running);
       case 'compact':
+      case 'compact-fails':
+      case 'compact-stays':
         throw new Error(`a prompt meets the script's compaction: only ${COMPACT_COMMAND} plays it`);
     }
   }
@@ -785,9 +847,9 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   /**
    * Compacts the conversation on the person's `/compact`, seen of Claude
    * Code: the command is a prompt of its own to the hooks (a new prompt id)
-   * with no `UserPromptSubmit`; `PreCompact`; the compaction's two helpers
-   * end (`SubagentStop`, of no type); the session starts again from the
-   * summary (`SessionStart`, `compact`); `PostCompact` gives the summary.
+   * with no `UserPromptSubmit`; `PreCompact`; then the compaction is done,
+   * fails, or stays until the person's Esc, as the script says. Once it
+   * ended, the transcript records the command.
    * A conversation with nothing in it is refused: Claude Code was seen to
    * fire `PreCompact` alone or nothing, by when the command was typed.
    */
@@ -816,24 +878,79 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
 
   async function compactConversation(): Promise<void> {
     const [step] = turnAt(surroundings.readScript(), promptsTaken);
-    if (step?.do !== 'compact') {
+    if (step === undefined || !COMPACTIONS.includes(step.do)) {
       throw new Error(`${COMPACT_COMMAND} meets a turn of the script that does not compact`);
     }
     promptsTaken += 1;
-    transcript.recordPrompt(COMPACT_COMMAND);
+    const end = endOf(step as Compaction);
     await fire(preCompact());
+    await end();
+  }
+
+  /**
+   * How a compaction ends, as the script says. One that stays takes the
+   * person's Esc from now on: a test presses it as soon as `PreCompact` is told.
+   */
+  function endOf(step: Compaction): () => Promise<void> {
+    switch (step.do) {
+      case 'compact':
+        return () => completeCompaction(step.summary);
+      case 'compact-fails':
+        return () => failCompaction(step.status);
+      case 'compact-stays': {
+        const escaped = new Promise<void>((resolve) => {
+          interruptCompaction = resolve;
+        });
+        return () => endOnEscape(escaped);
+      }
+    }
+  }
+
+  /**
+   * Seen of Claude Code: the compaction's two helpers end (`SubagentStop`,
+   * of no type); the session starts again from the summary (`SessionStart`,
+   * `compact`); `PostCompact` gives the summary.
+   */
+  async function completeCompaction(summary: string): Promise<void> {
     for (const helper of [drawAgentId(), drawAgentId()]) {
       const agent = { id: helper, type: '' };
       await fire(
         subagentStop(agent, {
           transcriptPath: surroundings.taskFiles(helper).transcriptPath,
-          lastAssistantMessage: step.summary,
+          lastAssistantMessage: summary,
           backgroundTasks: backgroundTasks(),
         }),
       );
     }
     await fire(sessionStart({ source: 'compact', model: commandLine.model ?? UNNAMED_MODEL }));
-    await fire(postCompact(step.summary));
+    await fire(postCompact(summary));
+    transcript.recordCommand({ name: 'compact', output: COMPACTED });
+  }
+
+  /**
+   * Seen of Claude Code, its retries off: `StopFailure` of the compaction's
+   * own agent, no `PostCompact`, and the error recorded as the command's.
+   */
+  async function failCompaction(status: number): Promise<void> {
+    const failure = failureOf(status, surroundings.apiBaseUrl);
+    await fire(compactionFailure(drawAgentId(), failure.error, failure.message));
+    transcript.recordCommand({
+      name: 'compact',
+      error: `Error during compaction: ${failure.message}`,
+    });
+  }
+
+  /**
+   * Waits for the person's Esc, then ends as Claude Code was seen to: with
+   * no hook, the caveat alone in the transcript, and `/compact` back in the
+   * input box, its argument's hint after it.
+   */
+  async function endOnEscape(escaped: Promise<void>): Promise<void> {
+    await escaped;
+    interruptCompaction = undefined;
+    transcript.recordCommand({ interrupted: true });
+    box.putBack(COMPACT_COMMAND);
+    commandPutBack = true;
   }
 
   /**

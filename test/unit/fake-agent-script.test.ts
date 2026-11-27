@@ -38,6 +38,8 @@ describe("the fake agent's script", () => {
         { do: 'fail', status: 529 },
       ],
       [{ do: 'compact', summary: 'The summary.' }],
+      [{ do: 'compact-fails', status: 500 }],
+      [{ do: 'compact-stays' }],
       [{ do: 'exit' }],
     ];
 
@@ -79,6 +81,17 @@ describe("the fake agent's script", () => {
     ],
     ['a failure without its status', '[[{"do":"fail"}]]', 'turn 1, step 1'],
     ['a compaction without its summary', '[[{"do":"compact"}]]', 'turn 1, step 1'],
+    ['a failed compaction without its status', '[[{"do":"compact-fails"}]]', 'turn 1, step 1'],
+    [
+      'a compaction until Esc with another step in its turn',
+      '[[{"do":"reply","text":"r"},{"do":"compact-stays"}]]',
+      'turn 1 goes on after step 1',
+    ],
+    [
+      'a failed compaction with another step in its turn',
+      '[[{"do":"tool","name":"Bash","input":{}},{"do":"compact-fails","status":500}]]',
+      'turn 1 compacts: a compaction is a turn of its own',
+    ],
     [
       'a compaction with another step in its turn',
       '[[{"do":"tool","name":"Bash","input":{}},{"do":"compact","summary":"s"}]]',

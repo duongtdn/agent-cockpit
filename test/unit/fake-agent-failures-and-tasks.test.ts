@@ -3,7 +3,7 @@ import { CANNOT_PLAY_STATUS } from '../support/fake-agent/agent.ts';
 import type { TaskStep } from '../support/fake-agent/script.ts';
 import { failureOf } from '../support/fake-agent/turn-failures.ts';
 import { apiError } from '../support/fake-api/index.ts';
-import { type Played, playFakeAgent, submit } from '../support/played-fake-agent.ts';
+import { API_BASE_URL, type Played, playFakeAgent, submit } from '../support/played-fake-agent.ts';
 
 const touch = {
   do: 'tool',
@@ -223,6 +223,91 @@ describe('the fake agent, compacting on /compact', () => {
     expect(fieldsOf(played, 'SessionStart', 1)).toMatchObject({ source: 'compact' });
     expect(fieldsOf(played, 'PostCompact')).toMatchObject({ compact_summary: 'The summary.' });
     expect(played.screen().state).toBe('idle');
+    expect(played.recorded.slice(2)).toEqual([
+      'caveat',
+      '/compact',
+      'output: Compacted (ctrl+o to see full summary)',
+    ]);
+  });
+
+  it('fails on an error of the API: PreCompact, then StopFailure with the agent_id of its own agent, of no type, and no PostCompact; records the command with its error (behavior 123)', async () => {
+    const played = await playFakeAgent({
+      script: [[reply('Something.')], [{ do: 'compact-fails', status: 500 }]],
+    });
+    submit(played, 'say something');
+    await vi.waitFor(() => expect(played.fired).toContain('Stop'));
+
+    submit(played, '/compact');
+
+    await vi.waitFor(() => expect(played.fired.at(-1)).toBe('StopFailure'));
+    const message = failureOf(500, API_BASE_URL).message;
+    expect(played.fired.slice(4)).toEqual(['PreCompact', 'StopFailure']);
+    expect(fieldsOf(played, 'StopFailure')).toMatchObject({
+      agent_id: expect.stringMatching(/^a[0-9a-f]{16}$/),
+      error: 'server_error',
+      last_assistant_message: message,
+    });
+    expect(fieldsOf(played, 'StopFailure')).not.toHaveProperty('agent_type');
+    expect(played.recorded.slice(2)).toEqual([
+      'caveat',
+      '/compact',
+      `error: Error during compaction: ${message}`,
+    ]);
+    expect(played.screen()).toMatchObject({ state: 'idle', compacting: false });
+  });
+
+  describe('until a person interrupts it with Esc', () => {
+    async function compacting(): Promise<Played> {
+      const played = await playFakeAgent({
+        script: [[reply('Something.')], [{ do: 'compact-stays' }], [reply('After.')]],
+      });
+      submit(played, 'say something');
+      await vi.waitFor(() => expect(played.fired).toContain('Stop'));
+      submit(played, '/compact');
+      await vi.waitFor(() => expect(played.fired.at(-1)).toBe('PreCompact'));
+      return played;
+    }
+
+    it('ends with no hook, records the caveat alone, and puts /compact back in the box with its hint (behavior 124)', async () => {
+      const played = await compacting();
+      expect(played.screen()).toMatchObject({ state: 'busy', compacting: true });
+
+      played.agent.press({ kind: 'escape' });
+
+      await vi.waitFor(() => expect(played.screen().state).toBe('idle'));
+      expect(played.fired.slice(4)).toEqual(['PreCompact']);
+      expect(played.recorded.slice(2)).toEqual(['caveat']);
+      expect(played.screen()).toMatchObject({ compacting: false });
+      expect(played.screen().box.rows).toEqual([
+        '❯\u00a0/compact  <optional custom summarization instructions>',
+      ]);
+    });
+
+    it('takes Ctrl+U on the command put back, which clears the box and its hint, then the next prompt', async () => {
+      const played = await compacting();
+      played.agent.press({ kind: 'escape' });
+      await vi.waitFor(() => expect(played.screen().state).toBe('idle'));
+
+      played.agent.press({ kind: 'kill-line' });
+      expect(played.screen().box.rows).toEqual(['❯\u00a0']);
+      submit(played, 'say more');
+
+      await vi.waitFor(() => expect(played.fired.at(-1)).toBe('Stop'));
+      expect(fieldsOf(played, 'Stop', 1)).toMatchObject({ last_assistant_message: 'After.' });
+    });
+
+    it('refuses any other key on the command put back, and an Esc over a draft', async () => {
+      const keyed = await compacting();
+      keyed.agent.press({ kind: 'escape' });
+      await vi.waitFor(() => expect(keyed.screen().state).toBe('idle'));
+      keyed.agent.press({ kind: 'text', text: 'x' });
+      await refused(keyed, /put back/);
+
+      const drafted = await compacting();
+      drafted.agent.press({ kind: 'text', text: 'a draft' });
+      drafted.agent.press({ kind: 'escape' });
+      await refused(drafted, /draft/);
+    });
   });
 
   it('refuses /compact on a conversation with nothing in it', async () => {

@@ -40,6 +40,10 @@ function answersFor(step: Step): ScriptedAnswer[] {
       return [turn(toolUse('Agent', agentInput(step)))];
     case 'compact':
       return [turn(step.summary), turn(step.summary)];
+    case 'compact-fails':
+      return [apiError(step.status)];
+    case 'compact-stays':
+      return [heldTurn()];
     case 'exit':
       throw new Error(
         'No answer of the API makes the real agent leave: an exit cannot be compared.',
