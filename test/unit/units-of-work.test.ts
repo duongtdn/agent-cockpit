@@ -1206,6 +1206,29 @@ describe('closing the units of work', () => {
     expect(driver.launches).toEqual([]);
   });
 
+  it('starts no session for an admission under way once closed, the sessions core not closed yet', async () => {
+    await started();
+    idle();
+    await exits();
+    let answer: (kept: boolean) => void = () => {};
+    driver.canResume = () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      });
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+
+    // The cockpit's close awaits the handler's before it closes the sessions core.
+    const closed = units.close();
+    answer(true);
+    await settle();
+
+    await expect(ran).rejects.toThrow(SessionsClosedError);
+    expect(driver.launches).toHaveLength(1);
+    expect(host.starts).toHaveLength(1);
+    await closed;
+  });
+
   it('settles once the record writes under way are done', async () => {
     const release = records.holdPuts();
     const ran = pending(units.run('explain', { file: 'a' }));

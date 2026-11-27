@@ -552,6 +552,8 @@ class Units implements UnitsOfWork {
       const before = this.#sessions.conversationOf(plan.key);
       const { take, conversationId } = await this.#takeUp(plan, folder);
       await this.#makeRoom(plan.key);
+      // Closed meanwhile: the sessions core is closed only once the close settled, and would still start one.
+      this.#refuseIfClosed(plan.key);
       const launching = this.#sessions.launch({
         key: plan.key,
         directory: folder.path,
