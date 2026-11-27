@@ -166,6 +166,14 @@ describe("the fake agent's screen", () => {
     ]);
   });
 
+  it('draws the footer of a box with text alike while a turn runs', () => {
+    expect(renderScreen({ ...view, state: 'busy', box: typed('a draft') }).slice(-3)).toEqual([
+      '❯ a draft',
+      RULE,
+      '  ⏸ manual mode on',
+    ]);
+  });
+
   it('draws the footer of an empty box over the invisible separator alone', () => {
     expect(renderScreen({ ...view, box: typed('\u2063') }).slice(-3)).toEqual([
       '❯\u00a0',

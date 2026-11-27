@@ -50,7 +50,8 @@ const DEFAULT_WIDTH = 80;
 /**
  * The footer under the input box, as Claude Code 2.1.332 draws it in the
  * modes and states it was seen in; none in the others. In the default mode
- * an idle box with text drops the hints, and shell mode says so.
+ * a box with text drops the hints, idle or while a turn runs, and an idle
+ * box in shell mode says so.
  */
 const FOOTERS: Readonly<Record<string, Partial<Record<AgentState, string>>>> = {
   default: {
@@ -163,7 +164,10 @@ function footerOf({ box, permissionMode, state, subagentEnded }: ScreenView): st
     if (subagentEnded) {
       return box.looksEmpty ? FOOTERS_AFTER_A_SUBAGENT.empty : FOOTERS_AFTER_A_SUBAGENT.overText;
     }
-    if (!box.looksEmpty) return DEFAULT_FOOTER_OVER_TEXT;
+  }
+  const drawsTheBox = state === 'idle' || state === 'busy';
+  if (permissionMode === 'default' && drawsTheBox && !box.looksEmpty) {
+    return DEFAULT_FOOTER_OVER_TEXT;
   }
   return FOOTERS[permissionMode]?.[state];
 }
