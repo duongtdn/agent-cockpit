@@ -636,9 +636,10 @@ class SessionRegistry implements Sessions {
   /**
    * Types a first prompt too long for the command line, once the agent is
    * ready and its input box drawn, the page's terminals' keys held from
-   * the agent's start (let through while a dialog in place of the box
-   * waits for a person): the session stays `starting` until the agent
-   * takes it, and the launch settles then. Not taken, no box drawn in
+   * the agent's start (those kept dropped, then let through, while a
+   * dialog in place of the box waits for a person): the session stays
+   * `starting` until the agent takes it, and the launch settles then, or
+   * at `waiting`, the prompt's own outcome told apart. Not taken, no box drawn in
    * time, or the session no longer `starting` once the box shows (nothing
    * typed then), the launch fails as a send does; a session still
    * `starting` is then `idle`.
@@ -694,9 +695,9 @@ class SessionRegistry implements Sessions {
   /**
    * Waits for the agent to draw its input box, which Claude Code does a
    * moment after its `SessionStart`: a dialog in its place makes the
-   * session wait in the terminal, the page's terminals' keys let through
-   * for the person to answer it; `starting` again, the keys held again,
-   * once the box shows.
+   * session wait in the terminal, the page's terminals' keys kept so far
+   * dropped, then let through for the person to answer it; `starting`
+   * again, the keys held again, once the box shows.
    *
    * @returns Whether the box showed; `false` once the bound passed, or the
    * wait was stopped.
@@ -705,7 +706,8 @@ class SessionRegistry implements Sessions {
     const wait = new InputBoxWait({
       read: () => this.#readScreen(entry.key),
       onDialog: (shown) => {
-        keys.release();
+        // Typed toward the box, the keys kept would answer a dialog the person had not seen.
+        keys.discard();
         this.#waitInTerminal(entry, shown);
       },
     });
@@ -1194,8 +1196,10 @@ function failFirstPrompt(entry: Entry, error: unknown): void {
 interface HeldKeys {
   /** Holds the keys, unless they are held already. */
   hold(): void;
-  /** Lets the keys through, if they are held. */
+  /** Lets the keys through, if they are held: those kept reach the session first. */
   release(): void;
+  /** Lets the keys through, if they are held, the keys kept dropped. */
+  discard(): void;
 }
 
 /** Holds the page's terminals' keys of a session from now on. */
@@ -1208,6 +1212,11 @@ function heldKeys(holds: TerminalHold, key: string): HeldKeys {
     release() {
       release?.();
       release = undefined;
+    },
+    discard() {
+      if (release === undefined) return;
+      holds.discard(key);
+      this.release();
     },
   };
 }

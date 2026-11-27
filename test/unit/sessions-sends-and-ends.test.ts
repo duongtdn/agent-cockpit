@@ -51,6 +51,7 @@ beforeEach(() => {
   holds.join(KEY, {
     hold: () => void pageTerminal.push('held'),
     release: () => void pageTerminal.push('released'),
+    discard: () => void pageTerminal.push('discarded'),
   });
   sessions = createSessions({
     host,
@@ -621,7 +622,7 @@ describe('a first prompt too long for the command line', () => {
     expect(pageTerminal).toEqual(['held', 'released']);
   });
 
-  it("lets the page's terminals' keys through while a dialog in place of the box waits for the person, held again once the box shows", async () => {
+  it("discards the page's terminals' keys kept when a dialog shows in place of the box, then lets them through for the person to answer it, held again once the box shows", async () => {
     void sessions.launch({
       key: KEY,
       directory: DIRECTORY,
@@ -632,15 +633,16 @@ describe('a first prompt too long for the command line', () => {
     hook('/ready');
     host.show(KEY, stubScreen('dialog'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
-    expect(pageTerminal).toEqual(['held', 'released']);
+    // Kept for the box, they would answer a dialog the person had not seen.
+    expect(pageTerminal).toEqual(['held', 'discarded', 'released']);
 
     host.show(KEY, stubScreen('ready'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
-    expect(pageTerminal).toEqual(['held', 'released', 'held']);
+    expect(pageTerminal).toEqual(['held', 'discarded', 'released', 'held']);
     hook(`${PROMPT_PATH}A long prompt.`);
 
     await expect(sessions.firstPrompt(KEY)).resolves.toMatchObject({ state: 'busy' });
-    expect(pageTerminal).toEqual(['held', 'released', 'held', 'released']);
+    expect(pageTerminal).toEqual(['held', 'discarded', 'released', 'held', 'released']);
   });
 
   it('types nothing into a session no longer `starting` once the box shows: the launch fails `wrong-state` with its state', async () => {

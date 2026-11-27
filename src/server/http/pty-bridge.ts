@@ -183,11 +183,20 @@ function keyGate(
   // Outlasts the hold until the keys kept are written: a key typed in
   // between must not overtake them.
   let keeping = false;
+  let discarded = false;
   let pending: ReturnType<typeof setTimeout> | undefined;
 
   const stopKeeping = (): void => {
     keeping = false;
-    tell({ type: 'released' });
+    tell(discarded ? { type: 'released', discarded: true } : { type: 'released' });
+    discarded = false;
+  };
+
+  const dropKept = (): void => {
+    clearTimeout(pending);
+    pending = undefined;
+    kept.length = 0;
+    keptBytes = 0;
   };
 
   const writeNext = (): void => {
@@ -232,10 +241,13 @@ function keyGate(
       held = false;
       if (pending === undefined) writeNext();
     },
-    drop() {
-      clearTimeout(pending);
-      kept.length = 0;
+    discard() {
+      if (kept.length === 0) return;
+      discarded = true;
+      dropKept();
+      if (!held) stopKeeping();
     },
+    drop: dropKept,
   };
 }
 

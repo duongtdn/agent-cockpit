@@ -105,6 +105,41 @@ it('holds the keys typed during a send, then writes them in order, each as typed
   expect(attachment.written).toEqual(['f', 'i', 'x\r', 'y']);
 });
 
+it('drops the keys kept when they are discarded: none reaches the session, and the browser is told with the release', async () => {
+  const socket = await openTerminal();
+  const release = holds.hold('explain-a');
+  socket.type('y');
+  await vi.advanceTimersByTimeAsync(10);
+  socket.type('\r');
+
+  holds.discard('explain-a');
+  release();
+  await vi.advanceTimersByTimeAsync(100);
+
+  expect(attachment.written).toEqual([]);
+  expect(
+    socket.messages.filter((message) => (message as { type: string }).type !== 'keys'),
+  ).toEqual([{ type: 'held' }, { type: 'released', discarded: true }]);
+  socket.type('1');
+  expect(attachment.written).toEqual(['1']);
+});
+
+it('stops writing the keys kept once discarded, as they are written after a release', async () => {
+  const socket = await openTerminal();
+  const release = holds.hold('explain-a');
+  socket.type('a');
+  await vi.advanceTimersByTimeAsync(10);
+  socket.type('b');
+  release();
+  expect(attachment.written).toEqual(['a']);
+
+  holds.discard('explain-a');
+  await vi.advanceTimersByTimeAsync(100);
+
+  expect(attachment.written).toEqual(['a']);
+  expect(socket.messages.at(-1)).toEqual({ type: 'released', discarded: true });
+});
+
 it('tells the browser the keys pass again at once when none were typed', async () => {
   const socket = await openTerminal();
 

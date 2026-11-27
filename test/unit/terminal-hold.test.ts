@@ -8,7 +8,12 @@ import {
 /** A terminal of the bridge's that records what the holds told it. */
 function recordingTerminal(): HeldTerminal & { told: string[] } {
   const told: string[] = [];
-  return { told, hold: () => told.push('hold'), release: () => told.push('release') };
+  return {
+    told,
+    hold: () => told.push('hold'),
+    release: () => told.push('release'),
+    discard: () => told.push('discard'),
+  };
 }
 
 let holds: TerminalHolds;
@@ -93,4 +98,18 @@ it('keeps the keys held until the last of two holds of the key is released', () 
 
   second();
   expect(terminal.told).toEqual(['hold', 'release']);
+});
+
+it('drops what every terminal of the key, and only of that key, kept on a discard; the hold stays', () => {
+  const first = recordingTerminal();
+  const other = recordingTerminal();
+  holds.join('explain-a', first);
+  holds.join('explain-b', other);
+  const release = holds.hold('explain-a');
+
+  holds.discard('explain-a');
+  expect([first.told, other.told]).toEqual([['hold', 'discard'], []]);
+
+  release();
+  expect(first.told).toEqual(['hold', 'discard', 'release']);
 });

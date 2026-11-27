@@ -340,6 +340,12 @@ export interface TerminalHeldMessage {
 export interface TerminalReleasedMessage {
   /** Its kind. */
   readonly type: 'released';
+  /**
+   * Present when keys kept meanwhile were dropped rather than passed on: a
+   * start-up dialog took the place of the input box they were typed
+   * toward, and they would have answered it unseen.
+   */
+  readonly discarded?: true;
 }
 
 /**

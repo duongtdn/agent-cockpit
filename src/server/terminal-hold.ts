@@ -15,6 +15,16 @@ export interface TerminalHold {
    * does nothing.
    */
   hold(key: string): () => void;
+  /**
+   * Drops the keys every terminal of the session kept while held: they
+   * never reach the session, and each terminal's browser is told when its
+   * keys pass again. What the core typed them toward is gone (a start-up
+   * dialog took the input box's place), and they would answer what the
+   * person had not seen. The holds stay as they are.
+   *
+   * @param key - The session's key.
+   */
+  discard(key: string): void;
 }
 
 /** A terminal of the page attached to a session, as the holds see it: the pty bridge's. */
@@ -23,6 +33,8 @@ export interface HeldTerminal {
   hold(): void;
   /** The keys kept go to the session, in the order they were sent, then its keys pass again. */
   release(): void;
+  /** The keys kept are dropped, never sent to the session; the browser is told with the release. */
+  discard(): void;
 }
 
 /** The holds of every session: the core holds a key, the pty bridge's terminals join it. */
@@ -71,6 +83,9 @@ export function createTerminalHolds(): TerminalHolds {
         released = true;
         unhold(key);
       };
+    },
+    discard(key) {
+      for (const terminal of terminals(key)) terminal.discard();
     },
     join(key, terminal) {
       const joined = terminalsOf.get(key) ?? new Set();
