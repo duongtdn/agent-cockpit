@@ -72,7 +72,11 @@ export interface Cockpit {
    * agent took the prompt, `idle` for a job without one, `waiting` while a
    * start-up dialog waits for the person in the terminal, `ended` when the
    * agent exited before it took the prompt (`declined` when the person
-   * left a dialog). A start that ended a session lists the background
+   * left a dialog). A prompt too long for the agent's command line is
+   * typed once the agent started: the run settles once the agent took it,
+   * a dialog shown meanwhile included, and fails as a send does when it
+   * did not (the session `idle`, in its conversation, the run not kept in
+   * the key's history). A start that ended a session lists the background
    * tasks it stopped (`stoppedTasks`).
    *
    * @param jobId - The job's id.

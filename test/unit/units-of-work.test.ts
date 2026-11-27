@@ -306,7 +306,7 @@ describe('a run on a key with no record', () => {
     expect(recordOf()?.history).toHaveLength(1);
   });
 
-  it('records a session whose typed first prompt was not taken: it lives, `idle`', async () => {
+  it('records the session whose typed first prompt was not taken, `idle` in its conversation, but not the run', async () => {
     driver.promptFitsLaunch = () => false;
     const ran = pending(units.run('explain', { file: 'a' }));
     await settle();
@@ -315,6 +315,31 @@ describe('a run on a key with no record', () => {
     await vi.advanceTimersByTimeAsync(10_000);
 
     await expect(ran).rejects.toMatchObject({ code: 'prompt-not-taken', state: 'idle' });
+    expect(recordOf()).toMatchObject({
+      conversationId: driver.launches[0]?.conversationId,
+      history: [],
+    });
+  });
+
+  it('settles a run whose typed first prompt waits behind a start-up dialog only once the agent took it', async () => {
+    driver.promptFitsLaunch = () => false;
+    let result: unknown;
+    const ran = pending(units.run('explain', { file: 'a' }));
+    void ran.then((settled) => {
+      result = settled;
+    });
+    await settle();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(sessionOf()?.state).toBe('waiting');
+    expect(result).toBeUndefined();
+
+    host.show(KEY, stubScreen('ready'));
+    hook('/ready');
+    await settle();
+    hook(`${PROMPT_PATH}Explain a.`);
+
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
     expect(recordOf()?.history).toMatchObject([{ action: 'started' }]);
   });
 });

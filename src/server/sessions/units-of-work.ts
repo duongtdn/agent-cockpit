@@ -75,6 +75,9 @@ export interface UnitsOfWork {
    * session has nothing to send (`nothing-to-send`), unless its settings
    * differ from an `idle` session's. With `fresh`, a new conversation
    * (`fresh-on-request`), a live session ended first, `starting` refused.
+   * A prompt too long for the agent's command line is typed once it
+   * started: the run settles once the agent took it. A run that fails with
+   * its session live is not kept in the key's history.
    *
    * @param jobId - The job's id.
    * @param args - The arguments, unchecked.
@@ -97,7 +100,8 @@ export interface UnitsOfWork {
    * @param prompt - The prompt.
    * @returns What the send did, and the state the session is in.
    * @throws `CockpitError` `prompt-too-long`; `unknown-key` for a key with
-   * no record; `wrong-state` on `starting`, `busy`, `waiting`;
+   * no record, or whose history keeps no run to resume it with;
+   * `wrong-state` on `starting`, `busy`, `waiting`, or a session being ended;
    * `prompt-not-taken`; what reading its last run throws (`unknown-job`
    * when the job is gone); `folder-changed`; `session-cap-reached`; and
    * what a launch throws.
@@ -112,8 +116,9 @@ export interface UnitsOfWork {
    * @param key - The unit of work's key.
    * @param options - `fresh`.
    * @returns What the open did, and the state the session is in.
-   * @throws `CockpitError` `wrong-state` with `fresh` on `starting`; what
-   * reading its last run throws (`unknown-job` when the job is gone);
+   * @throws `CockpitError` `wrong-state` with `fresh` on `starting`;
+   * `unknown-key` when its history keeps no run; what reading its last run
+   * throws (`unknown-job` when the job is gone);
    * `folder-changed`; `session-cap-reached`; and what a launch throws.
    */
   open(key: string, options?: OpenOptions): Promise<OpenResult>;
@@ -417,14 +422,18 @@ class Units implements UnitsOfWork {
 
   /**
    * Waits for an admitted launch. One that fails with its session live (a
-   * first prompt typed after the start, not taken) is recorded all the
-   * same: the session works in its conversation.
+   * first prompt typed after the start, not taken; the cockpit closed
+   * before it settled) is recorded all the same, since the session works
+   * in its conversation — but not in the key's history: the operation did
+   * not do what it asked.
    */
   async #launched(plan: Plan, folder: JobFolder, admitted: Admitted): Promise<Session> {
     try {
       return await admitted.launching;
     } catch (error) {
-      if (this.#liveSession(plan.key) !== undefined) await this.#record(plan, folder, admitted);
+      if (this.#liveSession(plan.key) !== undefined) {
+        await this.#record(withoutOperation(plan), folder, admitted);
+      }
       throw error;
     }
   }
@@ -612,6 +621,11 @@ class Units implements UnitsOfWork {
     const sessions = this.list();
     for (const follower of this.#followers) follower(sessions);
   }
+}
+
+/** A plan whose operation the key's history does not keep. */
+function withoutOperation({ history: _kept, ...plan }: Plan): Plan {
+  return plan;
 }
 
 /** A run's result from what its launch did. */

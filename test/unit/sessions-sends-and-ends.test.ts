@@ -409,7 +409,106 @@ describe('a first prompt too long for the command line', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('keeps the session `waiting` while a dialog shows in place of the box, then types once the box shows, `starting` again', async () => {
+  it('keeps the session `waiting` while a dialog shows in place of the box, the launch pending, then types once the box shows, `starting` again', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    let settled: Session | undefined;
+    void launched.then((session) => {
+      settled = session;
+    });
+    await settle();
+    hook('/ready');
+    host.show(KEY, stubScreen('dialog'));
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+
+    await vi.advanceTimersByTimeAsync(3 * INPUT_BOX_BOUND_MS);
+    expect(writes()).toEqual([]);
+    expect(sessions.session(KEY)).toMatchObject({
+      state: 'waiting',
+      pending: [{ kind: 'terminal' }],
+    });
+    expect(settled).toBeUndefined();
+
+    host.show(KEY, stubScreen('ready'));
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+    expect(writes()).toContain('text:A long prompt.');
+    expect(sessions.session(KEY)?.state).toBe('starting');
+    hook(`${PROMPT_PATH}A long prompt.`);
+
+    await expect(launched).resolves.toMatchObject({ state: 'busy' });
+  });
+
+  it('is typed once the person answered a start-up dialog, the launch pending until the agent took it', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    let settled: Session | undefined;
+    void launched.then((session) => {
+      settled = session;
+    });
+    await settle();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(sessions.session(KEY)?.state).toBe('waiting');
+    expect(settled).toBeUndefined();
+
+    host.show(KEY, stubScreen('ready'));
+    hook('/ready');
+    await settle();
+    hook(`${PROMPT_PATH}A long prompt.`);
+
+    await expect(launched).resolves.toMatchObject({ state: 'busy' });
+    expect(writes()).toContain('text:A long prompt.');
+  });
+
+  it('fails the launch when the prompt typed after a start-up dialog was not taken: `prompt-not-taken`, the session `idle`', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    launched.catch(() => {});
+    await settle();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(300);
+
+    host.show(KEY, stubScreen('ready'));
+    hook('/ready');
+    await vi.advanceTimersByTimeAsync(TYPING_PATIENCE_MS);
+
+    await expect(launched).rejects.toMatchObject({ code: 'prompt-not-taken', state: 'idle' });
+    expect(sessions.session(KEY)?.state).toBe('idle');
+  });
+
+  it("holds the page's terminals' keys from the agent's start, through the wait for the box and the typing", async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    await settle();
+
+    hook('/ready');
+    await settle();
+    expect(pageTerminal).toEqual(['held']);
+    host.show(KEY, stubScreen('ready'));
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+    hook(`${PROMPT_PATH}A long prompt.`);
+
+    await expect(launched).resolves.toMatchObject({ state: 'busy' });
+    expect(pageTerminal).toEqual(['held', 'released']);
+  });
+
+  it("lets the page's terminals' keys through while a dialog in place of the box waits for the person, held again once the box shows", async () => {
     const launched = sessions.launch({
       key: KEY,
       directory: DIRECTORY,
@@ -420,45 +519,37 @@ describe('a first prompt too long for the command line', () => {
     hook('/ready');
     host.show(KEY, stubScreen('dialog'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
-    await expect(launched).resolves.toMatchObject({ state: 'waiting' });
-
-    await vi.advanceTimersByTimeAsync(3 * INPUT_BOX_BOUND_MS);
-    expect(writes()).toEqual([]);
-    expect(sessions.session(KEY)).toMatchObject({
-      state: 'waiting',
-      pending: [{ kind: 'terminal' }],
-    });
+    expect(pageTerminal).toEqual(['held', 'released']);
 
     host.show(KEY, stubScreen('ready'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
-    expect(writes()).toContain('text:A long prompt.');
-    expect(sessions.session(KEY)?.state).toBe('starting');
+    expect(pageTerminal).toEqual(['held', 'released', 'held']);
     hook(`${PROMPT_PATH}A long prompt.`);
-    await settle();
 
-    expect(sessions.session(KEY)?.state).toBe('busy');
+    await expect(launched).resolves.toMatchObject({ state: 'busy' });
+    expect(pageTerminal).toEqual(['held', 'released', 'held', 'released']);
   });
 
-  it('is typed once the person answered a start-up dialog, the launch resolved `waiting` before', async () => {
+  it('types nothing into a session no longer `starting` once the box shows: the launch fails `wrong-state` with its state', async () => {
     const launched = sessions.launch({
       key: KEY,
       directory: DIRECTORY,
       conversationId: CONVERSATION,
       prompt: 'A long prompt.',
     });
+    launched.catch(() => {});
     await settle();
-    host.show(KEY, stubScreen('trust-folder'));
-    await vi.advanceTimersByTimeAsync(300);
-    await expect(launched).resolves.toMatchObject({ state: 'waiting' });
+    hook('/ready');
+    // A prompt of a person's own, typed in the terminal: the agent began its turn.
+    hook('/prompt-taken');
 
     host.show(KEY, stubScreen('ready'));
-    hook('/ready');
-    await settle();
-    hook(`${PROMPT_PATH}A long prompt.`);
-    await settle();
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
 
-    expect(writes()).toContain('text:A long prompt.');
+    await expect(launched).rejects.toMatchObject({ code: 'wrong-state', state: 'busy' });
+    expect(writes()).toEqual([]);
     expect(sessions.session(KEY)?.state).toBe('busy');
+    expect(pageTerminal).toEqual(['held', 'released']);
   });
 });
 
