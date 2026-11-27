@@ -27,9 +27,13 @@ test/
   contract/     the real agent against the scripted API (below)
   pack/         what `npm pack` would ship
   support/      fake-api/ (a scripted Messages API), fake-agent/ (a program
-                run in place of Claude Code), real-agent/ (the pinned
-                agent's runner), hooks/ (a hook receiver, for both agents),
+                run in place of Claude Code that fires recorded hooks),
+                real-agent/ (the pinned agent's runner), hooks/ (a hook
+                receiver, for both agents, and the recording of the real
+                agent's payloads), recorded-hooks.ts (their reader),
                 scripted-agent.ts (the examples' default agent, below)
+  fixtures/     screens/ and input-box/ (the real agent's screens), hooks/
+                (its recorded hook payloads), transcripts/
 examples/       example apps: the demos and the end-to-end fixtures
 docs/           guide.md, api.md, security.md, machines.md
 ```
@@ -232,62 +236,50 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
 ## The fake agent
 
 The integration tests run `test/support/fake-agent/` as a session's command
-in place of Claude Code, with Claude Code's command line: it fires the hooks
-of its `--settings` file, takes keys and writes a transcript, playing the
-script a test writes in the session's folder. It plays only what was observed
-of Claude Code; asked for anything else it shows why and exits with status
-70 — extend it from evidence, never from a guess. It is TypeScript that Node
-runs as it is, so the integration tests need Node 22.18 or later. It reads
-its configuration folder as Claude Code does: the start-up dialogs of a
-`.claude.json` (none when the folder has no such file) and the person's
-`settings.json` (the warning of `bypassPermissions` accepted, hooks off);
-`--version` says the pinned agent's version, or `FAKE_AGENT_VERSION`'s.
-Beside a turn's tool calls and replies, a script's steps play a turn that
-fails on an API error (`fail`, with its status: `StopFailure`, as the
-agent ends a turn once its retries are spent), a compaction (the person's
-`/compact`, a turn of its own: the only local command it plays; `compact`
-done, `compact-fails` with its status, `StopFailure` of the compaction's
-own agent, and `compact-stays` until the person's Esc over an empty box,
-no hook, `/compact` put back in the box with its argument's hint, where
-only Ctrl+U is played; each recorded as Claude Code records a local
-command: the caveat, then the name and the output or the error, the
-caveat alone when interrupted),
-and a background subagent (`task`: its work runs once the turn ended and
-the test released tasks, then its end starts the next turn by itself with
-a `<task-notification>` prompt). A script's tool call on a path a deny
-rule of its settings names (the state roots, the files the cockpit names
-that start code at the next launch) is not played: nothing tells what Claude Code answers there.
-Its input box is drawn and edited as Claude Code's was seen at 120×40 (a
-box of several rows at another size is refused): the sign `❯` (`!` in shell
-mode) and a no-break space, words wrapped at 116 columns as `wrap-ansi`
-wraps them, at most 15 rows around the cursor with `↑ N more` and `↓ N more`
-on the rules, `History n/m` while a past prompt shows; Up and Down by
-screen row (Up from the first into the history of its own prompts, Down
-back to the draft), Ctrl+E to the end of the line, Ctrl+U back to the start
-of the screen row (or the line break), Ctrl+Y what kills in a row killed
-and Alt+Y right after it the kill before, Backspace, ESC CR; the terminal's
-cursor put on the box's; a `!` into an empty box turns shell mode on, Backspace or
-Ctrl+U on the empty box off. While it works on a turn or a compaction,
-its spinner's row is drawn above the box, a draft in it or none; the
-footer is the mode's hint (`default`, `acceptEdits`, `plan`,
-`bypassPermissions`), followed over an empty box only by `esc to
-interrupt` while busy and its other hints. A prompt taken is trimmed of blanks and line
-breaks at its end and of U+2063 at its ends; a tab typed is dropped. A
-permission dialog is drawn 400 ms after its `PermissionRequest` (the keys
-typed meanwhile reach the box) and takes the box's place: text on it does
-nothing, Enter answers Yes. `--resume` of a conversation with no transcript
-(gone, or never prompted) fires `SessionEnd` (`other`) and exits with 1
-(refused where a start-up dialog would show first); a SIGTERM, as the
-cockpit ends a session, fires `SessionEnd` (`other`) and exits with 143.
-It refuses Enter in shell mode, Down past the box while a background task
-runs (Claude Code moves to the task), Up into a history it did not make
-alone (a resume, another conversation of the project, after a command, a
-withdrawn prompt or a task's turn), any key on a dialog but text, Enter and
-Esc, Alt+Y but right after a yank or past the oldest kill, and characters
-of other scripts than Latin.
+in place of Claude Code, with Claude Code's command line: a small program
+that fires hooks as the script a test writes in the session's folder says
+(`writeScript`), and takes their answers. It draws nothing, has no input
+box, no dialog and no key: everything about the screen and the keys is
+tested on the real agent (the contract suite) or by unit tests over its
+real screens kept as fixtures (`test/fixtures/screens`,
+`test/fixtures/input-box`). It is the pane's process itself (the shim
+`exec`s it), so a test reads its environment in `/proc`. It refuses to run
+without `CLAUDE_CONFIG_DIR` (it never writes the person's configuration).
+It fires `SessionStart` once started; then a script's steps: `turn` (the
+launch prompt's `UserPromptSubmit`, then `Stop` with the reply),
+`stay-busy` (`UserPromptSubmit`, then nothing until killed), `hold` (until
+the test's `release`), `exit` (`SessionEnd` with the reason of the agent's
+own exit, then status 0). On SIGTERM, as the cockpit ends a session, it
+fires `SessionEnd` (`other`) and exits with 143. It writes a transcript of
+what it played where the driver looks for one, so that an ended session
+can resume. Asked for anything else (a second prompt, `--resume`, a hook
+that fails), it says why on its error output and exits with status 70.
+`--version` says the pinned agent's version, or `FAKE_AGENT_VERSION`'s. It
+is TypeScript that Node runs as it is, so the integration tests need Node
+22.18 or later.
 
-Nothing holds it to the real one any more: it is being reduced to a
-program that fires hooks recorded from the real agent and draws nothing.
+Every payload it fires is the real agent's: `test/fixtures/hooks/claude-code.json`
+holds, for each event, each shape the contract suite saw (its fields and
+the values that tell variants apart: a `SessionEnd`'s `reason`, a
+`StopFailure`'s `error`, an `agent_id`, the kinds of tasks a `Stop` lists)
+with one example, the run's own values made placeholders
+(`{{session_id}}`, `{{transcript_path}}`, `{{cwd}}`, `{{root}}`). The fake
+agent fills them with its session's, and puts in the prompt and the reply;
+the unit tests of the driver's hook reading read the same payloads
+(`recordedPayload(event, where?, values?)` in `test/support/recorded-hooks.ts`),
+never one written by hand. A payload that was never recorded is not
+invented: a contract test that makes the agent send it comes first. The
+payloads are recorded by a run of the contract suite with
+`RECORD_HOOK_PAYLOADS=1 pnpm test:contract`, which adds the shapes it saw
+to the file (all of them anew when the agent's version changed); a unit
+test fails while the file is not of the pinned version, so the commit that
+moves the pin records them again.
+
+One level owns each criterion: unit tests the decisions, state machines,
+interleavings, refusals and edge cases; integration tests only what real
+tmux, processes, files and sockets show; the contract suite the agent's
+behavior; an end-to-end test one journey per feature. An integration test
+whose assertion is made at its owning level is not written.
 
 ## How code is written here
 
