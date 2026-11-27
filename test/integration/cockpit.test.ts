@@ -969,7 +969,8 @@ describe('creating and closing the cockpit', () => {
 
   it('runs a job in-process, as the browser does', async () => {
     const { cockpit, directory } = await newCockpit(undefined, { port: APP_PORT });
-    writeScript(directory, [[{ do: 'reply', text: 'Done.' }]]);
+    // At work until the test ends: the second run finds it `busy`, however soon a turn could end.
+    writeScript(directory, [[{ do: 'stay-busy' }]]);
     const seen: string[] = [];
     const stop = cockpit.sessions.follow((sessions) => {
       const state = sessions[0]?.state;
