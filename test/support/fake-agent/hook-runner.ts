@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import { request } from 'node:http';
-import { type HookEvent, payloadOf, type SessionContext } from './hook-events.ts';
 import { type CommandHook, type HookSettings, type HttpHook, hooksFor } from './hook-settings.ts';
 
 /** Runs the hooks a session's settings configure. */
@@ -14,7 +13,8 @@ export interface HookRunner {
   /**
    * Tells every hook of an event about it, and waits for their answers.
    *
-   * @param event - What happened.
+   * @param payload - What happened, as the hooks are told: a payload of the
+   * real agent's, its `hook_event_name` the event's name.
    * @param signal - Aborted to let go of the hooks still waiting: their
    * commands are killed and their connections closed.
    * @returns Each hook's answer as parsed JSON, in the order of the settings;
@@ -27,7 +27,7 @@ export interface HookRunner {
    * success, an answer that is no JSON. What Claude Code makes of those was
    * not observed.
    */
-  fire(event: HookEvent, signal?: AbortSignal): Promise<unknown[]>;
+  fire(payload: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<unknown[]>;
 }
 
 /** The answer of a hook that gave none: no decision. */
@@ -37,22 +37,21 @@ const NO_ANSWER = {};
  * Creates the runner of a session's hooks.
  *
  * @param settings - The hooks of the session's settings file.
- * @param session - What every payload says about the session.
+ * @param cwd - The folder the session works in, where a command hook runs.
  */
-export function createHookRunner(settings: HookSettings, session: SessionContext): HookRunner {
+export function createHookRunner(settings: HookSettings, cwd: string): HookRunner {
   return {
     configures: (event) => hooksFor(settings, event).length > 0,
-    fire(event, signal) {
+    fire(payload, signal) {
+      const event = String(payload.hook_event_name);
       const firing: Firing = {
-        event: event.name,
-        payload: JSON.stringify(payloadOf(session, event)),
+        event,
+        payload: JSON.stringify(payload),
         abort: signal ? { signal } : {},
       };
       return Promise.all(
-        hooksFor(settings, event.name).map((hook) =>
-          hook.type === 'command'
-            ? runCommandHook(hook, firing, session.cwd)
-            : postHttpHook(hook, firing),
+        hooksFor(settings, event).map((hook) =>
+          hook.type === 'command' ? runCommandHook(hook, firing, cwd) : postHttpHook(hook, firing),
         ),
       );
     },

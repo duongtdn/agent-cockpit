@@ -2,16 +2,10 @@ import { createServer, type RequestListener, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { stop } from '../support/fake-agent/hook-events.ts';
 import { createHookRunner, type HookRunner } from '../support/fake-agent/hook-runner.ts';
 import { parseHookSettings } from '../support/fake-agent/hook-settings.ts';
+import { recordedPayload } from '../support/recorded-hooks.ts';
 
-const session = {
-  sessionId: '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11',
-  cwd: tmpdir(),
-  transcriptPath: '/config/projects/-work/6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11.jsonl',
-  permissionMode: 'default',
-};
 const servers: Server[] = [];
 
 afterEach(async () => {
@@ -40,10 +34,11 @@ async function addressThatDoesNotAnswer(): Promise<string> {
 /** A runner whose settings give `Stop` one hook. */
 function runnerWith(hook: object): HookRunner {
   const settings = JSON.stringify({ hooks: { Stop: [{ hooks: [hook] }] } });
-  return createHookRunner(parseHookSettings(settings), session);
+  return createHookRunner(parseHookSettings(settings), tmpdir());
 }
 
-const fireStop = (runner: HookRunner, signal?: AbortSignal) => runner.fire(stop('Done.'), signal);
+const fireStop = (runner: HookRunner, signal?: AbortSignal) =>
+  runner.fire(recordedPayload('Stop'), signal);
 const commandHook = (command: string) => runnerWith({ type: 'command', command });
 const httpHook = (url: string) => runnerWith({ type: 'http', url });
 

@@ -1,246 +1,150 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ToolInput } from './hook-events.ts';
 
 /** The file of a session's folder that scripts the fake agent in it. */
 export const SCRIPT_FILE_NAME = '.fake-agent-script.json';
 
-/** A question the agent asks, as the `AskUserQuestion` tool takes it. */
-export interface Question {
-  readonly question: string;
-  readonly header: string;
-  readonly options: readonly { readonly label: string; readonly description: string }[];
-  readonly multiSelect: boolean;
-}
-
-/** Answer with a text and end the turn. */
-export interface ReplyStep {
-  readonly do: 'reply';
-  readonly text: string;
-}
-
-/** Call a tool that needs permission. */
-export interface ToolStep {
-  readonly do: 'tool';
-  /** The tool's name. */
-  readonly name: string;
-  /** What the tool is called with. */
-  readonly input: ToolInput;
-  /** What the tool answers when it runs; an empty object when left out. */
-  readonly response?: unknown;
-  /**
-   * What the model is told of the call once it ran, which `PostToolBatch`
-   * hooks are told too: a call that runs with such a hook needs it.
-   */
-  readonly result?: string;
-}
-
-/** Ask the person questions. */
-export interface QuestionStep {
-  readonly do: 'question';
-  readonly questions: readonly Question[];
-}
+/** The file of a session's folder that lets a held fake agent go on. */
+export const RELEASE_FILE_NAME = '.fake-agent-release';
 
 /**
- * End the turn on an error of the API, as the agent does once its retries
- * are spent: the API answers the status (with the scripted API's own
- * message for it).
+ * Take the launch's prompt and answer it: `UserPromptSubmit` with the
+ * prompt, then `Stop` with the reply.
  */
-export interface FailStep {
-  readonly do: 'fail';
-  /** The HTTP status the API answers. */
-  readonly status: number;
+export interface TurnStep {
+  readonly do: 'turn';
+  /** The reply, the turn's last message. */
+  readonly reply: string;
 }
 
-/** Compact the conversation, on the person's `/compact`: the turn of that command, alone in it. */
-export interface CompactStep {
-  readonly do: 'compact';
-  /** The summary the model writes, which the conversation goes on from. */
-  readonly summary: string;
+/** Take the launch's prompt, then work on it until killed: `UserPromptSubmit`, then nothing. */
+export interface StayBusyStep {
+  readonly do: 'stay-busy';
 }
 
-/**
- * Fail to compact the conversation, on the person's `/compact`, on an error
- * of the API that the agent does not try again: the API answers the status.
- * The turn of that command, alone in it.
- */
-export interface FailedCompactStep {
-  readonly do: 'compact-fails';
-  /** The HTTP status the API answers. */
-  readonly status: number;
+/** Wait until the test releases the agent ({@link release}), as a person who has not typed yet. */
+export interface HoldStep {
+  readonly do: 'hold';
 }
 
-/**
- * Compact the conversation, on the person's `/compact`, until the person
- * interrupts it with Esc: the API holds the request. The turn of that
- * command, alone in it.
- */
-export interface StayingCompactStep {
-  readonly do: 'compact-stays';
+/** Exit by itself, as on the person's `/exit`: `SessionEnd`, then status 0. */
+export interface ExitStep {
+  readonly do: 'exit';
 }
 
-/** A compaction, as a script plays it: done, failed, or until interrupted. */
-export type Compaction = CompactStep | FailedCompactStep | StayingCompactStep;
+/** One thing the fake agent does, in the order of its script. */
+export type Step = TurnStep | StayBusyStep | HoldStep | ExitStep;
 
-/** The steps of a compaction. */
-export const COMPACTIONS: readonly string[] = ['compact', 'compact-fails', 'compact-stays'];
+/** The steps that take the launch's prompt: one at most, the first, and only with a prompt. */
+const PROMPT_TAKING: readonly string[] = ['turn', 'stay-busy'];
 
-/**
- * Start a subagent in the background with the `Agent` tool, and go on with
- * the turn. Once the turn ended (and the test let tasks run), the subagent
- * does its work, and its end starts the session's next turn by itself: a
- * `<task-notification>` prompt, which the script's next turn answers.
- */
-export interface TaskStep {
-  readonly do: 'task';
-  /** The task's short description, as the `Agent` call gives it. */
-  readonly description: string;
-  /** The subagent's prompt. */
-  readonly prompt: string;
-  /** The subagent's type, such as `general-purpose`. */
-  readonly agentType: string;
-  /** What the subagent does: tool calls that need no ask, then the reply it ends with. */
-  readonly work: readonly (ToolStep | ReplyStep)[];
-}
+/** The steps after which nothing more comes. */
+const LAST: readonly string[] = ['stay-busy', 'exit'];
 
 /**
- * One thing the agent does in a turn. `stay-busy` works until interrupted;
- * `exit` ends the session; `fail` ends the turn on an error.
- */
-export type Step =
-  | ReplyStep
-  | ToolStep
-  | QuestionStep
-  | FailStep
-  | Compaction
-  | TaskStep
-  | { readonly do: 'stay-busy' }
-  | { readonly do: 'exit' };
-
-/** What the agent does with one prompt: steps, the last of which ends the turn. */
-export type Turn = readonly Step[];
-
-const ENDING_STEPS: readonly string[] = ['reply', 'stay-busy', 'exit', 'fail', ...COMPACTIONS];
-
-/**
- * Reads a script: a JSON list of turns, each a list of steps.
+ * Reads a script: a JSON list of steps.
  *
  * @param text - The script file's content.
- * @returns The turns, in the order of the prompts they answer.
- * @throws `SyntaxError` for what is no JSON; `Error`, naming the turn and the
- * step, for a step the fake agent cannot play, an empty turn, a turn that
- * does not end with `reply`, `stay-busy`, `exit`, `fail` or a compaction, a
- * step after one of those, and a compaction with another step in its turn.
+ * @param prompt - The launch's prompt; none for a launch with no prompt.
+ * @returns The steps, in order.
+ * @throws `SyntaxError` for what is no JSON; `Error`, naming the step, for
+ * a step the fake agent does not play, a step that takes a prompt the
+ * launch did not give or that is not the first, a launch's prompt no step
+ * takes, and a step after `stay-busy` or `exit`. The fake agent has no
+ * input box: the only prompt it takes is its launch's.
  */
-export function parseScript(text: string): Turn[] {
-  const turns: unknown = JSON.parse(text);
-  if (!Array.isArray(turns)) throw new Error('a script is a list of turns');
-  return turns.map((turn, index) => readTurn(turn, `turn ${index + 1}`));
+export function parseScript(text: string, prompt: string | undefined): Step[] {
+  const steps: unknown = JSON.parse(text);
+  if (!Array.isArray(steps)) throw new Error('a script is a list of steps');
+  steps.forEach((step, index) => {
+    if (!isStep(step)) throw new Error(`step ${index + 1} cannot be played`);
+  });
+  const checked = steps as Step[];
+  checkPromptTaking(checked, prompt);
+  const last = checked.findIndex((step) => LAST.includes(step.do));
+  if (last !== -1 && last < checked.length - 1) {
+    throw new Error(
+      `the script goes on after step ${last + 1}: nothing comes after ${checked[last]?.do}`,
+    );
+  }
+  return checked;
 }
 
-function readTurn(turn: unknown, name: string): Turn {
-  if (!Array.isArray(turn)) throw new Error(`${name} is no list of steps`);
-  if (turn.length === 0) throw new Error(`${name} has no step`);
-  turn.forEach((step, index) => {
-    if (!isStep(step)) throw new Error(`${name}, step ${index + 1} cannot be played`);
-  });
-  const steps = turn as Step[];
-  const end = steps.findIndex((step) => ENDING_STEPS.includes(step.do));
-  if (end === -1)
-    throw new Error(`${name} must end with a reply, stay-busy, exit, fail or compact`);
-  if (end < steps.length - 1) throw new Error(`${name} goes on after step ${end + 1}`);
-  if (steps.length > 1 && steps.some((step) => COMPACTIONS.includes(step.do))) {
-    throw new Error(`${name} compacts: a compaction is a turn of its own`);
+function checkPromptTaking(steps: readonly Step[], prompt: string | undefined): void {
+  const taking = steps.flatMap((step, index) => (PROMPT_TAKING.includes(step.do) ? [index] : []));
+  const [first, second] = taking;
+  if (second !== undefined || (first !== undefined && first !== 0)) {
+    throw new Error(
+      `step ${(second ?? first ?? 0) + 1} takes a prompt: only the first step can, the launch's`,
+    );
   }
-  return steps;
+  if (first !== undefined && prompt === undefined) {
+    throw new Error('step 1 takes a prompt, and the launch gave none');
+  }
+  if (first === undefined && prompt !== undefined) {
+    throw new Error(
+      "the launch gave a prompt, and no step takes it: what the agent does is the script's to say",
+    );
+  }
 }
 
 function isStep(step: unknown): step is Step {
   const candidate = (step ?? {}) as Record<string, unknown>;
   switch (candidate.do) {
-    case 'reply':
-      return typeof candidate.text === 'string';
-    case 'tool':
-      return (
-        typeof candidate.name === 'string' &&
-        isObject(candidate.input) &&
-        ['string', 'undefined'].includes(typeof candidate.result)
-      );
-    case 'question':
-      return Array.isArray(candidate.questions);
-    case 'fail':
-      return Number.isInteger(candidate.status);
-    case 'compact':
-      return typeof candidate.summary === 'string';
-    case 'compact-fails':
-      return Number.isInteger(candidate.status);
-    case 'compact-stays':
-      return true;
-    case 'task':
-      return isTask(candidate);
+    case 'turn':
+      return typeof candidate.reply === 'string';
     case 'stay-busy':
+    case 'hold':
     case 'exit':
-      return true;
+      return Object.keys(candidate).length === 1;
     default:
       return false;
   }
 }
 
-/** A task's work is tool calls, then the reply it ends with. */
-function isTask(candidate: Record<string, unknown>): boolean {
-  const { description, prompt, agentType, work } = candidate;
-  if (![description, prompt, agentType].every((field) => typeof field === 'string')) return false;
-  if (!Array.isArray(work) || work.length === 0) return false;
-  const steps = work as unknown[];
-  const last = steps.at(-1) as Record<string, unknown>;
-  return (
-    last?.do === 'reply' &&
-    isStep(last) &&
-    steps
-      .slice(0, -1)
-      .every((step) => (step as Record<string, unknown>)?.do === 'tool' && isStep(step))
-  );
-}
-
-function isObject(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 /**
- * Gives the turn that answers a prompt.
- *
- * @param turns - The script.
- * @param index - The prompt's place in the conversation, from zero.
- * @returns Its turn.
- * @throws `Error` for a prompt beyond the script: what the agent would
- * answer is the test's to say, never the fake agent's to invent.
- */
-export function turnAt(turns: readonly Turn[], index: number): Turn {
-  const turn = turns[index];
-  if (turn === undefined) {
-    const held = `${turns.length} ${turns.length === 1 ? 'turn' : 'turns'}`;
-    throw new Error(`the script has no turn for prompt ${index + 1}: it holds ${held}`);
-  }
-  return turn;
-}
-
-/**
- * Writes the script of the sessions that run in a folder, for a test.
+ * Writes the script of the fake agents that run in a folder, for a test.
  *
  * @param folder - The sessions' working folder; it must exist.
- * @param turns - The turns, in the order of the prompts they answer.
+ * @param steps - The steps, in order.
  */
-export function writeScript(folder: string, turns: readonly Turn[]): void {
-  writeFileSync(join(folder, SCRIPT_FILE_NAME), JSON.stringify(turns, null, 2));
+export function writeScript(folder: string, steps: readonly Step[]): void {
+  writeFileSync(join(folder, SCRIPT_FILE_NAME), JSON.stringify(steps, null, 2));
 }
 
 /**
- * Reads the script of the sessions that run in a folder, as it is now.
+ * Reads the script of the fake agents that run in a folder.
  *
- * @returns The turns; none when the folder has no script.
+ * @param folder - The session's working folder.
+ * @param prompt - The launch's prompt, if any.
+ * @returns The steps; none when the folder has no script.
  * @throws What {@link parseScript} throws.
  */
-export function readScript(folder: string): Turn[] {
+export function readScript(folder: string, prompt: string | undefined): Step[] {
   const path = join(folder, SCRIPT_FILE_NAME);
-  return existsSync(path) ? parseScript(readFileSync(path, 'utf8')) : [];
+  return existsSync(path)
+    ? parseScript(readFileSync(path, 'utf8'), prompt)
+    : parseScript('[]', prompt);
+}
+
+/**
+ * Lets the fake agents held in a folder go on past their `hold`.
+ *
+ * @param folder - The sessions' working folder.
+ */
+export function release(folder: string): void {
+  writeFileSync(join(folder, RELEASE_FILE_NAME), '');
+}
+
+/**
+ * Tells whether the agents of a folder were released, and takes the
+ * release: the next `hold` waits for one of its own.
+ *
+ * @param folder - The session's working folder.
+ */
+export function takeRelease(folder: string): boolean {
+  const path = join(folder, RELEASE_FILE_NAME);
+  if (!existsSync(path)) return false;
+  rmSync(path, { force: true });
+  return true;
 }
