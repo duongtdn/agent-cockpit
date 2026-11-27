@@ -31,6 +31,26 @@ async function typeInto(setup: InputBoxSetup, prompt: string) {
   return { box, clock, outcome };
 }
 
+/** Types a prompt, timing the first Enter from the last text typed. */
+async function timeTheEnter(setup: InputBoxSetup, prompt: string) {
+  const box = inputBoxModel(setup);
+  const clock = testClock();
+  const at = { typed: 0, enter: 0 };
+  const terminal = {
+    ...box.terminal,
+    typeText: async (text: string) => {
+      at.typed = clock.now();
+      await box.terminal.typeText(text);
+    },
+    pressKeys: async (keys: readonly string[]) => {
+      if (keys.includes('Enter') && at.enter === 0) at.enter = clock.now();
+      await box.terminal.pressKeys(keys);
+    },
+  };
+  const outcome = await typePromptAt(clock, prompt, terminal);
+  return { box, outcome, typedToEnter: at.enter - at.typed };
+}
+
 const lines = (count: number, width = 0) =>
   Array.from({ length: count }, (_, index) => `draft line ${index + 1}`.padEnd(width, '.')).join(
     '\n',
@@ -167,6 +187,37 @@ describe('typing a prompt into the input box', () => {
     const { outcome } = await typeInto({}, 'trailing spaces  \n');
 
     expect(outcome).toBe('taken');
+  });
+
+  it('presses Enter only once a screen read shows the prompt’s end, as the agent takes an Enter that comes too soon as a line break', async () => {
+    const prompt = `${'word '.repeat(600)}the end`;
+    const { box, outcome } = await typeInto({ draft: 'draft', drawLag: 3 }, prompt);
+
+    expect(outcome).toBe('taken');
+    expect(box.entersUnseen).toBe(0);
+    expect(box.writes.filter((write) => write === 'Enter')).toHaveLength(1);
+    expect(box.text()).toBe('draft');
+  });
+
+  it('presses Enter all the same, two seconds on, when the box never shows the prompt’s end', async () => {
+    const { box, outcome, typedToEnter } = await timeTheEnter(
+      { drawLag: Number.POSITIVE_INFINITY },
+      'p',
+    );
+
+    expect(outcome).toBe('taken');
+    expect(box.taken).toEqual(['p']);
+    expect(typedToEnter).toBe(2000);
+  });
+
+  it('reads the prompt’s end in a box scrolled to it, which shows less of it', async () => {
+    // Sixty short lines: the box's fifteen rows show fewer than a hundred characters of them.
+    const prompt = Array.from({ length: 60 }, (_, index) => `l${index}`).join('\n');
+    const { box, outcome, typedToEnter } = await timeTheEnter({ drawLag: 3 }, prompt);
+
+    expect(outcome).toBe('taken');
+    expect(box.entersUnseen).toBe(0);
+    expect(typedToEnter).toBeLessThan(2000);
   });
 
   it('presses Enter again while the prompt stays in the box', async () => {

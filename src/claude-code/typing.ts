@@ -29,9 +29,32 @@ const LATE_SUBMIT_MS = 10_000;
 /** How many times Enter is pressed on a prompt that stays in the box: the agent loses one now and then. */
 const ENTER_PRESSES = 3;
 
-/** How long the screen is given to show what a key did, and how often it is read meanwhile. */
-const SETTLE_MS = 1000;
+/**
+ * How long the screen is given to show what a key surely changes (the
+ * Downs' move, a kill that takes text, the prompt's end in the box). The
+ * slowest seen was 0.52 s for 20 characters to show, with six agents
+ * starting at once on two CPUs: this leaves about four times that, and is
+ * paid in full only by a screen that never shows the change.
+ */
+const SETTLE_MS = 2000;
+
+/**
+ * How long the screen is watched after a kill that may change nothing on
+ * it: on a box read empty, the kill takes only the sentinel, which is
+ * never drawn. Every prompt typed into an empty box waits it out in full,
+ * so it stays shorter: twice the slowest key's effect seen (0.52 s, above),
+ * for a box that was not as empty as read.
+ */
+const QUIET_KILL_SETTLE_MS = 1000;
+
+/** How often the screen is read while it is given to change. */
 const POLL_MS = 25;
+
+/**
+ * How many characters of the prompt's end, whitespace left out, the box
+ * must show before the first Enter: enough to tell the last write drawn.
+ */
+const END_SHOWN_LENGTH = 100;
 
 /** How many rounds of Downs reach the draft's last row: more than one only when a scrolled box hides wrapped lines. */
 const MOVE_ROUNDS = 10;
@@ -123,7 +146,8 @@ export function promptWrites(typed: string): PromptWrite[] {
  *    box is empty. In shell mode one more Ctrl+U on the empty box leaves it.
  * 2. The prompt is typed in writes of at most 200 characters, 50 ms apart,
  *    a line break as ESC CR.
- * 3. Enter; the agent's `UserPromptSubmit` must carry the prompt. While it
+ * 3. Enter, once the box shows the prompt's end (two seconds at most); the
+ *    agent's `UserPromptSubmit` must carry the prompt. While it
  *    does not and the prompt stays in the box, Enter again, three times in
  *    all; then the box is cleared.
  * 4. The draft is put back: `!` first if shell mode was left, Ctrl+Y (then
@@ -325,8 +349,10 @@ class PromptTyping {
     let seen = await this.#read();
     do {
       const before = drawn(seen.box);
+      const boundMs =
+        seen.box !== undefined && isEmptyBox(seen.box) ? QUIET_KILL_SETTLE_MS : SETTLE_MS;
       await this.#writer.pressKeys(['C-u']);
-      seen = await this.#readUntil((now) => drawn(now.box) !== before);
+      seen = await this.#readUntil((now) => drawn(now.box) !== before, boundMs);
       if (seen.box === undefined) {
         killed();
         return 'gone';
@@ -358,6 +384,11 @@ class PromptTyping {
    * box is.
    */
   async #submit(prompt: string): Promise<'taken' | 'in-the-box' | 'left' | 'gone'> {
+    // An Enter that comes right after the last write of a long prompt, under load, is now and then taken
+    // as a line break. Past the bound the Enter is pressed all the same: the box may draw the prompt
+    // otherwise than read here, and the Enters pressed again below still submit it. A box gone is the
+    // core's to refuse the Enter for.
+    await this.#readUntil(({ box }) => box === undefined || showsEnd(box, prompt));
     for (let enters = 1; enters <= ENTER_PRESSES; enters++) {
       await this.#writer.pressKeys(['Enter']);
       if (await this.#terminal.promptTaken(prompt, SUBMIT_PATIENCE_MS)) return this.#tookIt();
@@ -430,9 +461,9 @@ class PromptTyping {
     return { screen, box: readInputBoxView(screen.text) };
   }
 
-  /** Reads the screen until it shows what a key did, for {@link SETTLE_MS} at most. */
-  async #readUntil(done: (seen: Seen) => boolean): Promise<Seen> {
-    const deadline = this.#clock.now() + SETTLE_MS;
+  /** Reads the screen until it shows what a key did, for `boundMs` at most. */
+  async #readUntil(done: (seen: Seen) => boolean, boundMs = SETTLE_MS): Promise<Seen> {
+    const deadline = this.#clock.now() + boundMs;
     let seen = await this.#read();
     while (!done(seen) && this.#clock.now() < deadline) {
       await this.#clock.pause(POLL_MS);
@@ -469,6 +500,22 @@ function rowInDraft(box: InputBoxView, screen: TerminalScreen): number {
 function movedBy({ box, screen }: Seen, from: number): number | undefined {
   if (box === undefined || rowsBelowCursor(box, screen) === undefined) return undefined;
   return rowInDraft(box, screen) - from;
+}
+
+/**
+ * Whether the box shows the prompt's end: its last characters compared
+ * without whitespace, since the box wraps the prompt onto rows. A box
+ * scrolled to its end may show fewer characters than that.
+ */
+function showsEnd(box: InputBoxView, prompt: string): boolean {
+  const shown = withoutWhitespace(box.text);
+  const end = withoutWhitespace(prompt).slice(-END_SHOWN_LENGTH);
+  if (shown === '') return end === '';
+  return shown.endsWith(box.hiddenAbove > 0 ? end.slice(-shown.length) : end);
+}
+
+function withoutWhitespace(text: string): string {
+  return text.replace(/\s+/g, '');
 }
 
 /** What the box draws, to tell whether a key changed it. */

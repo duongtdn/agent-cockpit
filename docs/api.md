@@ -513,7 +513,8 @@ same, but the run is not kept in the key's history.
 A prompt is typed into the input box keeping what the person left there:
 the draft is stashed, the prompt typed (tabs as four spaces, control
 characters left out, a leading `!` after a space; a leading `/` is a
-command), Enter pressed until the agent says it took it (three times at
+command), Enter pressed once the box shows the prompt's end (two seconds
+at most), then until the agent says it took it (three times at
 most; `prompt-not-taken` otherwise, the box cleared), and the draft put
 back. The page's terminals' keys are held meanwhile (their status `held`)
 and passed on after. A box that shows an entry the person recalled from

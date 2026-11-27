@@ -320,7 +320,9 @@ Nothing is published yet.
   way (`ended`, `session-cap`),
   else is refused `session-cap-reached` (`cap`, `live`).
 - A prompt is typed keeping the person's draft: stashed in the input
-  box's kill ring, put back after. A send stopped by anything but the
+  box's kill ring, put back after. The first Enter waits for the box to
+  show the prompt's end (two seconds at most): under load, an Enter right
+  after a long prompt's last write was taken as a line break. A send stopped by anything but the
   input box (a turn the agent began by itself, a dialog) fails
   `wrong-state`; what was typed is cleared and the draft put back while
   the box still shows and the agent has used no tool (one may ask, its

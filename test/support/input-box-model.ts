@@ -13,7 +13,8 @@ import {
  * shell mode (`!` on an empty box; Ctrl+U on an empty box leaves it), the
  * sentinel U+2063 inserted but never drawn, a box taller than its window
  * scrolled with its rules saying so, an entry recalled from the history,
- * and Enter. It draws the screen as the agent does and places the cursor.
+ * and Enter. It draws the screen as the agent does and places the cursor,
+ * late when a test asks, as a loaded machine does.
  * A Down on the last row is recorded: with a background task running, it
  * opens the task panel. Its terminal refuses writes as the core does: once
  * a dialog shows, or once the hooks told of something else (a turn the
@@ -31,6 +32,8 @@ export interface InputBoxModel {
   readonly ranInShell: string[];
   /** How many Downs were pressed on the last row. */
   readonly downsPastTheEnd: number;
+  /** How many Enters were pressed before a screen read showed the box as it was then. */
+  readonly entersUnseen: number;
   /** The box's text, the sentinel left in. */
   text(): string;
   /** Whether the box is in shell mode. */
@@ -72,6 +75,12 @@ export interface InputBoxSetup {
   readonly width?: number;
   /** The most rows the box shows. */
   readonly window?: number;
+  /**
+   * How many screen reads after each write still show the screen as it was
+   * before: the agent draws late under load. `Infinity` draws nothing after
+   * the start.
+   */
+  readonly drawLag?: number;
 }
 
 const SENTINEL = '⁣';
@@ -113,6 +122,11 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
   const taken: string[] = [];
   const ranInShell: string[] = [];
   let downsPastTheEnd = 0;
+  let entersUnseen = 0;
+  const drawLag = setup.drawLag ?? 0;
+  /** The screen as the last read showed it, and how many reads more show it before the agent draws. */
+  let lastDrawn: TerminalScreen | undefined;
+  let readsBeforeDrawn = 0;
 
   function rows(): Row[] {
     const all: Row[] = [];
@@ -183,6 +197,7 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
   }
 
   function enter(): void {
+    if (lastDrawn?.text !== screen().text) entersUnseen += 1;
     if (lostEnters > 0) {
       lostEnters -= 1;
       return;
@@ -297,7 +312,18 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
     return { text: lines.join('\n'), cursor: { row, column: 2 + cursor - (all[at] as Row).start } };
   }
 
+  /** The screen a read shows: the one drawn last, until the agent catches up with the writes. */
+  function read(): TerminalScreen {
+    if (lastDrawn !== undefined && readsBeforeDrawn > 0) {
+      readsBeforeDrawn -= 1;
+      return lastDrawn;
+    }
+    lastDrawn = screen();
+    return lastDrawn;
+  }
+
   function written(what: string): void {
+    readsBeforeDrawn = drawLag;
     writes.push(what);
     const count = writes.length;
     if (setup.dialogAfterWrites !== undefined && count >= setup.dialogAfterWrites) dialog = true;
@@ -326,7 +352,7 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
       for (const key of keys) press(key);
     },
     async readScreen() {
-      return screen();
+      return read();
     },
     async promptTaken(prompt) {
       return taken.includes(prompt);
@@ -341,7 +367,7 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
         for (const key of keys) press(key);
       },
       async readScreen() {
-        return screen();
+        return read();
       },
     },
   };
@@ -353,6 +379,9 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
     ranInShell,
     get downsPastTheEnd() {
       return downsPastTheEnd;
+    },
+    get entersUnseen() {
+      return entersUnseen;
     },
     text: () => text,
     inShellMode: () => shell,
