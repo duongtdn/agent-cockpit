@@ -200,6 +200,22 @@ describe('a prompt sent to an `idle` session', () => {
     expect(writes()).toEqual(['Enter', 'C-y']);
   });
 
+  it("refuses to put the person's draft back during the prompt's own turn once the agent used a tool, which may ask over the box", async () => {
+    await idleSession();
+    driver.typePrompt = async (prompt, terminal) => {
+      await terminal.pressKeys(['Enter']);
+      hook(`${PROMPT_PATH}${prompt}`);
+      await terminal.promptTaken(prompt, 0);
+      hook('/working');
+      await expect(terminal.pressKeys(['C-y'])).rejects.toThrow(TypingStoppedError);
+      await expect(terminal.restoring.pressKeys(['C-y'])).rejects.toThrow(TypingStoppedError);
+      return 'taken';
+    };
+
+    await expect(sending()).resolves.toMatchObject({ state: 'busy' });
+    expect(writes()).toEqual(['Enter']);
+  });
+
   it("lets the driver put the person's draft back once the typing stopped, while the screen shows the input box", async () => {
     await idleSession();
     driver.typePrompt = async (prompt, terminal) => {

@@ -312,7 +312,11 @@ class PromptTyping {
    * one row, then its line break, and successive kills are one entry of
    * the kill ring.
    *
-   * @param killed - Told after each kill.
+   * @param killed - Told after a kill that took something: the box changed,
+   * or is empty (a kill of the sentinel alone, which is never drawn, changes
+   * nothing on the screen), or is gone (the key reached the box last seen).
+   * A kill that changed nothing put nothing in the kill ring, whose last
+   * entry is then still an earlier kill of the person's.
    * @returns `empty`; `gone` when the box is; `stuck` when two kills in a
    * row changed nothing on the screen (the first may kill only the sentinel).
    */
@@ -322,10 +326,14 @@ class PromptTyping {
     do {
       const before = drawn(seen.box);
       await this.#writer.pressKeys(['C-u']);
-      killed();
       seen = await this.#readUntil((now) => drawn(now.box) !== before);
-      if (seen.box === undefined) return 'gone';
-      unchanged = drawn(seen.box) === before ? unchanged + 1 : 0;
+      if (seen.box === undefined) {
+        killed();
+        return 'gone';
+      }
+      const changed = drawn(seen.box) !== before;
+      if (changed || isEmptyBox(seen.box)) killed();
+      unchanged = changed ? 0 : unchanged + 1;
       if (unchanged === 2) return 'stuck';
     } while (!isEmptyBox(seen.box));
     return 'empty';

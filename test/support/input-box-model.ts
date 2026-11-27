@@ -57,6 +57,10 @@ export interface InputBoxSetup {
   readonly recalled?: boolean;
   /** How many Enters the agent loses before it takes one. */
   readonly lostEnters?: number;
+  /** How many Ctrl+U the box loses before one kills: a box that does not take them. */
+  readonly lostKills?: number;
+  /** The kill ring's entries before the typing, the person's own kills, the last killed last. */
+  readonly killRing?: readonly string[];
   /** Shows a dialog in place of the box after so many writes. */
   readonly dialogAfterWrites?: number;
   /**
@@ -95,13 +99,14 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
   let shell = setup.shellMode ?? false;
   const recalled = setup.recalled ?? false;
   let lostEnters = setup.lostEnters ?? 0;
+  let lostKills = setup.lostKills ?? 0;
   let dialog = false;
   /** Whether the core refused a write of the typing: every later one is. */
   let stopped = false;
   /** Whether the core refused a write that puts the draft back: every later one is. */
   let restoreStopped = false;
   let top = 0;
-  let killRing: string[] = [];
+  let killRing: string[] = [...(setup.killRing ?? [])];
   let yanked: { start: number; index: number } | undefined;
   let lastWasKill = false;
   const writes: string[] = [];
@@ -197,6 +202,10 @@ export function inputBoxModel(setup: InputBoxSetup = {}): InputBoxModel {
   }
 
   function killOnce(wasKill: boolean): void {
+    if (lostKills > 0) {
+      lostKills -= 1;
+      return;
+    }
     lastWasKill = wasKill;
     kill();
     lastWasKill = true;

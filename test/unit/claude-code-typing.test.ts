@@ -186,6 +186,17 @@ describe('typing a prompt into the input box', () => {
     expect(box.text()).toBe('my draft\nline two');
   });
 
+  it('yanks no earlier kill of the person’s when the kills took nothing: nothing typed, the draft as it was', async () => {
+    const { box, outcome } = await typeInto(
+      { draft: 'my draft', killRing: ['old kill'], lostKills: 2 },
+      'p',
+    );
+
+    expect(outcome).toBe('no-input-box');
+    expect(box.writes).not.toContain('C-y');
+    expect(box.text()).toBe('my draft');
+  });
+
   it('types nothing into an entry recalled from the history', async () => {
     const { box, outcome } = await typeInto({ draft: 'past prompt', recalled: true }, 'p');
 

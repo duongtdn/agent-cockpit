@@ -83,8 +83,8 @@ export interface Cockpit {
    * @param args - The job's arguments.
    * @param options - `fresh`: start a new conversation for the key.
    * @returns What the run did, and the state it left the session in.
-   * @throws `CockpitError` `unknown-job`, `invalid-arguments`;
-   * `not-a-choice` for a value not among its field's choices;
+   * @throws `CockpitError` `unknown-job`, `invalid-arguments` (also for a
+   * prompt that is empty or only whitespace); `not-a-choice` for a value not among its field's choices;
    * `folder-outside-app` when the job's folder lies outside the app's;
    * `folder-changed` when it is not the folder the key's record keeps;
    * `prompt-too-long` over 100,000 characters; `wrong-state`;
@@ -118,12 +118,13 @@ export interface Cockpit {
    * @param key - The unit of work's key.
    * @param prompt - The prompt, at most 100,000 characters.
    * @returns What the send did and the state it left the session in.
-   * @throws `CockpitError` `prompt-too-long`; `unknown-key` for a key with
-   * no record; `unknown-job` when the job of its last run is gone;
-   * `wrong-state` on `starting`, `busy` or `waiting`, or when the typing
-   * met anything but the input box (its message says where the person's
-   * draft is when it could not be put back); `prompt-not-taken`; and what
-   * a run throws.
+   * @throws `CockpitError` `invalid-arguments` for a prompt that is empty
+   * or only whitespace; `prompt-too-long`; `unknown-key` for a key with
+   * no record, or whose history keeps no run; `unknown-job` when the job
+   * of its last run is gone; `wrong-state` on `starting`, `busy` or
+   * `waiting`, on a session being ended, or when the typing met anything
+   * but the input box (its message says where the person's draft is when
+   * it could not be put back); `prompt-not-taken`; and what a run throws.
    */
   send(key: string, prompt: string): Promise<SendResult>;
   /**

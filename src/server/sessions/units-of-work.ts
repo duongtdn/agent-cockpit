@@ -26,7 +26,7 @@ import type {
 } from '../../shared/session.js';
 import type { Driver, DriverSettings } from '../driver.js';
 import { checkRecordedFolder, type JobFolder } from '../job-folders.js';
-import { refuseTooLongPrompt } from '../prompt-length.js';
+import { refuseUnfitPrompt } from '../prompt-length.js';
 import type { RecordStore, UnitRecord } from '../state/records.js';
 import type { JobRun, JobRuns } from './job-runs.js';
 import { KeyQueue } from './key-queue.js';
@@ -85,7 +85,8 @@ export interface UnitsOfWork {
    * @returns What the run did, and the state the session is in.
    * @throws `CockpitError` what reading the job's run throws (`unknown-job`,
    * `invalid-arguments`, `not-a-choice`, `invalid-options`,
-   * `folder-outside-app`); `prompt-too-long`; `folder-changed`;
+   * `folder-outside-app`); `invalid-arguments` for a prompt that is empty
+   * or only whitespace; `prompt-too-long`; `folder-changed`;
    * `wrong-state`; `prompt-not-taken`; `session-cap-reached`; and what a
    * launch throws.
    */
@@ -99,7 +100,8 @@ export interface UnitsOfWork {
    * @param key - The unit of work's key.
    * @param prompt - The prompt.
    * @returns What the send did, and the state the session is in.
-   * @throws `CockpitError` `prompt-too-long`; `unknown-key` for a key with
+   * @throws `CockpitError` `invalid-arguments` for a prompt that is empty or
+   * only whitespace; `prompt-too-long`; `unknown-key` for a key with
    * no record, or whose history keeps no run to resume it with;
    * `wrong-state` on `starting`, `busy`, `waiting`, or a session being ended;
    * `prompt-not-taken`; what reading its last run throws (`unknown-job`
@@ -256,14 +258,14 @@ class Units implements UnitsOfWork {
     const at = now();
     // Read at once, so that the run takes its place among its key's operations as it is asked.
     const reading = this.#jobs.read(jobId, args);
-    if (reading.prompt !== undefined) refuseTooLongPrompt(reading.prompt);
+    if (reading.prompt !== undefined) refuseUnfitPrompt(reading.prompt);
     return this.#queue.run(reading.key, async () =>
       this.#run(await reading.checked(), options.fresh === true, at),
     );
   }
 
   async send(key: string, prompt: string): Promise<SendResult> {
-    refuseTooLongPrompt(prompt);
+    refuseUnfitPrompt(prompt);
     return this.#queue.run(key, () => this.#send(key, prompt));
   }
 

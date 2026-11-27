@@ -57,6 +57,7 @@ const JOBS: Readonly<Record<string, (args: { file: string }) => Omit<JobRun, 'jo
   }),
   'plan-typing': ({ file }) => ({ key: `explain-${file}`, part: PLAN, ...rest(file) }),
   long: ({ file }) => ({ key: `explain-${file}`, prompt: longPrompt, ...rest(file) }),
+  blank: ({ file }) => ({ key: `explain-${file}`, prompt: ' \n ', ...rest(file) }),
 };
 
 /** The prompt of the `long` job. */
@@ -280,6 +281,14 @@ describe('a run on a key with no record', () => {
       code: 'prompt-too-long',
       length: MAX_PROMPT_LENGTH + 1,
       max: MAX_PROMPT_LENGTH,
+    });
+    expect(driver.launches).toEqual([]);
+  });
+
+  it('refuses a job that gives a blank prompt at once, `invalid-arguments`, launching nothing', async () => {
+    await expect(units.run('blank', { file: 'a' })).rejects.toMatchObject({
+      code: 'invalid-arguments',
+      issues: [{ path: ['prompt'] }],
     });
     expect(driver.launches).toEqual([]);
   });
@@ -726,6 +735,14 @@ describe('a send', () => {
     await expect(units.send(KEY, 'x'.repeat(MAX_PROMPT_LENGTH + 1))).rejects.toMatchObject({
       code: 'prompt-too-long',
     });
+  });
+
+  it('is refused blank at once, `invalid-arguments`, nothing typed', async () => {
+    await started();
+    idle();
+
+    await expect(units.send(KEY, '  \n')).rejects.toMatchObject({ code: 'invalid-arguments' });
+    expect(host.writes).toEqual([]);
   });
 
   it('types into an `idle` session: `sent`, the session’s settings kept, nothing recorded', async () => {

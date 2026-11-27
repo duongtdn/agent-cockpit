@@ -10,6 +10,13 @@ import {
 import type { SessionHost } from '../session-host/session-host.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
 
+/**
+ * Why a write is refused once the agent used a tool: a dialog is drawn a
+ * while after its hook, and a key that checked the screen just before
+ * could answer it.
+ */
+const TOOL_USED = 'The agent uses a tool, which may ask over the box.';
+
 /** What a session's typing terminal works with. */
 export interface TypingTerminalOptions {
   /** The session's key, its name on the host. */
@@ -33,8 +40,9 @@ export interface TypingTerminalOptions {
  * began in (`idle`, or `starting` for a first prompt typed after the
  * start): a turn begun by itself, an ask, a dialog or its end stops the
  * typing. Once one is taken, only its own turn may show (`busy`, or
- * `idle` again once it ended): a prompt taken that is not the one typed,
- * or anything waiting for a person, stops it. Before every write the
+ * `idle` again once it ended), and no tool used in it: a prompt taken that
+ * is not the one typed, anything waiting for a person, or a tool, which
+ * may ask over the box at any moment, stops it. Before every write the
  * screen must show the input box, as the driver reads it. Once stopped,
  * the driver may still put the person's draft back through
  * {@link restoring}, whose writes need only the session heard, no tool used
@@ -170,8 +178,7 @@ export class SessionTypingTerminal implements TypingTerminal {
     if (this.#closed) return 'The typing is over.';
     if (this.#restoreStopped) return 'Putting the draft back was stopped.';
     if (this.#options.session() === undefined) return 'The session is no longer heard.';
-    // A dialog is drawn a while after its hook: a key that checked the screen just before could answer it.
-    return this.#toolUsed ? 'The agent uses a tool, which may ask over the box.' : undefined;
+    return this.#toolUsed ? TOOL_USED : undefined;
   }
 
   #refusalByHooks(): string | undefined {
@@ -186,9 +193,10 @@ export class SessionTypingTerminal implements TypingTerminal {
     if (this.#taken.some((prompt) => prompt !== this.#expected)) {
       return 'The agent took a prompt other than the one typed.';
     }
-    return session.state === 'busy' || session.state === 'idle'
-      ? undefined
-      : `The session is ${session.state}, inside the prompt's turn.`;
+    if (session.state !== 'busy' && session.state !== 'idle') {
+      return `The session is ${session.state}, inside the prompt's turn.`;
+    }
+    return this.#toolUsed ? TOOL_USED : undefined;
   }
 
   async #refusalByScreen(): Promise<string | undefined> {
