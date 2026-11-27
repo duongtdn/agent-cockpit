@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
 import { isCockpitError } from '../../src/shared/cockpit-error.ts';
+import { eventually } from '../support/eventually.ts';
 
 const appName = `host-machine-test-${process.pid}-${Date.now()}`;
 let folder: string;
@@ -226,7 +227,10 @@ describe('a terminal that does not get attached', () => {
       reason: 'host-failed',
       message: 'tmux did not attach a terminal to s within 200 ms.',
     });
-    expect(() => process.kill(Number(readFileSync(pidFile, 'utf8')), 0)).toThrow();
+    // Ended: gone once reaped, long before its sleep would end.
+    await eventually(() =>
+      expect(() => process.kill(Number(readFileSync(pidFile, 'utf8')), 0)).toThrow(),
+    );
   });
 });
 

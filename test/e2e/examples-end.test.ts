@@ -6,6 +6,7 @@ import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { RUN_PATH, TOKEN_HEADER } from '../../src/shared/wire.ts';
+import { eventually } from '../support/eventually.ts';
 import {
   type ExampleApp,
   interruptExampleWhileStarting,
@@ -114,7 +115,7 @@ describe('translate-and-access, stopped twice', () => {
 
     expect(exitCode, app.printed()).toBe(1);
     expect(app.printed()).toContain('Forced to stop');
-    expect(isRunning(tmuxServer), 'its tmux server is ended').toBe(false);
+    await eventually(() => expect(isRunning(tmuxServer), 'its tmux server is ended').toBe(false));
     expect(existsSync(root), 'its temporary folder is removed').toBe(false);
   });
 });
