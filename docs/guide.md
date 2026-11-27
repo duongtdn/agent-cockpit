@@ -56,9 +56,11 @@ console.log(`Open ${cockpit.link('http://127.0.0.1:4310/')}`);
 `createCockpit` takes the app's lock: a second process of the same app
 waits 5 seconds for the first to exit, then rejects with `cockpit-locked`.
 On a stop, `await cockpit.close()` before closing the server: it closes the
-page's WebSockets, which would hold the server open. The sessions go on in
-tmux: a call still waiting for its key's turn is rejected and never runs,
-and nothing is ended or killed after `close()`.
+page's WebSockets, which would hold the server open. It refuses new calls
+first, before it waits for anything, and kills nothing: the sessions go on
+in tmux, a call still waiting for its key's turn is rejected and never
+runs, and nothing is ended or killed, and no record written, after
+`close()`.
 
 Listen on `127.0.0.1` (or `::1`): by default the cockpit serves the
 loopback only, and refuses what reaches it otherwise
@@ -496,9 +498,16 @@ it is and which keys bring it back. A person browsing the prompt history in
 the box (Up recalled a past prompt) is not typed over: the send is refused
 (`wrong-state`), nothing typed. A first prompt too long for the agent's
 command line is typed the same way once the agent has started, the
-page's terminals held from its start but while a start-up dialog waits for
-the person: the session stays `starting` until the agent takes it, and the
-run settles then (pending while a dialog waits). A session the cockpit is
+page's terminals held from its start: the session stays `starting` until
+the agent takes it, and the run settles then. A start-up dialog shown
+first makes the session `waiting`; the prompt is typed once the person
+answered it, and the run stays pending until then, but holds up nothing
+else: the calls on the key act on the `waiting` session meanwhile (a send
+refused `wrong-state`, a `fresh` run ends it, the pending run settling
+`ended`), and the session's state tells what became of the prompt (`busy`
+when the agent took it, `idle` when not). The keys the person typed
+before the dialog showed are dropped, never typed, as they were aimed at
+the input box, not at the dialog. A session the cockpit is
 ending to make room under the cap takes no send or run (`wrong-state`).
 The [API
 reference](api.md#units-of-work) has the tables.
@@ -547,7 +556,11 @@ While the cockpit types a prompt into a session (a send, a run into an
 `held`: what the person types is kept by the server, not typed into the
 app's prompt, and reaches the session once the send is over, however it ended — in the order typed, each key as it was
 sent, so that the agent reads typing, not a paste; the status is then
-`open` again. A long prompt takes a while to type (about 25 seconds for
+`open` again. One exception: while a long first prompt waits for the input
+box, a start-up dialog in its place drops the keys kept, so that they
+answer no dialog the person had not seen; the status is `open` again and
+the keys typed from then on reach the dialog (the terminal does not yet
+tell the person that keys were dropped). A long prompt takes a while to type (about 25 seconds for
 100,000 characters), so a page shows the status. Resizing still applies.
 A terminal closed during the send drops what it kept, and one that keeps
 over a megabyte of keys is closed (it reconnects, held). A person's own

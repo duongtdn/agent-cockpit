@@ -23,8 +23,11 @@ Nothing is published yet.
   (`link`), serves the browser on the mounted handler (`handle`,
   `upgrade`: running a job, listing and following the sessions, and each
   session's terminal over a WebSocket), and `close()`s, the sessions going
-  on in tmux: a call still waiting for its key's turn is rejected and never
-  runs, and nothing is ended or killed after `close()`. The state folder (`$XDG_STATE_HOME/agent-cockpit/<name>` by
+  on in tmux: it refuses new calls first, before it waits for anything, a
+  call still waiting for its key's turn is rejected and never runs, one
+  under way makes no folder and writes no record from then on, the close
+  waits for the records being written before it releases the lock, and
+  nothing is ended or killed after `close()`. The state folder (`$XDG_STATE_HOME/agent-cockpit/<name>` by
   default) and the app's token are readable by the app's user alone; the
   token and the agent-facing port stay the same from one start to the next.
   The state folder is the cockpit's own: one that exists must be the user's
@@ -268,11 +271,19 @@ Nothing is published yet.
   seconds), its turn not interrupted first. A first prompt over 120,000
   UTF-8 bytes, too long for the agent's command line, is typed once the
   agent started and drew its input box, the page's terminals' keys held
-  from the agent's start (let through while a start-up dialog waits for
-  the person): the session stays `starting` until the agent takes it, and
-  the call settles then, pending while a dialog waits; not taken, it is
-  `idle`, the call rejects as a send does, and the unit of work is
-  recorded, the run kept out of the key's history. Calls on one key run
+  from the agent's start: the session stays `starting` until the agent
+  takes it, and the call settles then; not taken, it is `idle`, the call
+  rejects as a send does, and the unit of work is recorded, the run kept
+  out of the key's history. A start-up dialog shown first makes the
+  session `waiting` and lets the keys through for the person, the keys
+  kept until then dropped (typed toward the input box, they would answer
+  a dialog unseen); the prompt is typed once the person answered it, the
+  call pending until then without holding the key: the session is
+  recorded at once, the calls on the key act on it as `waiting` (a run or
+  a send `wrong-state`, an open `nothing-to-open`, a `fresh` run ends it
+  and the pending call settles `ended`), the session's state tells what
+  became of the prompt (`busy` taken, `idle` not), and the call's history
+  entry goes in the order the calls were asked. Calls on one key run
   one at a time. A session the cap is ending takes no send and no run
   until it is gone (`wrong-state`). `jobs()` describes the jobs (their
   schema as JSON Schema, which fields have choices, whether there is a
@@ -284,7 +295,7 @@ Nothing is published yet.
   loaded at `createCockpit`: each listed session carries its `record` (its
   conversation, the earlier ones, the history of its runs and opens, a run
   typed into a live session among them as `sent`, each run's arguments as
-  the run was given them, read through the job's schema again at an open
+  the run was given them, copied at the call, read through the job's schema again at an open
   or a send; a send is not kept); a
   recorded key with no live session is listed `ended` (`lost` when it was
   recorded before the server started). A record that is not the cockpit's
@@ -314,7 +325,10 @@ Nothing is published yet.
   session, the page's terminals attached to it keep sending what the
   person types, and the server keeps it, then passes it to the session
   once the send is over, in order, each key as it was sent (at most 50 ms
-  apart), and the status is `open` again. A terminal that keeps over a
+  apart), and the status is `open` again. A start-up dialog shown while a
+  long first prompt waits for the input box drops the keys kept instead
+  (the wire's `released` carries `discarded: true`, which the mounted
+  terminal does not show yet). A terminal that keeps over a
   megabyte of keys is closed with 1008. A person's own `tmux attach` is not
   held.
 
