@@ -30,7 +30,7 @@ import { refuseTooLongPrompt } from '../prompt-length.js';
 import type { RecordStore, UnitRecord } from '../state/records.js';
 import type { JobRun, JobRuns } from './job-runs.js';
 import { KeyQueue } from './key-queue.js';
-import { type Sessions, wrongState } from './sessions.js';
+import { type Sessions, SessionsClosedError, wrongState } from './sessions.js';
 
 /** What the units of work work with. */
 export interface UnitsOfWorkOptions {
@@ -133,7 +133,12 @@ export interface UnitsOfWork {
    * @returns A function that stops the following.
    */
   follow(listener: (sessions: readonly Session[]) => void): () => void;
-  /** Stops following the sessions core: no follower is told anything more. */
+  /**
+   * Closes the units of work: every operation that has not begun, waiting
+   * for its key's turn or asked from now on, is rejected at once with
+   * `SessionsClosedError`, and does nothing; the sessions core is no
+   * longer followed, and no follower is told anything more.
+   */
   close(): void;
 }
 
@@ -279,6 +284,9 @@ class Units implements UnitsOfWork {
   }
 
   close(): void {
+    const closed = (key: string) => new SessionsClosedError(key);
+    this.#queue.close(closed);
+    this.#admissions.close(closed);
     for (const stop of this.#stops.splice(0)) stop();
     this.#followers.clear();
   }

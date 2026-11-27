@@ -77,19 +77,19 @@ export const LIVENESS_INTERVAL_MS = 1000;
 const DETACHED_SIZE: TerminalSize = { columns: 120, rows: 40 };
 
 /**
- * Why a run did not settle as a launch does: the cockpit was closed first.
- * It carries no code, since no request of an app's can mend it — on the
- * wire it is a 500 with no body — and the session, if its agent was
- * started, goes on in tmux, as every session does when the app's server
- * stops.
+ * Why an operation on a session — a run, a send, an open, an end — did
+ * not settle as it would have: the cockpit was closed first. It carries no
+ * code, since no request of an app's can mend it — on the wire it is a 500
+ * with no body — and the session, if its agent was started, goes on in
+ * tmux, as every session does when the app's server stops.
  */
 export class SessionsClosedError extends Error {
   override readonly name = 'SessionsClosedError';
 
-  /** @param key - The key of the run that was pending. */
+  /** @param key - The key of the operation that was pending. */
   constructor(key: string) {
     super(
-      `The cockpit was closed before the session ${key} left \`starting\`; an agent already started goes on in tmux.`,
+      `The cockpit was closed before the operation on the session ${key} settled; an agent already started goes on in tmux.`,
     );
   }
 }
@@ -242,6 +242,9 @@ export interface Sessions {
    * it; none for a session in another state, or with no live session.
    * @throws `SessionHostError` when the host cannot kill a session that
    * outlived the bound.
+   * @throws `SessionsClosedError` when the core is closed, or is closed
+   * while the agent is given its bound: nothing is signalled or killed
+   * once it is.
    */
   end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]>;
   /**
@@ -451,6 +454,8 @@ class SessionRegistry implements Sessions {
   readonly #conversationListeners = new Set<(key: string, conversationId: string) => void>();
   readonly #watch: LivenessWatch;
   #closed = false;
+  /** Settled by the close: a graceful end stops waiting for its agent. */
+  readonly #closing = settled();
 
   constructor(options: SessionsOptions) {
     this.#options = options;
@@ -464,7 +469,7 @@ class SessionRegistry implements Sessions {
   async launch(launch: SessionLaunch): Promise<Session> {
     const { key, prompt } = launch;
     if (!isSessionKey(key)) throw new TypeError(`${JSON.stringify(key)} is no session key.`);
-    if (this.#closed) throw new SessionsClosedError(key);
+    this.#refuseIfClosed(key);
     const existing = this.#entries.get(key);
     if (existing !== undefined && existing.phase !== 'ended') throw wrongState(existing.session);
 
@@ -491,6 +496,7 @@ class SessionRegistry implements Sessions {
   }
 
   async end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]> {
+    this.#refuseIfClosed(key);
     const entry = this.#entries.get(key);
     if (entry?.phase !== 'live') return [];
     const { session } = entry;
@@ -498,7 +504,13 @@ class SessionRegistry implements Sessions {
     entry.endedBecause = reason;
     const { signal, boundMs } = this.#options.driver.ending;
     await this.#signal(key, signal);
-    if (!(await within(entry.ending.promise, boundMs))) {
+    const exited = await within(
+      Promise.race([entry.ending.promise, this.#closing.promise]),
+      boundMs,
+    );
+    // Closed, the core no longer watches the session: whether it is gone, nothing tells.
+    this.#refuseIfClosed(key);
+    if (!exited) {
       entry.phase = 'killing';
       await this.#options.host.kill(key);
       await this.#gone(key);
@@ -535,7 +547,7 @@ class SessionRegistry implements Sessions {
   /** Asks the session's agent to end: its process sent the signal, if it still has one. */
   async #signal(key: string, signal: NodeJS.Signals): Promise<void> {
     const agent = await this.#options.host.processOf(key).catch(() => undefined);
-    if (agent === undefined) return;
+    if (agent === undefined || this.#closed) return;
     try {
       (this.#options.signal ?? process.kill)(agent.pid, signal);
     } catch {
@@ -746,6 +758,7 @@ class SessionRegistry implements Sessions {
 
   close(): void {
     this.#closed = true;
+    this.#closing.settle();
     this.#watch.close();
     for (const entry of this.#entries.values()) {
       entry.typing?.close();
@@ -816,15 +829,15 @@ class SessionRegistry implements Sessions {
     const { host, driver, hooks, folders } = this.#options;
     let granted = false;
     try {
-      this.#refuseIfClosed(entry);
+      this.#refuseIfClosed(entry.key);
       const { environment } = entry;
       await this.#options.admitAgent(environment);
-      this.#refuseIfClosed(entry);
+      this.#refuseIfClosed(entry.key);
       this.#setPhase(entry, 'launching');
       const confinement = await this.#options.confinement();
-      this.#refuseIfClosed(entry);
+      this.#refuseIfClosed(entry.key);
       const files = await folders.prepare(entry.key);
-      this.#refuseIfClosed(entry);
+      this.#refuseIfClosed(entry.key);
       const address = hooks.grant(entry.key);
       granted = true;
       const command = await driver.launch({
@@ -839,7 +852,7 @@ class SessionRegistry implements Sessions {
         environment,
         confinement,
       });
-      this.#refuseIfClosed(entry);
+      this.#refuseIfClosed(entry.key);
       await host.start({
         name: entry.key,
         folder: entry.directory,
@@ -969,9 +982,9 @@ class SessionRegistry implements Sessions {
     }
   }
 
-  /** Stops a launch once the core is closed: nothing more is put on the host. */
-  #refuseIfClosed(entry: Entry): void {
-    if (this.#closed) throw new SessionsClosedError(entry.key);
+  /** Stops an operation once the core is closed: nothing more is put on the host, or taken off it. */
+  #refuseIfClosed(key: string): void {
+    if (this.#closed) throw new SessionsClosedError(key);
   }
 
   async #outcome(entry: Entry): Promise<Session> {

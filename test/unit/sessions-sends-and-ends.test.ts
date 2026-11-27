@@ -7,6 +7,7 @@ import {
   PROMPT_BOUND_MS,
   SCREEN_INTERVAL_MS,
   type Sessions,
+  SessionsClosedError,
 } from '../../src/server/sessions/sessions.ts';
 import { createTerminalHolds, type TerminalHolds } from '../../src/server/terminal-hold.ts';
 import type { Session } from '../../src/shared/session.ts';
@@ -520,6 +521,31 @@ describe('ending a live session gracefully', () => {
     await ended;
 
     expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'restarted' });
+  });
+
+  it('is refused once the core is closed: nothing signalled or killed', async () => {
+    await idleSession();
+    sessions.close();
+
+    await expect(sessions.end(KEY, 'restarted')).rejects.toThrow(SessionsClosedError);
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    expect(signals).toEqual([]);
+    expect(host.kills).toEqual([]);
+  });
+
+  it('kills nothing once the core is closed while it waits for the agent to exit', async () => {
+    await idleSession();
+    const ended = sessions.end(KEY, 'restarted');
+    ended.catch(() => {});
+    await settle();
+    expect(signals).toHaveLength(1);
+
+    sessions.close();
+
+    await expect(ended).rejects.toThrow(SessionsClosedError);
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    expect(host.kills).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('does nothing for a key with no live session', async () => {

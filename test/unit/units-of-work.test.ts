@@ -6,6 +6,7 @@ import {
   createSessions,
   LIVENESS_INTERVAL_MS,
   type Sessions,
+  SessionsClosedError,
 } from '../../src/server/sessions/sessions.ts';
 import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/units-of-work.ts';
 import type { UnitRecord } from '../../src/server/state/records.ts';
@@ -933,6 +934,53 @@ describe('the operations on one key', () => {
     await expect(two).resolves.toEqual({ action: 'started', state: 'busy' });
     hook('/start-and-take');
     await expect(one).resolves.toEqual({ action: 'started', state: 'busy' });
+  });
+});
+
+describe('closing the units of work', () => {
+  beforeEach(() => open());
+
+  /** Closes as the cockpit does: the units of work, then the sessions core. */
+  function close(): void {
+    units.close();
+    sessions.close();
+  }
+
+  it('refuses every later run, send and open: nothing launched, signalled or killed', async () => {
+    await started();
+    idle();
+    exitOnSignal = false;
+    close();
+
+    await expect(units.run('review', { file: 'a' })).rejects.toThrow(SessionsClosedError);
+    await expect(units.send(KEY, 'Hello')).rejects.toThrow(SessionsClosedError);
+    await expect(units.open(KEY, { fresh: true })).rejects.toThrow(SessionsClosedError);
+    await vi.advanceTimersByTimeAsync(2 * driver.ending.boundMs);
+
+    expect(driver.launches).toHaveLength(1);
+    expect(signals).toEqual([]);
+    expect(host.kills).toEqual([]);
+    expect(made).toEqual(['.']);
+  });
+
+  it('rejects each operation still queued, at once: none of them runs', async () => {
+    await started();
+    idle();
+    exitOnSignal = false;
+    // A send under way: the agent has not taken its prompt yet.
+    const sending = pending(units.send(KEY, 'Hello'));
+    const fresh = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+    const opened = pending(units.open(KEY, { fresh: true }));
+    await settle();
+    close();
+
+    await expect(fresh).rejects.toThrow(SessionsClosedError);
+    await expect(opened).rejects.toThrow(SessionsClosedError);
+    await expect(sending).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(2 * driver.ending.boundMs);
+    expect(driver.launches).toHaveLength(1);
+    expect(signals).toEqual([]);
+    expect(host.kills).toEqual([]);
   });
 });
 
