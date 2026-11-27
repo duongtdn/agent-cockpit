@@ -355,14 +355,20 @@ Until its first hook, the cockpit reads the agent's screen (every 250 ms):
   run refused with `unobservable`.
 
 A launch prompt the agent takes without a turn, a local command such as
-`/help` or `/clear`, fires no hook: when the agent has not said it took
-the prompt 5 seconds after its first hook, the cockpit reads the screen,
-from then on until the screen or a hook tells. The input box back means
-the command ran (`idle`); a panel that waits for a key (`/help`'s) is
-`waiting`, `pending: [{ kind: 'terminal' }]`, until the person closes it,
-then `idle`. A screen that tells neither leaves the session `starting`,
-past that bound, never guessed `busy`: the agent's next hook tells the
-rest, and the run resolves then.
+`/clear`, `/context` or an unknown name, fires no hook: the agent writes
+the command's end into its conversation (for `/clear`, the new one), and
+the cockpit reads it there (within half a second): the session is `idle`.
+A command that opens a panel (`/help`, `/cost`, `/status`, `/config`,
+`/model`) writes nothing while it shows: the cockpit reads the screen from
+the agent's first hook on, the panel makes the session `waiting`,
+`pending: [{ kind: 'terminal' }]`, and the panel closed (the input box
+back, the agent showing no work above it) makes it `idle`. A screen the
+driver does not know, shown 5 seconds after the agent's first hook, is
+taken for a panel it has no name for: `waiting` the same way, for the
+person to look. The input box alone tells nothing (the agent draws it
+before it takes the prompt), nor does the box while the agent works: the
+session stays `starting`, never guessed `idle` or `busy`, and the agent's
+next hook or entry tells the rest.
 
 A session follows the conversation the agent works in: the one launched,
 or the one it moves to (Claude Code's `/clear` starts a new conversation
@@ -370,12 +376,13 @@ under a new id, which its `SessionStart` names). What the cockpit reads
 of the conversation outside the hooks (an interruption, a compaction), and
 an ended session's `canResume`, follow the new one; an interruption
 recorded in the conversation left just before the move still ends the
-turn open then. A compaction begun while `idle` that fails or is
-interrupted fires no hook to end it: the cockpit reads the screen while
-it runs, and the input box back returns the session to the `idle` it
-left. The box counts as back with a person's draft in it, and never while
-the agent shows it works (Claude Code's spinner above the box): a launch
-prompt's local command is read the same way. An interruption the agent recorded
+turn open then. A compaction begun while `idle` returns the session to
+the `idle` it left when it ends (`PostCompact`), when it fails (Claude
+Code's `StopFailure` of the compaction's own agent, told from a
+background task's by the tasks the session's hooks named), and when a
+person interrupts it, which no hook tells: the agent then writes the
+command's end alone into its conversation, where the cockpit reads it.
+No screen is read for a compaction. An interruption the agent recorded
 before the next prompt was taken ended the turn before, and leaves the
 new one `busy`.
 

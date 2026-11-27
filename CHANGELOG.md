@@ -219,21 +219,25 @@ Nothing is published yet.
   within 5 seconds of showing its input box (every hook turned off), is
   ended and refused with `unobservable`.
 - A launch prompt the agent takes without a turn (a local command such as
-  `/help` or `/clear`) is read from the screen from 5 seconds after the
-  first hook until the screen or a hook tells: the input box back is
-  `idle`, a panel waiting for a key is `waiting` (`kind: 'terminal'`)
-  until it closes; anything else leaves the session `starting` until the
-  next hook, never guessed `busy`.
+  `/clear`, `/context` or an unknown name) is `idle` once the agent writes
+  the command's end into its conversation (for `/clear`, the new one). A
+  panel it opens (`/help`, `/cost`, `/status`, `/config`, `/model`) is
+  read on the screen: `waiting` (`kind: 'terminal'`) while it shows,
+  `idle` once it closed; a screen the driver does not know, shown 5
+  seconds after the first hook, is `waiting` the same way. The input box
+  alone, or the box while the agent works, leaves the session `starting`,
+  never guessed `idle` or `busy`.
 - A session follows the conversation the agent moves to: Claude Code's
   `/clear` starts one under a new id, and what the cockpit reads outside
   the hooks, and an ended session's `canResume`, follow it (an
   interruption recorded in the conversation left just before the move
-  still ends the turn open then). A compaction begun `idle` that fails or
-  is interrupted (no hook ends it) is read on the screen and returns the
-  session to the `idle` it left, a person's draft in the box or none,
-  never while the agent shows it works; an
-  interruption the agent recorded before the next prompt was taken leaves
-  the new turn `busy`.
+  still ends the turn open then). A compaction begun `idle` that fails
+  (Claude Code's `StopFailure` of the compaction's own agent, told from a
+  background task's by the tasks the session's hooks named) or is
+  interrupted (no hook: the agent writes the command's end alone into its
+  conversation) returns the session to the `idle` it left; no screen is
+  read for it. An interruption the agent recorded before the next prompt
+  was taken leaves the new turn `busy`.
 - Units of work. A job may carry `options` (option sources, `{ choices,
   suggestions: true }` for one that only suggests), `directory(args)` and
   `fresh`, checked at `createCockpit` (`invalid-options`: `args` an object

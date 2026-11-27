@@ -87,7 +87,7 @@ async function idleSession(key = KEY): Promise<void> {
   await settle();
   hook('/ready', key);
   await launched;
-  host.show(key, stubScreen('ready'));
+  host.show(key, stubScreen('input-box'));
 }
 
 /** Sends a prompt, the outcome kept for the test to look at. */
@@ -280,7 +280,7 @@ describe('a prompt sent to an `idle` session', () => {
       host.show(KEY, stubScreen('dialog'));
       await expect(terminal.typeText(prompt)).rejects.toThrow(TypingStoppedError);
       await expect(terminal.restoring.pressKeys(['C-y'])).rejects.toThrow(TypingStoppedError);
-      host.show(KEY, stubScreen('ready'));
+      host.show(KEY, stubScreen('input-box'));
       await expect(terminal.restoring.pressKeys(['C-y'])).rejects.toThrow(TypingStoppedError);
       return { draftLeft: 'The draft is in the kill ring: Ctrl+Y brings it back.' };
     };
@@ -369,7 +369,7 @@ describe('a first prompt too long for the command line', () => {
     });
     await settle();
     expect(driver.launches[0]).not.toHaveProperty('prompt');
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
 
     hook('/ready');
     await settle();
@@ -393,7 +393,7 @@ describe('a first prompt too long for the command line', () => {
     });
     launched.catch(() => {});
     await settle();
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     hook('/ready');
 
     await vi.advanceTimersByTimeAsync(TYPING_PATIENCE_MS);
@@ -416,7 +416,7 @@ describe('a first prompt too long for the command line', () => {
     expect(writes()).toEqual([]);
     expect(sessions.session(KEY)?.state).toBe('starting');
 
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
     expect(writes()).toContain('text:A long prompt.');
     hook(`${PROMPT_PATH}A long prompt.`);
@@ -486,7 +486,7 @@ describe('a first prompt too long for the command line', () => {
     expect(sessions.session(KEY)?.state).toBe('waiting');
     expect(firstPrompt.outcome).toBeUndefined();
 
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
     expect(writes()).toContain('text:A long prompt.');
     expect(sessions.session(KEY)?.state).toBe('starting');
@@ -512,7 +512,7 @@ describe('a first prompt too long for the command line', () => {
     const firstPrompt = settledLater(sessions.firstPrompt(KEY));
     expect(firstPrompt.outcome).toBeUndefined();
 
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     hook('/ready');
     await settle();
     hook(`${PROMPT_PATH}A long prompt.`);
@@ -534,7 +534,7 @@ describe('a first prompt too long for the command line', () => {
     await expect(launched).resolves.toMatchObject({ state: 'waiting' });
     const firstPrompt = settledLater(sessions.firstPrompt(KEY));
 
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     hook('/ready');
     await vi.advanceTimersByTimeAsync(TYPING_PATIENCE_MS);
 
@@ -676,7 +676,7 @@ describe('a first prompt too long for the command line', () => {
     hook('/ready');
     await settle();
     expect(pageTerminal).toEqual(['held']);
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
     hook(`${PROMPT_PATH}A long prompt.`);
 
@@ -698,7 +698,7 @@ describe('a first prompt too long for the command line', () => {
     // Kept for the box, they would answer a dialog the person had not seen.
     expect(pageTerminal).toEqual(['held', 'discarded', 'released']);
 
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
     expect(pageTerminal).toEqual(['held', 'discarded', 'released', 'held']);
     hook(`${PROMPT_PATH}A long prompt.`);
@@ -720,7 +720,7 @@ describe('a first prompt too long for the command line', () => {
     // A prompt of a person's own, typed in the terminal: the agent began its turn.
     hook('/prompt-taken');
 
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
 
     await expect(launched).rejects.toMatchObject({ code: 'wrong-state', state: 'busy' });

@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { claudeCode } from '../../src/claude-code/index.ts';
+import type { TranscriptEntry } from '../support/agent-session.ts';
 import { eventually } from '../support/eventually.ts';
 import { turn } from '../support/fake-api/index.ts';
 import { type HookPayload, SAID_KEY, startContractCockpit } from './cockpit-harness.ts';
@@ -29,7 +30,7 @@ it("86 — With every hook off (disableAllHooks in the person's settings), the a
   const screen = await eventually(
     async () => {
       const shown = await session.screen();
-      expect(driver.readScreen(shown)).toEqual({ shows: 'ready' });
+      expect(driver.readScreen(shown)).toEqual({ shows: 'input-box' });
       return shown;
     },
     undefined,
@@ -80,3 +81,96 @@ it('89 — A local command as the launch prompt (/help) fires SessionStart only,
     1,
   );
 });
+
+/** The text of a transcript's entry: a `system` entry's own, a `user` message's when it is one text. */
+function entryText(entry: TranscriptEntry): string | undefined {
+  if (typeof entry.content === 'string') return entry.content;
+  const message = entry.message as { content?: unknown } | undefined;
+  return typeof message?.content === 'string' ? message.content : undefined;
+}
+
+/** The entries a local command's end writes, as the driver reads them: its output, its error, its caveat, an unknown name's. */
+const COMMAND_END = /^(?:<local-command-(?:stdout|stderr|caveat)>|Unknown command: )/;
+
+/** The hooks a cockpit read, by event. */
+function hookEvents(cockpit: { hooksRead: readonly { body: unknown }[] }): unknown[] {
+  return cockpit.hooksRead.map((request) => (request.body as HookPayload).hook_event_name);
+}
+
+for (const { prompt, end } of [
+  { prompt: '/context', end: /^<local-command-stdout>/ },
+  { prompt: '/clear', end: /^<local-command-stdout>/ },
+  // Nothing to compact yet.
+  { prompt: '/compact', end: /^<local-command-stderr>Error: No messages to compact/ },
+  { prompt: '/nosuchcommand', end: /^Unknown command: \/nosuchcommand$/ },
+]) {
+  it(`121 — A local command as the launch prompt that ends by itself (${prompt}) fires no hook of its own (/clear's SessionEnd and SessionStart of source clear aside) and records its end in the transcript of the conversation the hooks name: <command-name> with <local-command-stdout> or <local-command-stderr>, or the unknown command's entry; the driver reads it there: the run resolves idle`, async () => {
+    const cockpit = await startContractCockpit();
+
+    const result = await cockpit.say(prompt);
+    const starts = cockpit.hooksRead
+      .map((request) => request.body as HookPayload)
+      .filter((hook) => hook.hook_event_name === 'SessionStart');
+    const named = String(starts.at(-1)?.session_id);
+    const transcript = await eventually(() => {
+      const entries = cockpit.terminal(SAID_KEY, named).transcript();
+      expect(entries.map(entryText).some((text) => text !== undefined && end.test(text))).toBe(
+        true,
+      );
+      return entries;
+    });
+
+    expect(result).toEqual({ action: 'started', state: 'idle' });
+    expect(cockpit.states(SAID_KEY)).toEqual(['starting', 'idle']);
+    expect(hookEvents(cockpit)).toEqual(
+      prompt === '/clear' ? ['SessionStart', 'SessionEnd', 'SessionStart'] : ['SessionStart'],
+    );
+    if (prompt === '/clear') expect(named).not.toBe(cockpit.conversationOf(SAID_KEY));
+    expect(transcript.some((entry) => entry.promptSource !== undefined)).toBe(false);
+    // The command is the agent's own: nothing of it reached the API.
+    expect(cockpit.api.requests().filter((request) => request.kind === 'conversation')).toEqual([]);
+  });
+}
+
+for (const { prompt, panel } of [
+  { prompt: '/help', panel: 'help' },
+  { prompt: '/cost', panel: 'cost' },
+  { prompt: '/status', panel: 'status' },
+  { prompt: '/config', panel: 'config' },
+  { prompt: '/model', panel: 'model' },
+]) {
+  it(`122 — A local command as the launch prompt that opens a panel (${prompt}) fires no hook and records no end in the transcript while the panel shows; the driver names the panel, and the session waits in the terminal; Esc closes it: the input box back with no spinner row above it, the driver's sign of the panel's end: idle`, async () => {
+    const cockpit = await startContractCockpit();
+
+    const result = await cockpit.say(prompt);
+    const session = cockpit.terminal(SAID_KEY);
+    const shown = await eventually(async () => {
+      const screen = await session.screen();
+      expect(driver.readScreen(screen)).toEqual({ shows: 'panel', panel });
+      return screen;
+    });
+    const waiting = await cockpit.sessionIn(SAID_KEY, 'waiting');
+    const hooksWhileShown = hookEvents(cockpit);
+    const endsWhileShown = session
+      .transcript()
+      .map(entryText)
+      .filter((text) => text !== undefined && COMMAND_END.test(text));
+    await pressOnDialog(session, 'Escape', (screen) =>
+      screen === undefined ? false : driver.readScreen(screen).shows !== 'panel',
+    );
+    const idle = await cockpit.sessionIn(SAID_KEY, 'idle');
+    const closed = await eventually(async () => {
+      const screen = await session.screen();
+      expect(driver.screenStateSigns.launchPanelClosed(screen)).toBe(true);
+      return screen;
+    });
+
+    expect(result).toEqual({ action: 'started', state: 'waiting' });
+    expect(waiting).toMatchObject({ pending: [{ kind: 'terminal' }] });
+    expect(shown).not.toBe(closed);
+    expect(hooksWhileShown).toEqual(['SessionStart']);
+    expect(endsWhileShown).toEqual([]);
+    expect(idle.state).toBe('idle');
+    expect(cockpit.states(SAID_KEY)).toEqual(['starting', 'waiting', 'idle']);
+  });
+}

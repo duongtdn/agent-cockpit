@@ -50,24 +50,53 @@ const ERROR_KINDS: ReadonlyMap<unknown, TurnError['kind']> = new Map([
   ['rate_limit', 'rate-limit'],
 ]);
 
+/** Reads a hook request of one of a driver's sessions as the core's events. */
+export type HookReader = (request: HookRequest) => HookOutcome;
+
 /**
- * Reads a hook's payload as the core's events.
+ * Makes a reader of a driver's hooks, which keeps, for each session, the
+ * background tasks its hooks told of: their `agent_id`s, from their
+ * `SubagentStart`, until the session's process ends.
  *
  * A background task's hooks carry its `agent_id`, and never move the
  * session's state: they tell nothing, but the task's `SubagentStop`, which
- * tells that the task finished.
+ * tells that the task finished. A compaction's own agent carries one too,
+ * and starts with no `SubagentStart`: a `StopFailure` with an `agent_id` no
+ * task of the session's has is the compaction's, which failed, and ended.
  *
- * @param request - The request, its token checked.
- * @returns The events it tells: none for a path that is not the hooks', a
- * body that is no payload, a hook the driver does not configure, and a
- * background task's hook.
+ * @returns The reader: for a request, the events it tells, none for a path
+ * that is not the hooks', a body that is no payload, a hook the driver does
+ * not configure, and a background task's hook.
  */
-export function readHook(request: HookRequest): HookOutcome {
-  const { path, body } = request;
-  if (path !== HOOKS_PATH || !isRecord(body)) return NOTHING;
-  if (body.hook_event_name === 'SubagentStop') return { events: taskFinished(body.agent_id) };
-  if (body.agent_id !== undefined) return NOTHING;
-  return { events: eventsOf(body) };
+export function createHookReader(): HookReader {
+  const tasksBySession = new Map<string, Set<string>>();
+  const tasksOf = (key: string) => tasksBySession.get(key) ?? new Set<string>();
+
+  return ({ key, path, body }) => {
+    if (path !== HOOKS_PATH || !isRecord(body)) return NOTHING;
+    const { hook_event_name: name, agent_id: agentId } = body;
+    if (name === 'SubagentStart' && isText(agentId)) {
+      tasksBySession.set(key, tasksOf(key).add(agentId));
+      return NOTHING;
+    }
+    if (name === 'SubagentStop') return { events: taskFinished(agentId) };
+    if (agentId !== undefined) {
+      const compactionFailed = name === 'StopFailure' && !tasksOf(key).has(agentId as string);
+      return compactionFailed ? { events: [{ type: 'compaction-ended' }] } : NOTHING;
+    }
+    if (startsAProcess(body) || endsTheProcess(body)) tasksBySession.delete(key);
+    return { events: eventsOf(body) };
+  };
+}
+
+/** Tells a `SessionStart` of a launch: a new process, which runs none of the tasks of one before. */
+function startsAProcess(payload: Record<string, unknown>): boolean {
+  return payload.hook_event_name === 'SessionStart' && LAUNCH_SOURCES.includes(payload.source);
+}
+
+/** Tells a `SessionEnd` of the process: one of a `/clear` is the same process going on. */
+function endsTheProcess(payload: Record<string, unknown>): boolean {
+  return payload.hook_event_name === 'SessionEnd' && payload.reason !== CLEARED;
 }
 
 function eventsOf(payload: Record<string, unknown>): DriverEvent[] {

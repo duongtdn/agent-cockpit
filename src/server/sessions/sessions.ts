@@ -40,25 +40,16 @@ import type {
 import { SessionHostError } from '../session-host/session-host-error.js';
 import type { TerminalHold } from '../terminal-hold.js';
 import { InputBoxWait } from './input-box-wait.js';
+import { LaunchPromptWatch } from './launch-prompt-watch.js';
 import { LivenessWatch } from './liveness-watch.js';
-import { ScreenWatch } from './screen-watch.js';
 import { courseAfter, type SessionCourse } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
 import { SessionTypingTerminal } from './typing-terminal.js';
 
 export { INPUT_BOX_BOUND_MS } from './input-box-wait.js';
+export { PROMPT_BOUND_MS } from './launch-prompt-watch.js';
 export { SCREEN_INTERVAL_MS } from './screen-watch.js';
 export { READY_BOUND_MS, START_DEADLINE_MS } from './start-up-watch.js';
-
-/**
- * How long after its first hook an agent launched with a prompt has to say
- * it took the prompt, before the cockpit reads its screen instead. Claude
- * Code's `UserPromptSubmit` comes 0.1–0.17 s after its `SessionStart`; a
- * local command (`/help`, `/clear`, `/context`) given as the prompt fires
- * none, and only the screen tells what the agent does then. The screen is
- * read from then on until it tells, or a hook does.
- */
-export const PROMPT_BOUND_MS = 5_000;
 
 /**
  * How often the host is listed to see sessions that are gone. A session's
@@ -469,21 +460,14 @@ interface Entry {
   heard: boolean;
   /** Reads the screen from the launch until {@link heard}. */
   startUp?: StartUpWatch;
-  /** Starts reading the screen once the launch prompt was not taken in time. */
-  promptBound?: NodeJS.Timeout;
-  /** Reads the screen for what became of a launch prompt no hook said was taken. */
-  promptWatch?: ScreenWatch;
+  /** Reads the screen for a panel a launch prompt opened, which no hook nor entry tells. */
+  promptWatch?: LaunchPromptWatch;
   /**
    * Reads the screen, once the agent started, until it draws the input box
    * a first prompt too long for the command line is typed into; no hook
    * tells it.
    */
   inputBoxWait?: InputBoxWait;
-  /**
-   * Reads the screen while a compaction begun `idle` runs: an agent whose
-   * compaction fails or is interrupted tells its end by no hook.
-   */
-  compactionWatch?: ScreenWatch;
   /** Stops following what the agent tells outside its hooks. */
   stopFollowing?: () => void;
   /**
@@ -749,46 +733,12 @@ class SessionRegistry implements Sessions {
     if (events.some((event) => event.type === 'ready')) this.#awaitPrompt(entry);
   }
 
-  /** Takes the course the session is on now: its state, and the watch of a compaction begun `idle`. */
+  /** Takes the course the session is on now. */
   #take(entry: Entry, course: SessionCourse): void {
     entry.compactingFrom = course.compactingFrom;
     entry.promptTakenAt = course.promptTakenAt;
     this.#update(entry, course.session);
     if (!isInTurn(entry.session)) stopFollowingTheConversationsLeft(entry);
-    if (entry.compactingFrom === undefined) this.#stopWatchingTheCompaction(entry);
-    else if (entry.compactionWatch === undefined) this.#watchTheCompaction(entry);
-  }
-
-  /**
-   * Reads the screen while the session compacts from `idle`: the input box
-   * back with no hook to say so (a compaction that failed, or that a
-   * person interrupted) is its end, and the session returns to the state
-   * it left, as at `PostCompact`. Claude Code shows it works (its spinner
-   * above the box, a person's draft in it or none) by the time it tells
-   * `PreCompact`, also while a slow hook of the person's runs: the first
-   * box read ready is the end, however soon it was interrupted.
-   */
-  #watchTheCompaction(entry: Entry): void {
-    const watch = new ScreenWatch({
-      read: () => this.#readScreen(entry.key),
-      onReading: (reading) => {
-        if (reading.shows !== 'ready') return;
-        const ended = courseAfter(
-          courseOf(entry),
-          { type: 'compaction-ended' },
-          entry.launchedWithPrompt,
-          now(),
-        );
-        this.#take(entry, ended);
-      },
-    });
-    entry.compactionWatch = watch;
-    watch.start();
-  }
-
-  #stopWatchingTheCompaction(entry: Entry): void {
-    entry.compactionWatch?.stop();
-    delete entry.compactionWatch;
   }
 
   /**
@@ -855,7 +805,6 @@ class SessionRegistry implements Sessions {
       entry.typing?.close();
       entry.inputBoxWait?.stop();
       stopReadingTheScreen(entry);
-      this.#stopWatchingTheCompaction(entry);
       stopFollowingEveryConversation(entry);
       failFirstPrompt(entry, new SessionsClosedError(entry.key));
     }
@@ -1007,8 +956,11 @@ class SessionRegistry implements Sessions {
   }
 
   /**
-   * Bounds the wait for a launch prompt once the agent is ready: a local
-   * command fires no hook when the agent takes it, so the screen tells.
+   * Follows a launch prompt once the agent is ready: a prompt too long for
+   * the command line is typed now; one passed on it is taken with a hook, or
+   * is a local command, which fires none. Such a command's end is written in
+   * the transcript, which the core follows; a panel it opens is read on
+   * screen.
    */
   #awaitPrompt(entry: Entry): void {
     if (!entry.launchedWithPrompt || entry.session.state !== 'starting') return;
@@ -1018,30 +970,25 @@ class SessionRegistry implements Sessions {
       void this.#typeFirstPrompt(entry, promptToType);
       return;
     }
-    entry.promptBound = setTimeout(() => this.#watchForPrompt(entry), PROMPT_BOUND_MS);
+    this.#watchForPanel(entry);
   }
 
   /**
-   * Reads what became of a launch prompt no hook said was taken, from now
-   * on until the screen or a hook tells: the input box back means the agent
-   * took it without a turn (a local command), and waits for the next
-   * (`idle`); a panel waits for a person's key in the terminal (`waiting`,
-   * until the box is back). A screen that tells neither, or cannot be read,
-   * is read again: the session stays `starting`, never guessed `busy`, and
-   * any hook ends the watch.
+   * Reads the screen for a panel the launch prompt opened, until a hook or
+   * the transcript tells (any ends the watch): the panel makes the session
+   * wait in the terminal, and its close, the driver's sign, makes it `idle`.
    */
-  #watchForPrompt(entry: Entry): void {
-    const watch = new ScreenWatch({
-      read: () => this.#readScreen(entry.key),
-      onReading: (reading) => {
-        if (reading.shows === 'dialog') this.#waitInTerminal(entry, reading);
-        if (reading.shows !== 'ready') return;
-        watch.stop();
-        this.#update(entry, { key: entry.key, state: 'idle', since: now() });
-      },
+  #watchForPanel(entry: Entry): void {
+    const { driver } = this.#options;
+    const watch = new LaunchPromptWatch({
+      read: () => this.#readScreenText(entry.key),
+      readScreen: (text) => driver.readScreen(text),
+      signs: driver.screenStateSigns,
+      onPanel: (shown) => this.#waitInTerminal(entry, shown),
+      onPanelClosed: () => this.#update(entry, { key: entry.key, state: 'idle', since: now() }),
     });
     entry.promptWatch = watch;
-    watch.startNow();
+    watch.start();
   }
 
   /**
@@ -1067,9 +1014,15 @@ class SessionRegistry implements Sessions {
    * rather than the agent's screen.
    */
   async #readScreen(key: string): Promise<ScreenReading | undefined> {
+    const text = await this.#readScreenText(key);
+    return text === undefined ? undefined : this.#options.driver.readScreen(text);
+  }
+
+  /** Reads the session's screen as text: `undefined` as {@link #readScreen} gives it. */
+  async #readScreenText(key: string): Promise<string | undefined> {
     try {
       const screen = await this.#options.host.readScreen(key);
-      return screen.inCopyMode ? undefined : this.#options.driver.readScreen(screen.text);
+      return screen.inCopyMode ? undefined : screen.text;
     } catch {
       // Gone, or the host failed: the liveness watch tells the one, the next read the other.
       return undefined;
@@ -1124,7 +1077,6 @@ class SessionRegistry implements Sessions {
     entry.phase = 'going';
     entry.inputBoxWait?.stop();
     stopReadingTheScreen(entry);
-    this.#stopWatchingTheCompaction(entry);
     stopFollowingEveryConversation(entry);
     this.#watch.unwatch(key);
     this.#options.hooks.revoke(key);
@@ -1233,7 +1185,6 @@ function heldKeys(holds: TerminalHold, key: string): HeldKeys {
 function stopReadingTheScreen(entry: Entry): void {
   entry.startUp?.stop();
   entry.promptWatch?.stop();
-  clearTimeout(entry.promptBound);
 }
 
 /** Whether a turn of the agent's is open: at work, or waiting on a person's answer. */

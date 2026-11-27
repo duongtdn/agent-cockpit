@@ -156,15 +156,18 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   recorded before the next prompt), `clear` (93, `/clear`'s new
   conversation followed), `tasks` (15 a background
   subagent and its `<task-notification>` turn, 62 and 73 its hooks'
-  `agent_id`), `compaction` (16, 94 an interrupted `/compact` read on
-  screen), `dialogs` (37, 69 the folder's trust; 68
+  `agent_id`), `compaction` (16, 94 an interrupted `/compact`, 123 one
+  that fails: `StopFailure` with the compaction's own `agent_id`, 124 one
+  interrupted: the `<local-command-caveat>` entry alone), `dialogs` (37, 69 the folder's trust; 68
   the trust dialog's answers; 70 the onboarding; 85 the warning of
   `bypassPermissions`; 88 the API key's question, a dialog of no name),
   `turn-failures` (64, `StopFailure`), `options` (72 `--setting-sources`,
   74 the variables stripped, 87 `--model` and `--plugin-dir`, 91 the
   person's `env`), `confinement` (50–55, 75–79), `network-by-mode`
   (80–83), `version` (84, `--version`), `start-up` (86 every hook off, 89
-  a local command as the launch prompt), `sandbox-option` (90, the app's
+  a local command as the launch prompt, 121 one that ends by itself, read
+  in the transcript, 122 each panel one opens, named, and its close read
+  on screen), `sandbox-option` (90, the app's
   sandbox and `sandbox-unavailable`), `settings-files` (92 the `Edit`
   denies on every Claude settings file, 96 on every file that gives MCP
   servers, 97 on the person's plugins, 98 on the configuration file under
@@ -236,8 +239,14 @@ its configuration folder as Claude Code does: the start-up dialogs of a
 `--version` says the pinned agent's version, or `FAKE_AGENT_VERSION`'s.
 Beside a turn's tool calls and replies, a script's steps play a turn that
 fails on an API error (`fail`, with its status: `StopFailure`, as the
-agent ends a turn once its retries are spent), a compaction (`compact`, the
-person's `/compact`, a turn of its own: the only local command it plays),
+agent ends a turn once its retries are spent), a compaction (the person's
+`/compact`, a turn of its own: the only local command it plays; `compact`
+done, `compact-fails` with its status, `StopFailure` of the compaction's
+own agent, and `compact-stays` until the person's Esc over an empty box,
+no hook, `/compact` put back in the box with its argument's hint, where
+only Ctrl+U is played; each recorded as Claude Code records a local
+command: the caveat, then the name and the output or the error, the
+caveat alone when interrupted),
 and a background subagent (`task`: its work runs once the turn ended and
 the test released tasks, then its end starts the next turn by itself with
 a `<task-notification>` prompt). A script's tool call on a path a deny

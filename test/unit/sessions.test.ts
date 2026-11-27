@@ -450,7 +450,7 @@ const nextRead = () => vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
 
 describe("a launch's screen, read until its agent's first hook", () => {
   it(`is read every ${SCREEN_INTERVAL_MS} ms from the launch, and no more once a hook came`, async () => {
-    await launched();
+    await launched(KEY, {});
 
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
     expect(host.screenReads).toBe(4);
@@ -530,7 +530,7 @@ describe("a launch's screen, read until its agent's first hook", () => {
     await nextRead();
     const seen: string[] = [];
     sessions.follow((list) => seen.push(list[0]?.state ?? 'none'));
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await nextRead();
 
     hook('/ready');
@@ -601,7 +601,7 @@ describe("a launch's screen, read until its agent's first hook", () => {
     await launched();
     host.show(KEY, stubScreen('trust-folder'));
     await nextRead();
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await nextRead();
 
     host.exit(KEY);
@@ -651,7 +651,7 @@ describe("a launch's screen, read until its agent's first hook", () => {
 describe("a launch's deadline", () => {
   it(`comes ${READY_BOUND_MS / 1000} s after the input box first shows, sooner than with nothing on screen`, async () => {
     const { result } = await launched();
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
 
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS + READY_BOUND_MS - 1);
     expect(host.kills).toEqual([]);
@@ -668,7 +668,7 @@ describe("a launch's deadline", () => {
   it('gives a box first seen late its whole bound', async () => {
     await launched();
     await vi.advanceTimersByTimeAsync(START_DEADLINE_MS - 2 * SCREEN_INTERVAL_MS);
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await nextRead();
 
     await vi.advanceTimersByTimeAsync(READY_BOUND_MS - 1);
@@ -697,7 +697,7 @@ describe("a launch's deadline", () => {
     await launched();
     host.show(KEY, stubScreen('trust-folder'));
     await nextRead();
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await nextRead();
 
     await vi.advanceTimersByTimeAsync(READY_BOUND_MS);
@@ -713,57 +713,114 @@ describe('a launch prompt that no hook says was taken', () => {
     return launch;
   }
 
-  it(`is waited for ${PROMPT_BOUND_MS / 1000} s after the agent is ready, then read on screen: the input box back is \`idle\``, async () => {
+  it('is `idle` once the transcript records the end of a command of the agent’s own, and the screen is read no more', async () => {
     const { result } = await ready();
-    host.show(KEY, stubScreen('ready'));
+    vi.advanceTimersByTime(300);
+
+    driver.follows[0]?.report([{ type: 'command-done' }]);
+
+    await expect(result).resolves.toMatchObject({ state: 'idle' });
+    expect(sessionOf()).toEqual({ key: KEY, state: 'idle', since: at(300) });
+    const reads = host.screenReads;
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+    expect(host.screenReads).toBe(reads);
+  });
+
+  it('takes the input box alone for no sign of an end: it shows before the agent takes the prompt', async () => {
+    const { result } = await ready();
+    let settled = false;
+    // Still pending as the test ends: the core's close rejects it then.
+    result.then(
+      () => {
+        settled = true;
+      },
+      () => {},
+    );
+    host.show(KEY, stubScreen('input-box'));
+
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS * 3);
+
+    expect(sessionOf()?.state).toBe('starting');
+    expect(settled).toBe(false);
+  });
+
+  it('waits in the terminal as soon as a panel shows, then is `idle` once the driver reads it closed', async () => {
+    const { result } = await ready();
+    host.show(KEY, stubScreen('panel'));
+    await nextRead();
+    await expect(result).resolves.toMatchObject({ state: 'waiting' });
+    expect(sessionOf()).toEqual({
+      key: KEY,
+      state: 'waiting',
+      since: at(SCREEN_INTERVAL_MS),
+      pending: [{ kind: 'terminal' }],
+    });
+
+    host.show(KEY, stubScreen('input-box'));
+    await nextRead();
+
+    expect(sessionOf()).toEqual({ key: KEY, state: 'idle', since: at(SCREEN_INTERVAL_MS * 2) });
+    const reads = host.screenReads;
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
+    expect(host.screenReads).toBe(reads);
+  });
+
+  it('waits in the terminal for a dialog with no name as for a panel', async () => {
+    await ready();
+    host.show(KEY, stubScreen('dialog'));
+    await nextRead();
+
+    expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'terminal' }] });
+  });
+
+  it('is `idle` when the transcript records a choice made on its panel', async () => {
+    await ready();
+    host.show(KEY, stubScreen('panel'));
+    await nextRead();
+
+    driver.follows[0]?.report([{ type: 'command-done' }]);
+
+    expect(sessionOf()?.state).toBe('idle');
+  });
+
+  it(`waits in the terminal, with no name, when a screen it does not know shows ${PROMPT_BOUND_MS / 1000} s after the agent is ready, read twice in a row; then is \`idle\` once the panel closes`, async () => {
+    const { result } = await ready();
+    host.show(KEY, stubScreen('unknown'));
 
     await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS - 1);
     expect(sessionOf()?.state).toBe('starting');
-    expect(host.screenReads).toBe(0);
     await vi.advanceTimersByTimeAsync(1);
 
-    await expect(result).resolves.toMatchObject({ state: 'idle' });
-    expect(sessionOf()).toEqual({ key: KEY, state: 'idle', since: at(PROMPT_BOUND_MS) });
-  });
-
-  it('waits in the terminal while a panel shows, then is `idle` once the box is back', async () => {
-    const { result } = await ready();
-    host.show(KEY, stubScreen('dialog'));
-    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS);
     await expect(result).resolves.toMatchObject({ state: 'waiting' });
     expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'terminal' }] });
-
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     await nextRead();
-
-    expect(sessionOf()).toMatchObject({ state: 'idle' });
-    const reads = host.screenReads;
-    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
-    expect(host.screenReads).toBe(reads);
+    expect(sessionOf()?.state).toBe('idle');
   });
 
-  it('stays `starting` while the screen shows neither, read until the input box is back: then `idle`', async () => {
-    const { result } = await ready();
-    let settled = false;
-    void result.then(() => {
-      settled = true;
-    });
+  it('takes a screen it does not know, read once between two others, for one half drawn', async () => {
+    await ready();
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS);
+    host.show(KEY, stubScreen('unknown'));
+    await nextRead();
+    host.show(KEY, '');
+    await nextRead();
+    host.show(KEY, stubScreen('unknown'));
+    await nextRead();
 
-    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS + SCREEN_INTERVAL_MS * 3);
     expect(sessionOf()?.state).toBe('starting');
-    expect(settled).toBe(false);
-    expect(host.screenReads).toBe(4);
-
-    host.show(KEY, stubScreen('ready'));
-    await nextRead();
-
-    await expect(result).resolves.toMatchObject({ state: 'idle' });
-    const reads = host.screenReads;
-    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
-    expect(host.screenReads).toBe(reads);
   });
 
-  it('goes on as the hooks tell once one comes while the screen shows neither, and is read no more', async () => {
+  it('stays `starting` while the screen tells nothing: the box while the agent works, or a blank', async () => {
+    await ready();
+    host.show(KEY, 'working');
+
+    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS * 3);
+
+    expect(sessionOf()?.state).toBe('starting');
+  });
+
+  it('goes on as the hooks tell once one comes, and is read no more', async () => {
     const { result } = await ready();
     await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS);
 
@@ -776,19 +833,19 @@ describe('a launch prompt that no hook says was taken', () => {
   });
 
   it('is read again when the screen cannot be read: a person scrolled it back', async () => {
-    const { result } = await ready();
-    host.show(KEY, stubScreen('ready'));
+    await ready();
+    host.show(KEY, stubScreen('panel'));
     host.scrollBack(KEY, true);
-    await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS + SCREEN_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 3);
     expect(sessionOf()?.state).toBe('starting');
 
     host.scrollBack(KEY, false);
     await nextRead();
 
-    await expect(result).resolves.toMatchObject({ state: 'idle' });
+    expect(sessionOf()?.state).toBe('waiting');
   });
 
-  it('is not read when the prompt is taken in time', async () => {
+  it('is not read when the prompt is taken before a read', async () => {
     const { result } = await ready();
     hook('/prompt-taken');
 
@@ -812,10 +869,11 @@ describe('a launch prompt that no hook says was taken', () => {
     await ready();
     host.exit(KEY);
     await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    const reads = host.screenReads;
 
     await vi.advanceTimersByTimeAsync(PROMPT_BOUND_MS);
 
-    expect(host.screenReads).toBe(0);
+    expect(host.screenReads).toBe(reads);
     expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'lost' });
   });
 });
@@ -1068,38 +1126,26 @@ describe("a session's states, from the driver's events", () => {
     expect(sessionOf()).toEqual(ended);
   });
 
-  it('reads the screen while a compaction begun idle runs: the input box back returns it to the idle session it left, when no hook tells the end', async () => {
+  it('returns from a compaction begun while idle to that idle session when the transcript records the command’s end: it failed, or a person interrupted it', async () => {
     await busy();
     hook('/turn-ended');
     const ended = sessionOf();
-    host.show(KEY, 'compacting');
-
     hook('/compaction-began');
-    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 3);
     expect(sessionOf()?.state).toBe('busy');
-    host.show(KEY, stubScreen('ready'));
-    await nextRead();
+
+    driver.follows[0]?.report([{ type: 'command-done' }]);
 
     expect(sessionOf()).toEqual(ended);
-    const reads = host.screenReads;
-    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
-    expect(host.screenReads).toBe(reads);
   });
 
-  it('reads the screen no more once the end of the compaction is told, or a turn shows in it', async () => {
+  it('reads no screen while a compaction begun idle runs: its end is told by a hook or the transcript', async () => {
     await busy();
     hook('/turn-ended');
-    hook('/compaction-began');
-    await nextRead();
-    hook('/compaction-ended');
-    hook('/compaction-began');
-    await nextRead();
-    hook('/working');
     const reads = host.screenReads;
 
+    hook('/compaction-began');
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS * 4);
 
-    expect(reads).toBe(2);
     expect(host.screenReads).toBe(reads);
   });
 

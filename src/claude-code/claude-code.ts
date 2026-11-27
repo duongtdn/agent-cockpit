@@ -15,7 +15,7 @@ import { CockpitError } from '../shared/cockpit-error.js';
 import type { KeyRule } from '../shared/wire.js';
 import { agentVersionReader } from './agent-version.js';
 import { agentConfigFolder, keepsConversation, type TranscriptLookup } from './conversations.js';
-import { readHook } from './hook-payloads.js';
+import { createHookReader } from './hook-payloads.js';
 import {
   AGENT_COMMAND,
   agentArguments,
@@ -34,7 +34,7 @@ import {
 } from './options.js';
 import { personsFolderIssues, personsStartUpFiles } from './persons-files.js';
 import { sandboxChecker } from './sandbox-check.js';
-import { readInputBox, readScreen } from './screen-reading.js';
+import { readInputBox, readScreen, SCREEN_STATE_SIGNS } from './screen-reading.js';
 import { settingsDocument } from './settings-document.js';
 import { TESTED_RANGE } from './tested-range.js';
 import { followTranscript } from './transcript-watch.js';
@@ -211,6 +211,7 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
     environmentIssues: personsFolderIssues,
     networkOf: (part) => networkOf(checked, part),
     readScreen,
+    screenStateSigns: SCREEN_STATE_SIGNS,
     readInputBox,
     typePrompt,
     promptFitsLaunch: (prompt) => Buffer.byteLength(prompt) <= MAX_LAUNCH_PROMPT_BYTES,
@@ -221,7 +222,7 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
       if (checked.sandbox !== undefined) await checkSandbox(launch.environment);
       return launchSession(launch, checked);
     },
-    readHook,
+    readHook: createHookReader(),
     follow: (conversation, report) => followTranscript(lookupOf(conversation), report).stop,
     canResume: (conversation) => keepsConversation(lookupOf(conversation)),
   };

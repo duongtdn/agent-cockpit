@@ -7,8 +7,9 @@ import type { ScreenReading } from '../../src/server/driver.ts';
 /**
  * Screens of Claude Code 2.1.332, as `tmux capture-pane` gave them in a
  * 120×40 pane, trailing blanks removed: each start-up dialog, the ready
- * input box, local commands given as the launch prompt, and (`s6-`) the
- * agent busy and idle, a draft in the box or none, in each mode. Named
+ * input box, local commands given as the launch prompt, (`s6-`) the
+ * agent busy and idle, a draft in the box or none, in each mode, and
+ * (`s7-`) the panels a launch prompt opens and the box once one closed. Named
  * `<case>-<step>`: `-0` after the launch, `-1` after the first keys, and so
  * on; the temporary paths in them differ per capture.
  */
@@ -19,7 +20,9 @@ const BYPASS: ScreenReading = { shows: 'dialog', dialog: 'bypass-permissions' };
 const ONBOARDING: ScreenReading = { shows: 'dialog', dialog: 'onboarding' };
 const LOGIN: ScreenReading = { shows: 'dialog', dialog: 'login' };
 const UNNAMED: ScreenReading = { shows: 'dialog' };
-const READY: ScreenReading = { shows: 'ready' };
+const INPUT_BOX: ScreenReading = { shows: 'input-box' };
+const UNKNOWN: ScreenReading = { shows: 'unknown' };
+const panel = (name: string): ScreenReading => ({ shows: 'panel', panel: name });
 const NOTHING: ScreenReading = { shows: 'nothing' };
 
 /** What each saved screen shows, by its file's name. */
@@ -31,66 +34,66 @@ const EXPECTED: Readonly<Record<string, ScreenReading>> = {
   's1-trust-esc-1': TRUST,
   's1-trust-yes-0': TRUST,
   's1-trust-yes-1': TRUST,
-  's1-trust-yes-2': READY,
+  's1-trust-yes-2': INPUT_BOX,
   // Trust, then the bypass warning, then the session.
   's1-trust-bypass-0': TRUST,
   's1-trust-bypass-1': TRUST,
   's1-trust-bypass-2': BYPASS,
   's1-trust-bypass-3': BYPASS,
-  's1-trust-bypass-4': READY,
+  's1-trust-bypass-4': INPUT_BOX,
   's1-bypass-0': BYPASS,
   's1-bypass-1': BYPASS,
   's1-bypass-esc-0': BYPASS,
   's1-bypass-esc-1': BYPASS,
   's1-bypass-yes-0': BYPASS,
   's1-bypass-yes-1': BYPASS,
-  's1-bypass-yes-2': READY,
+  's1-bypass-yes-2': INPUT_BOX,
   // The first run: the theme picker and the security notes, then the session.
   's1-onboarding-0': ONBOARDING,
   's1-onboarding-1': ONBOARDING,
-  's1-onboarding-2': READY,
-  's1-onboarding-3': READY,
-  's1-onboarding-4': READY,
-  's1-onboarding-5': READY,
+  's1-onboarding-2': INPUT_BOX,
+  's1-onboarding-3': INPUT_BOX,
+  's1-onboarding-4': INPUT_BOX,
+  's1-onboarding-5': INPUT_BOX,
   // No key: the theme picker, then the choice of a login method.
   's1-login-nokey-0': ONBOARDING,
   's1-login-nokey-1': LOGIN,
   's1-login-noconfig-0': ONBOARDING,
   's1-login-noconfig-1': LOGIN,
-  // No key and no network: the agent says so and exits; nothing to answer.
-  's1-offline-nokey-0': NOTHING,
+  // No key and no network: the agent says so and exits; nothing to answer, and no screen the driver knows.
+  's1-offline-nokey-0': UNKNOWN,
   // The custom API-key question: a dialog with no name.
   's1-apikey-0': UNNAMED,
-  's1-apikey-1': READY,
+  's1-apikey-1': INPUT_BOX,
   // The ready input box: with no prompt, after one, with hooks off.
-  's1-ready-noprompt-final': READY,
-  's1-ready-prompt-final': READY,
-  's1-hooksoff-0': READY,
-  's1-slowmcp-noprompt-ready-at-452ms': READY,
-  's1-slowmcp-noprompt-final': READY,
-  's1-slowmcp-prompt-final': READY,
+  's1-ready-noprompt-final': INPUT_BOX,
+  's1-ready-prompt-final': INPUT_BOX,
+  's1-hooksoff-0': INPUT_BOX,
+  's1-slowmcp-noprompt-ready-at-452ms': INPUT_BOX,
+  's1-slowmcp-noprompt-final': INPUT_BOX,
+  's1-slowmcp-prompt-final': INPUT_BOX,
   // The box drawn while the agent works: not ready for a prompt.
   's1-slowmcp-prompt-ready-at-439ms': NOTHING,
   // Local commands as the launch prompt: the box back, but for /help's panel.
-  's2-clear-launch': READY,
-  's2-clear-typed': READY,
-  's2-compact-launch': READY,
-  's2-compact-typed': READY,
-  's2-context-launch': READY,
-  's2-context-typed': READY,
-  's2-help-launch': UNNAMED,
-  's2-help-typed': UNNAMED,
-  's2-help-esc-launch': UNNAMED,
-  's2-help-esc-after-Escape': READY,
-  's2-help-esc-typed': READY,
+  's2-clear-launch': INPUT_BOX,
+  's2-clear-typed': INPUT_BOX,
+  's2-compact-launch': INPUT_BOX,
+  's2-compact-typed': INPUT_BOX,
+  's2-context-launch': INPUT_BOX,
+  's2-context-typed': INPUT_BOX,
+  's2-help-launch': panel('help'),
+  's2-help-typed': panel('help'),
+  's2-help-esc-launch': panel('help'),
+  's2-help-esc-after-Escape': INPUT_BOX,
+  's2-help-esc-typed': INPUT_BOX,
   // Sessions after a turn, with the sandbox and the person's settings.
-  's3-fake-fail-tui': READY,
-  's3-fake-nofail-tui': READY,
-  's3-missing-nofail-tui': READY,
-  's3-missing-unset-tui': READY,
-  's5-control-inherited': READY,
-  's5-settings-base-url': READY,
-  's5-settings-quiet-only': READY,
+  's3-fake-fail-tui': INPUT_BOX,
+  's3-fake-nofail-tui': INPUT_BOX,
+  's3-missing-nofail-tui': INPUT_BOX,
+  's3-missing-unset-tui': INPUT_BOX,
+  's5-control-inherited': INPUT_BOX,
+  's5-settings-base-url': INPUT_BOX,
+  's5-settings-quiet-only': INPUT_BOX,
   // The agent retrying the API: working, not ready.
   's5-settings-bedrock': NOTHING,
   // A turn and a compaction in each mode the driver runs, a draft in the box or none: busy
@@ -98,11 +101,11 @@ const EXPECTED: Readonly<Record<string, ScreenReading>> = {
   ...byMode({
     'busy-empty': NOTHING,
     'busy-draft': NOTHING,
-    'idle-empty': READY,
-    'idle-draft': READY,
+    'idle-empty': INPUT_BOX,
+    'idle-draft': INPUT_BOX,
     'compacting-empty': NOTHING,
     'compacting-draft': NOTHING,
-    'after-compact': READY,
+    'after-compact': INPUT_BOX,
   }),
   // A hook of the turn awaited, a tool running, an answer streaming: busy, a draft or none.
   ...Object.fromEntries(
@@ -114,8 +117,20 @@ const EXPECTED: Readonly<Record<string, ScreenReading>> = {
       ]),
   ),
   // Idle with a background shell: the turn's last row says the shell runs on.
-  's6-idle-background-shell-empty': READY,
-  's6-idle-background-shell-draft': READY,
+  's6-idle-background-shell-empty': INPUT_BOX,
+  's6-idle-background-shell-draft': INPUT_BOX,
+  // Panels a launch prompt opens, each by its name (`/config`'s with a search typed, and its list after an Esc), and the box
+  // once one closed (Esc on `/cost`'s, a choice on `/model`'s); the box drawn while the agent's
+  // SessionStart hook runs, before it takes the prompt: working, nothing to type into.
+  's7-cost-launch': panel('cost'),
+  's7-status-launch': panel('status'),
+  's7-config-launch': panel('config'),
+  's7-config-search': panel('config'),
+  's7-config-list': panel('config'),
+  's7-model-launch': panel('model'),
+  's7-cost-closed': INPUT_BOX,
+  's7-model-chosen': INPUT_BOX,
+  's7-start-hook-running': NOTHING,
 };
 
 /** The screens of each case in each mode the driver runs, named `s6-<mode>-<case>`. */
@@ -168,10 +183,10 @@ describe("the Claude Code driver's reading of the screen", () => {
     ['s1-onboarding-1', ONBOARDING],
     ['s1-login-nokey-1', LOGIN],
     ['s1-apikey-0', UNNAMED],
-    ['s1-ready-noprompt-final', READY],
+    ['s1-ready-noprompt-final', INPUT_BOX],
     ['s6-default-busy-draft', NOTHING],
     ['s6-hook-PreToolUse-draft', NOTHING],
-    ['s6-default-idle-draft', READY],
+    ['s6-default-idle-draft', INPUT_BOX],
   ])('reads %s the same in a terminal 60 columns wide, its sentences wrapped', (name, reading) => {
     expect(readScreen(narrowed(screen(name), 60))).toEqual(reading);
   });
@@ -187,24 +202,24 @@ describe("the Claude Code driver's reading of the screen", () => {
       '● Accessing workspace: Yes, I trust this folder · Select login method: · Enter to confirm · Esc to cancel',
     );
 
-    expect(readScreen(quoted)).toEqual(READY);
+    expect(readScreen(quoted)).toEqual(INPUT_BOX);
   });
 
-  it('takes no input box that a rule does not close for one ready', () => {
+  it('takes no input box that a rule does not close for one', () => {
     const open = screen('s1-ready-noprompt-final').trimEnd().split('\n').slice(0, -2).join('\n');
 
-    expect(readScreen(open)).toEqual(NOTHING);
+    expect(readScreen(open)).toEqual(UNKNOWN);
   });
 
   it('takes the prompt arrow of a list for no input box', () => {
     const rule = '─'.repeat(120);
-    expect(readScreen(`${rule}\n ❯ No, exit\n   Yes\n${rule}`)).toEqual(NOTHING);
+    expect(readScreen(`${rule}\n ❯ No, exit\n   Yes\n${rule}`)).toEqual(UNKNOWN);
   });
 
   it("takes no answer of the model's that ends in an ellipsis for the spinner", () => {
     const thinking = screen('s6-default-idle-draft').replace('● Ready.', '● Let me think…');
 
-    expect(readScreen(thinking)).toEqual(READY);
+    expect(readScreen(thinking)).toEqual(INPUT_BOX);
   });
 
   it("takes no prompt of the person's that ends in an ellipsis for the spinner", () => {
@@ -213,7 +228,7 @@ describe("the Claude Code driver's reading of the screen", () => {
       '  ⎿  Interrupted · What should Claude do instead?',
     );
 
-    expect(readScreen(interrupted.replace('❯ hello from launch', '❯ wait…'))).toEqual(READY);
+    expect(readScreen(interrupted.replace('❯ hello from launch', '❯ wait…'))).toEqual(INPUT_BOX);
   });
 
   it("reads a busy box as nothing by the footer's hint alone, the spinner's row out of sight", () => {
@@ -222,9 +237,52 @@ describe("the Claude Code driver's reading of the screen", () => {
     expect(readScreen(busy)).toEqual(NOTHING);
   });
 
-  it('reads a box with text typed in it as ready', () => {
+  it('reads a box with text typed in it as free to type into', () => {
     const typed = screen('s1-ready-noprompt-final').replace(/^❯$/m, '❯ half a prompt');
 
-    expect(readScreen(typed)).toEqual(READY);
+    expect(readScreen(typed)).toEqual(INPUT_BOX);
+  });
+});
+
+describe("the Claude Code driver's sign on screen that a panel a launch prompt opened closed", () => {
+  const closed = (name: string) => claudeCode().screenStateSigns.launchPanelClosed(screen(name));
+
+  it.each(['s2-help-esc-after-Escape', 's7-cost-closed', 's7-model-chosen'])(
+    'reads %s: the box back, no spinner above it',
+    (name) => {
+      expect(closed(name)).toBe(true);
+    },
+  );
+
+  it.each([
+    's2-help-launch',
+    's7-cost-launch',
+    's7-status-launch',
+    's7-config-launch',
+    's7-config-search',
+    's7-config-list',
+    's7-model-launch',
+  ])('reads no close on %s: the panel shows', (name) => {
+    expect(closed(name)).toBe(false);
+  });
+
+  it.each(
+    Object.keys(EXPECTED).filter(
+      (name) => name.startsWith('s6-') && EXPECTED[name]?.shows === 'nothing',
+    ),
+  )('reads no close on %s: the spinner shows above the box, a draft in it or none', (name) => {
+    expect(closed(name)).toBe(false);
+  });
+
+  it("reads the spinner's row alone, never the footer: its hint, which a draft hides, is no sign", () => {
+    const hintOnly = screen('s6-default-busy-empty').replace(/^\S \S[^…]*….*$/mu, '');
+
+    expect(closed('s6-default-busy-draft')).toBe(false);
+    expect(claudeCode().screenStateSigns.launchPanelClosed(hintOnly)).toBe(true);
+  });
+
+  it('reads no close on a screen with no input box: blank, or one the driver does not know', () => {
+    expect(claudeCode().screenStateSigns.launchPanelClosed('')).toBe(false);
+    expect(closed('s1-offline-nokey-0')).toBe(false);
   });
 });

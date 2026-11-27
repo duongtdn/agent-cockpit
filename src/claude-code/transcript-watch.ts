@@ -20,6 +20,21 @@ const INTERRUPTION_MARKERS: ReadonlySet<unknown> = new Set([
   '[Request interrupted by user for tool use]',
 ]);
 
+/**
+ * How Claude Code begins an entry it writes once a local command (one run
+ * with no turn and no hook: `/clear`, `/context`, `/compact`) has run: its
+ * output, its error, or the caveat written with them. An interrupted
+ * `/compact` writes the caveat alone.
+ */
+const COMMAND_END_TAGS: readonly string[] = [
+  '<local-command-stdout>',
+  '<local-command-stderr>',
+  '<local-command-caveat>',
+];
+
+/** How Claude Code begins the entry it writes for a command it does not know. */
+const UNKNOWN_COMMAND = 'Unknown command: ';
+
 const LINE_END = 0x0a;
 
 /** A watch of a transcript. */
@@ -34,10 +49,11 @@ export interface TranscriptWatch {
 }
 
 /**
- * Follows a conversation's transcript and reports each interruption written
- * into it from now on, with when the agent recorded it: what the transcript
+ * Follows a conversation's transcript and reports what is written into it
+ * from now on that no hook tells: each interruption, with when the agent
+ * recorded it, and each end of a local command. What the transcript
  * held before is not reported, so that a resumed conversation's earlier
- * interruptions are not told again. The transcript may not exist yet: a new
+ * entries are not told again. The transcript may not exist yet: a new
  * conversation writes it with its first prompt, and it is looked for as
  * {@link transcriptSearch} does until found. A transcript that shrank was
  * written anew, and is read again from its start.
@@ -127,9 +143,14 @@ export function eventsIn(unread: Buffer): { events: DriverEvent[]; rest: Buffer 
     .toString('utf8')
     .split('\n')
     .map(parsed)
-    .filter(isInterruption)
-    .map(interruption);
+    .flatMap(eventsOfEntry);
   return { events, rest: unread.subarray(end) };
+}
+
+function eventsOfEntry(entry: unknown): DriverEvent[] {
+  if (isInterruption(entry)) return [interruption(entry)];
+  if (isCommandEnd(entry)) return [{ type: 'command-done' }];
+  return [];
 }
 
 /** The interruption an entry marks, with when the agent recorded it when the entry says. */
@@ -166,6 +187,31 @@ export function isInterruption(entry: unknown): boolean {
       (block) => isRecord(block) && block.type === 'text' && INTERRUPTION_MARKERS.has(block.text),
     )
   );
+}
+
+/**
+ * Tells an entry Claude Code writes once a local command has run: a `user`
+ * or `system` entry of its own (a person's prompt carries `promptSource`)
+ * whose text begins with the output's, the error's or the caveat's tag, or
+ * the entry of an unknown command.
+ *
+ * @param entry - An entry of a transcript, parsed.
+ * @returns `true` when it records a local command's end.
+ */
+function isCommandEnd(entry: unknown): boolean {
+  if (!isRecord(entry) || entry.promptSource !== undefined) return false;
+  if (entry.type === 'system' && typeof entry.content === 'string') {
+    const { content } = entry;
+    if (entry.subtype === 'informational') return content.startsWith(UNKNOWN_COMMAND);
+    return entry.subtype === 'local_command' && beginsWithCommandEndTag(content);
+  }
+  if (entry.type !== 'user' || !isRecord(entry.message)) return false;
+  const { content } = entry.message;
+  return typeof content === 'string' && beginsWithCommandEndTag(content);
+}
+
+function beginsWithCommandEndTag(text: string): boolean {
+  return COMMAND_END_TAGS.some((tag) => text.startsWith(tag));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

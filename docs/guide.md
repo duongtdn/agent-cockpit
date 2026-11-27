@@ -429,8 +429,8 @@ why, `canResume` whether its conversation is still kept). Each state carries
 `idle`; a background task's work never makes the session `busy`, but the
 turn the agent starts itself when a task finishes does; a compaction begun
 while `idle` is `busy`, then the same `idle` again, its `since` kept, also
-when it fails or the person interrupts it (the screen tells, since no hook
-does). A conversation the agent moves to (Claude Code's `/clear` starts one
+when it fails or the person interrupts it (the agent's conversation tells
+the interruption, since no hook does). A conversation the agent moves to (Claude Code's `/clear` starts one
 under a new id) is the one the session follows from then on, and the one
 an ended session's `canResume` tells of, and a resume will take up. `cockpit.sessions.follow` and the client's
 `sessions.follow` give the whole list at once, then at every change.
@@ -439,7 +439,9 @@ So far a session is `waiting` only for something in the terminal
 (`pending: [{ kind: 'terminal', dialog? }]`): a start-up dialog the agent
 shows before it takes a first prompt (`trust-folder`,
 `bypass-permissions`, `onboarding`, `login`), a dialog it shows that the
-driver has no name for, or a panel a launch prompt opened (`/help`). The
+driver has no name for, or a panel a launch prompt opened (`/help`,
+`/cost`, `/status`, `/config`, `/model`, or one the driver has no name
+for, shown 5 seconds after the agent started). The
 person answers it in the mounted terminal, and the session goes on. A
 person who leaves a start-up dialog ("No", or Esc) ends the session
 `declined`, with its `dialog`: the app tells them what the next launch will

@@ -29,6 +29,21 @@ export interface DialogShown {
   readonly dialog?: StartupDialog;
 }
 
+/**
+ * The dialog a reading shows, as the session waits for it: a start-up
+ * dialog by its name; a panel, or a dialog the driver does not know, with
+ * none.
+ *
+ * @param reading - A reading of a dialog or a panel.
+ */
+export function dialogShown(
+  reading: Extract<ScreenReading, { shows: 'dialog' | 'panel' }>,
+): DialogShown {
+  return reading.shows === 'dialog' && reading.dialog !== undefined
+    ? { dialog: reading.dialog }
+    : {};
+}
+
 /** What a start-up watch works with. */
 export interface StartUpWatchOptions {
   /** Reads what the screen shows now; `undefined` when it cannot be read. */
@@ -88,19 +103,21 @@ export class StartUpWatch {
   #take(reading: ScreenReading): void {
     switch (reading.shows) {
       case 'dialog':
-        this.#dialogShown = reading.dialog === undefined ? {} : { dialog: reading.dialog };
+      case 'panel':
+        this.#dialogShown = dialogShown(reading);
         this.#boxSeen = false;
         clearTimeout(this.#deadline);
         this.#deadline = undefined;
         this.#options.onDialog(this.#dialogShown);
         return;
-      case 'ready':
+      case 'input-box':
         this.#dialogShown = undefined;
         if (!this.#boxSeen) {
           this.#boxSeen = true;
           this.#arm(READY_BOUND_MS);
         }
         return;
+      case 'unknown':
       case 'nothing':
         // A redraw between two screens keeps the dialog it showed last.
         if (this.#deadline === undefined) this.#arm(START_DEADLINE_MS);

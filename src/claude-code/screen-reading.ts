@@ -1,4 +1,4 @@
-import type { InputBox, ScreenReading } from '../server/driver.js';
+import type { InputBox, ScreenReading, ScreenStateSigns } from '../server/driver.js';
 import type { StartupDialog } from '../shared/session.js';
 
 /**
@@ -21,11 +21,26 @@ const DIALOGS: readonly { readonly dialog: StartupDialog; readonly words: readon
 ];
 
 /**
- * The hints of a panel that only a key in the terminal closes: a choice to
- * confirm (the custom API-key question, among the dialogs with no name) or
- * a panel to leave (`/help`'s).
+ * Each panel Claude Code (2.1.332) draws in place of its input box when a
+ * local command opens it, by words that all show while it waits for a key:
+ * its tabs or its title, and what it shows or its hint. `/cost`, `/status`
+ * and `/config` open the same tabbed panel, each on its own tab, named here
+ * by the tab shown.
  */
-const PANEL_HINTS: readonly string[] = ['Enter to confirm · Esc to cancel', 'Esc to close'];
+const PANELS: readonly { readonly panel: string; readonly words: readonly string[] }[] = [
+  { panel: 'help', words: ['Help General Commands Custom commands', 'Esc to close'] },
+  { panel: 'cost', words: ['Settings Status Config Usage Stats', 'Estimated cost:'] },
+  { panel: 'status', words: ['Settings Status Config Usage Stats', 'Session ID:'] },
+  { panel: 'config', words: ['Settings Status Config Usage Stats', '⌕'] },
+  { panel: 'model', words: ['Select model', 'Enter to save · Esc to cancel'] },
+];
+
+/**
+ * The hints of a dialog or a panel that only a key in the terminal closes,
+ * when nothing else on screen names it: a choice to confirm (the custom
+ * API-key question, among the dialogs with no name) or a panel to leave.
+ */
+const UNNAMED_HINTS: readonly string[] = ['Enter to confirm · Esc to cancel', 'Esc to close'];
 
 /**
  * The footer's hint while the agent works on a turn or a compaction: drawn
@@ -49,14 +64,15 @@ const WORKING_HINT = 'esc to interrupt';
 const SPINNER_ROW = /^[^\s●❯!] \S[^…]*…/u;
 
 /**
- * Reads Claude Code's screen while the cockpit waits for a signal no hook
- * gives: the input box ready for a prompt, a start-up dialog by its name, a
- * panel that waits for a key with no name, or nothing it can tell.
+ * Reads Claude Code's screen for where to type and what waits for a person:
+ * the input box free to type into, a start-up dialog by its name, a panel
+ * by its name, a dialog or panel with no name, a screen it does not know, or
+ * nothing it can tell.
  *
  * The input box is read first: it is drawn only once every dialog is
  * answered, and the conversation above it may quote any dialog's words.
- * The box is ready unless the agent works: the spinner's row above it,
- * or the footer's hint below it, shows that.
+ * The box is free unless the agent works: the spinner's row above it, or
+ * the footer's hint below it, shows that.
  *
  * @param text - The screen, row by row.
  * @returns What it shows.
@@ -64,18 +80,40 @@ const SPINNER_ROW = /^[^\s●❯!] \S[^…]*…/u;
 export function readScreen(text: string): ScreenReading {
   const rows = text.split('\n');
   const box = readBoxRows(rows);
-  if (box !== undefined) return isWorking(rows, box) ? { shows: 'nothing' } : { shows: 'ready' };
+  if (box !== undefined) return isWorking(rows, box) ? NOTHING : { shows: 'input-box' };
   const words = text.replace(/\s+/g, ' ');
-  const known = DIALOGS.find((dialog) => dialog.words.every((word) => words.includes(word)));
-  if (known) return { shows: 'dialog', dialog: known.dialog };
-  if (PANEL_HINTS.some((hint) => words.includes(hint))) return { shows: 'dialog' };
-  return { shows: 'nothing' };
+  const showsAll = (all: readonly string[]) => all.every((word) => words.includes(word));
+  const dialog = DIALOGS.find((known) => showsAll(known.words));
+  if (dialog) return { shows: 'dialog', dialog: dialog.dialog };
+  const panel = PANELS.find((known) => showsAll(known.words));
+  if (panel) return { shows: 'panel', panel: panel.panel };
+  if (UNNAMED_HINTS.some((hint) => words.includes(hint))) return { shows: 'dialog' };
+  return words.trim() === '' ? NOTHING : { shows: 'unknown' };
 }
+
+const NOTHING: ScreenReading = { shows: 'nothing' };
+
+/**
+ * The places Claude Code's screen tells its state where nothing else does,
+ * each read from the spinner's row alone (never the footer's hint, which a
+ * draft in the box changes).
+ */
+export const SCREEN_STATE_SIGNS: ScreenStateSigns = {
+  launchPanelClosed(text) {
+    const rows = text.split('\n');
+    const box = readBoxRows(rows);
+    return box !== undefined && !showsSpinner(rows, box);
+  },
+};
 
 /** Tells whether the agent works on a turn or a compaction: either sign of it shows. */
 function isWorking(rows: readonly string[], box: InputBoxView): boolean {
   const footer = rows.slice(box.lastRow + 2).join('\n');
-  return footer.includes(WORKING_HINT) || SPINNER_ROW.test(lastRowAbove(rows, box));
+  return footer.includes(WORKING_HINT) || showsSpinner(rows, box);
+}
+
+function showsSpinner(rows: readonly string[], box: InputBoxView): boolean {
+  return SPINNER_ROW.test(lastRowAbove(rows, box));
 }
 
 /** The last row of the conversation above the input box: the first unindented one above its rule. */

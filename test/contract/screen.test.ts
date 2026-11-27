@@ -15,9 +15,9 @@ import { startContractAgent } from './harness.ts';
 
 /**
  * What tells a busy agent from an idle one on its screen, with a person's
- * draft in the input box or none: the driver reads it where no hook tells
- * (a compaction's end, a local command's), and must never take a busy
- * agent for one ready.
+ * draft in the input box or none: the driver reads it where nothing else
+ * tells (a panel's close after a launch prompt opened it), and where to
+ * type, and must never take a busy agent for one ready.
  */
 
 /** The draft a person leaves in the box. */
@@ -37,7 +37,7 @@ const MODE_HINTS: Readonly<Record<string, string>> = {
  */
 const withoutAgentsHint = (footer: string) => footer.replace(/ · ← for agents$/u, '');
 
-const READY: ScreenReading = { shows: 'ready' };
+const INPUT_BOX: ScreenReading = { shows: 'input-box' };
 const NOTHING: ScreenReading = { shows: 'nothing' };
 
 /** What a screen shows of the agent's state: the spinner's row, the box's text, the footer, the driver's reading. */
@@ -104,7 +104,7 @@ async function settled(
 
 /**
  * Waits for the screen of an idle agent: no spinner's row, the box holding
- * what is awaited, the footer given, read as ready. The spinner stays a
+ * what is awaited, the footer given, read as the input box free. The spinner stays a
  * moment past the hook that ends a turn or a compaction, while its own
  * hooks run (`Running PostCompact hooks…`).
  */
@@ -119,7 +119,7 @@ async function idleScreen(
       spinner: undefined,
       box,
       footer,
-      reading: READY,
+      reading: INPUT_BOX,
     }),
   );
 }
@@ -145,7 +145,7 @@ function waits(cockpit: ContractCockpit) {
 }
 
 for (const mode of ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const) {
-  it(`120 — In ${mode}, a busy agent (a turn, a compaction) draws its spinner's row above the input box, a draft in the box or none; the footer's "esc to interrupt" shows only over an empty box, and over a draft the footer is the mode's hint alone, busy or idle: the driver reads a busy screen as nothing and an idle one as ready, and the cockpit keeps a compaction busy while a draft is in the box`, async () => {
+  it(`120 — In ${mode}, a busy agent (a turn, a compaction) draws its spinner's row above the input box, a draft in the box or none; the footer's "esc to interrupt" shows only over an empty box, and over a draft the footer is the mode's hint alone, busy or idle: the driver reads a busy screen as nothing and an idle one as its input box free to type into, and the cockpit keeps a compaction busy while a draft is in the box`, async () => {
     const cockpit = await startContractCockpit({
       driver: { permissionMode: mode as PermissionMode },
       personsSettings: BYPASS_ACCEPTED,

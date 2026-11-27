@@ -283,11 +283,16 @@ export const STUB_EVENTS: Readonly<Record<string, readonly DriverEvent[]>> = {
 export const CONVERSATION_PATH = '/conversation/';
 
 /**
- * The screens a stub driver reads: `ready`, `dialog` (one it does not
- * know), `dialog:<name>`; any other text shows nothing.
+ * The screens a stub driver reads: `input-box` (free to type into, and a
+ * launch panel's close), `panel` (one it names `panel`), `unknown`, `dialog`
+ * (one it does not know), `dialog:<name>`; any other text shows nothing.
  */
-export function stubScreen(reading: 'ready' | 'dialog' | StartupDialog): string {
-  return reading === 'ready' || reading === 'dialog' ? reading : `dialog:${reading}`;
+export function stubScreen(
+  reading: 'input-box' | 'panel' | 'unknown' | 'dialog' | StartupDialog,
+): string {
+  return ['input-box', 'panel', 'unknown', 'dialog'].includes(reading)
+    ? reading
+    : `dialog:${reading}`;
 }
 
 /**
@@ -296,9 +301,9 @@ export function stubScreen(reading: 'ready' | 'dialog' | StartupDialog): string 
  */
 export const PROMPT_PATH = '/prompt:';
 
-/** The input box a stub driver reads: on the `ready` screen, empty. */
+/** The input box a stub driver reads: on the `input-box` screen, empty. */
 function readStubInputBox(text: string): InputBox | undefined {
-  return text === 'ready' ? { text: '' } : undefined;
+  return text === 'input-box' ? { text: '' } : undefined;
 }
 
 /**
@@ -321,7 +326,9 @@ export async function typeAsADriverDoes(
 export const TYPING_PATIENCE_MS = 3000;
 
 function readStubScreen(text: string): ScreenReading {
-  if (text === 'ready') return { shows: 'ready' };
+  if (text === 'input-box') return { shows: 'input-box' };
+  if (text === 'panel') return { shows: 'panel', panel: 'panel' };
+  if (text === 'unknown') return { shows: 'unknown' };
   if (text === 'dialog') return { shows: 'dialog' };
   if (text.startsWith('dialog:')) {
     return { shows: 'dialog', dialog: text.slice('dialog:'.length) as StartupDialog };
@@ -375,6 +382,7 @@ export function createStubDriver(): StubDriver {
     silentStartCause: 'The stub agent sent no hook.',
     ...DRIVER_DEFAULTS,
     readScreen: readStubScreen,
+    screenStateSigns: { launchPanelClosed: (text) => text === 'input-box' },
     readInputBox: readStubInputBox,
     typePrompt: typeAsADriverDoes,
     failNextLaunch(error) {

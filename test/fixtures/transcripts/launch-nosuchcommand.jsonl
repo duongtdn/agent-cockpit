@@ -1,0 +1,4 @@
+{"type":"mode","mode":"normal","sessionId":"da8186a3-7f21-425e-84d8-40bd91cee0c3"}
+{"type":"permission-mode","permissionMode":"default","sessionId":"da8186a3-7f21-425e-84d8-40bd91cee0c3"}
+{"type":"file-history-snapshot","messageId":"7c6a59d0-ea86-4748-aed5-b164881b71a1","snapshot":{"messageId":"7c6a59d0-ea86-4748-aed5-b164881b71a1","trackedFileBackups":{},"timestamp":"2026-11-27T03:48:26.670Z"},"isSnapshotUpdate":false}
+{"parentUuid":null,"isSidechain":false,"type":"system","subtype":"informational","content":"Unknown command: /nosuchcommand","isMeta":false,"timestamp":"2026-11-27T03:48:26.748Z","uuid":"1e2da752-7fbb-42ad-96a3-568b4e8f51fa","level":"warning","userType":"external","entrypoint":"cli","cwd":"/tmp/cockpit-real-agent-fjdVFu/work","sessionId":"da8186a3-7f21-425e-84d8-40bd91cee0c3","version":"2.1.332","gitBranch":"HEAD"}

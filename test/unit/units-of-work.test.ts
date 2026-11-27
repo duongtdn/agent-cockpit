@@ -190,7 +190,7 @@ async function started(jobId = 'explain', file = 'a'): Promise<void> {
 /** Ends the key's turn: `idle`, its input box on screen. */
 function idle(key = KEY): void {
   hook('/turn-ended', key);
-  host.show(key, stubScreen('ready'));
+  host.show(key, stubScreen('input-box'));
 }
 
 /** Makes the key's agent exit by itself, and the core see it. */
@@ -321,7 +321,7 @@ describe('a run on a key with no record', () => {
     driver.promptFitsLaunch = () => false;
     const ran = pending(units.run('explain', { file: 'a' }));
     await settle();
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     hook('/ready');
     await settle();
     hook(`${PROMPT_PATH}Explain a.`);
@@ -335,7 +335,7 @@ describe('a run on a key with no record', () => {
     driver.promptFitsLaunch = () => false;
     const ran = pending(units.run('explain', { file: 'a' }));
     await settle();
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     hook('/ready');
     await vi.advanceTimersByTimeAsync(10_000);
 
@@ -359,7 +359,7 @@ describe('a run on a key with no record', () => {
     expect(sessionOf()?.state).toBe('waiting');
     expect(result).toBeUndefined();
 
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     hook('/ready');
     await settle();
     hook(`${PROMPT_PATH}Explain a.`);
@@ -386,7 +386,7 @@ describe('a run on a key with no record', () => {
       conversationId: driver.launches[0]?.conversationId,
       history: [],
     });
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     hook('/ready');
     await settle();
     hook(`${PROMPT_PATH}A long prompt.`);
@@ -418,7 +418,7 @@ describe('a run on a key with no record', () => {
     });
     expect(driver.launches).toHaveLength(1);
 
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     hook('/ready');
     await settle();
     hook(`${PROMPT_PATH}A long prompt.`);
@@ -430,7 +430,7 @@ describe('a run on a key with no record', () => {
     const parked = driver.launches[0]?.conversationId;
     vi.setSystemTime(T0.getTime() + 60_000);
     driver.promptFitsLaunch = () => true;
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
 
     const fresh = pending(units.run('explain', { file: 'a' }, { fresh: true }));
     await settle();
@@ -464,7 +464,7 @@ describe('a run on a key with no record', () => {
   it('fails a parked run whose prompt was not taken once the dialog was answered: its session recorded, not the run', async () => {
     const { ran } = await parkedBehindADialog();
 
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
     hook('/ready');
     await vi.advanceTimersByTimeAsync(10_000);
 
@@ -679,7 +679,7 @@ describe('a run on a live session', () => {
   it('lists the background tasks the restart stopped', async () => {
     await started();
     hook('/turn-ended-with-a-task');
-    host.show(KEY, stubScreen('ready'));
+    host.show(KEY, stubScreen('input-box'));
 
     const ran = pending(units.run('review', { file: 'a' }));
     await listHost();

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { eventsIn, isInterruption } from '../../src/claude-code/transcript-watch.ts';
 
@@ -96,5 +98,74 @@ describe('the events in what a transcript was written with', () => {
 
   it('skips a line that is no JSON, and blank lines', () => {
     expect(eventsIn(Buffer.from(`not json\n\n${marker}\n`)).events).toEqual([interrupted]);
+  });
+});
+
+/**
+ * Transcripts of Claude Code 2.1.332 against the scripted API, the agent's
+ * bookkeeping of its requests left out: local commands given as the launch
+ * prompt (`launch-`: `/clear`'s is its new conversation), and a `/compact`
+ * typed after a turn that completes, fails on an API error, or is
+ * interrupted by an Esc (`compact-`).
+ */
+const TRANSCRIPTS = fileURLToPath(new URL('../fixtures/transcripts/', import.meta.url));
+
+function transcript(name: string): Buffer {
+  return readFileSync(`${TRANSCRIPTS}${name}.jsonl`);
+}
+
+describe('the end of a command of the agent’s own, in a transcript', () => {
+  const done = { type: 'command-done' };
+
+  it.each([
+    // The command's output; `/context` writes no caveat.
+    ['launch-context', [done]],
+    // The caveat, then the output.
+    ['launch-clear', [done, done]],
+    ['launch-compact', [done, done]],
+    // The unknown command's own entry.
+    ['launch-nosuchcommand', [done]],
+    ['compact-completes', [done, done]],
+    ['compact-fails', [done, done]],
+    // The caveat alone: no command name, no output.
+    ['compact-interrupted', [done]],
+  ])('is read in %s', (name, events) => {
+    expect(eventsIn(transcript(name)).events).toEqual(events);
+  });
+
+  it.each([
+    [
+      'a prompt the person typed that reads as a command’s output',
+      {
+        type: 'user',
+        promptSource: 'typed',
+        message: { role: 'user', content: '<local-command-stdout>ok</local-command-stdout>' },
+      },
+    ],
+    [
+      'the command’s name alone',
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<command-name>/context</command-name>',
+      },
+    ],
+    [
+      'an informational entry of another kind',
+      { type: 'system', subtype: 'informational', content: 'Resuming the conversation.' },
+    ],
+    [
+      'an entry of the agent’s that quotes the tag inside',
+      { type: 'system', subtype: 'local_command', content: 'see <local-command-stdout>' },
+    ],
+    [
+      'an answer of the agent’s',
+      {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: '<local-command-caveat>' }] },
+      },
+    ],
+  ])('is not read in %s', (_, entry) => {
+    expect(eventsIn(Buffer.from(`${JSON.stringify(entry)}\n`)).events).toEqual([]);
   });
 });

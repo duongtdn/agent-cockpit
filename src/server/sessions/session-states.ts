@@ -66,6 +66,11 @@ export function courseAfter(
         : course;
     case 'compaction-ended':
       return compactingFrom === undefined ? course : withSession(course, compactingFrom);
+    case 'command-done':
+      if (compactingFrom !== undefined) return withSession(course, compactingFrom);
+      return launchedWithPrompt && awaitsLaunchCommand(session)
+        ? withSession(course, { key: session.key, state: 'idle', since: now })
+        : course;
     case 'tasks':
       return withIdle(course, (idle) => withTasks(idle, event.running));
     case 'task-finished':
@@ -74,6 +79,19 @@ export function courseAfter(
     case 'ending':
       return course;
   }
+}
+
+/**
+ * Whether the session still waits for its launch prompt to be done: not
+ * taken yet (`starting`), or a panel it opened waits in the terminal, with
+ * no dialog's name (a session waits so only at its start).
+ */
+function awaitsLaunchCommand(session: Session): boolean {
+  if (session.state === 'starting') return true;
+  return (
+    session.state === 'waiting' &&
+    session.pending.every((pending) => pending.kind === 'terminal' && pending.dialog === undefined)
+  );
 }
 
 /** The course with this session, and no compaction to return from. */

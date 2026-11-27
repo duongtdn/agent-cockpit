@@ -1,6 +1,6 @@
 import type { ScreenReading } from '../driver.js';
 import { ScreenWatch } from './screen-watch.js';
-import type { DialogShown } from './start-up-watch.js';
+import { type DialogShown, dialogShown } from './start-up-watch.js';
 
 /**
  * How long after its first hook an agent has to draw its input box before
@@ -65,14 +65,16 @@ export class InputBoxWait {
 
   #take(reading: ScreenReading): void {
     switch (reading.shows) {
-      case 'ready':
+      case 'input-box':
         this.#end(true);
         return;
       case 'dialog':
+      case 'panel':
         clearTimeout(this.#bound);
         this.#bound = undefined;
-        this.#options.onDialog(reading.dialog === undefined ? {} : { dialog: reading.dialog });
+        this.#options.onDialog(dialogShown(reading));
         return;
+      case 'unknown':
       case 'nothing':
         // A redraw between two screens keeps the bound it had.
         if (this.#bound === undefined) this.#arm();

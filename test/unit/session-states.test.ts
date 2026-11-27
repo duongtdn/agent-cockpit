@@ -257,6 +257,48 @@ describe('a compaction', () => {
   });
 });
 
+describe('the end of a command of the agent’s own that the transcript recorded', () => {
+  const done: DriverEvent = { type: 'command-done' };
+  const panel: Session = {
+    key: KEY,
+    state: 'waiting',
+    since: BEFORE,
+    pending: [{ kind: 'terminal' }],
+  };
+
+  it('ends a launch prompt that was such a command: `idle`', () => {
+    expect(sessionAfterOne(starting, done)).toEqual({ key: KEY, state: 'idle', since: NOW });
+  });
+
+  it('ends a launch prompt whose panel waits in the terminal: a choice on it ends the command', () => {
+    expect(sessionAfterOne(panel, done)).toEqual({ key: KEY, state: 'idle', since: NOW });
+  });
+
+  it('changes nothing of a session launched with no prompt, still starting', () => {
+    expect(sessionAfterOne(starting, done, false)).toBe(starting);
+  });
+
+  it.each([
+    ['busy', busy],
+    ['idle', idle],
+    ['waiting for a start-up dialog', waiting],
+  ])('changes nothing of a session %s', (_, session) => {
+    expect(sessionAfterOne(session, done)).toBe(session);
+  });
+
+  it('ends a compaction begun while idle, whatever ended it: back to that idle session', () => {
+    const course = afterEvents({ session: idleWithTasks }, [{ type: 'compaction-began' }, done]);
+
+    expect(course).toEqual({ session: idleWithTasks });
+  });
+
+  it('changes nothing of a compaction inside a turn', () => {
+    expect(afterEvents({ session: busy }, [{ type: 'compaction-began' }, done])).toEqual({
+      session: busy,
+    });
+  });
+});
+
 describe('an interruption the transcript recorded', () => {
   const EARLIER = '2026-11-26T10:04:59.000Z';
   const LATER = '2026-11-26T10:05:01.000Z';

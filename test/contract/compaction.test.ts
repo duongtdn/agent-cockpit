@@ -1,7 +1,14 @@
 import { expect, it } from 'vitest';
+import type { TranscriptEntry } from '../support/agent-session.ts';
 import { eventually } from '../support/eventually.ts';
-import { heldTurn, turn } from '../support/fake-api/index.ts';
-import { SAID_KEY, sessionAfter, startContractCockpit } from './cockpit-harness.ts';
+import { apiError, heldTurn, turn } from '../support/fake-api/index.ts';
+import {
+  type ContractCockpit,
+  type HookPayload,
+  SAID_KEY,
+  sessionAfter,
+  startContractCockpit,
+} from './cockpit-harness.ts';
 
 /** The footer's hint while the agent works, which the driver reads the screen by. */
 const BUSY_HINT = 'esc to interrupt';
@@ -44,7 +51,7 @@ it('16 — /compact fires PreCompact and PostCompact, and no turn hooks', async 
   expect(after).toMatchObject({ state: 'idle', since: before.since });
 });
 
-it('94 — Esc while /compact runs ends it with no PostCompact, and the input box comes back without the busy hint; the driver reads it: the session returns to the idle session it left', async () => {
+it('94 — Esc while /compact runs ends it with no PostCompact, and the input box comes back without the busy hint; the session returns to the idle session it left', async () => {
   const cockpit = await startContractCockpit();
   // A turn to compact, then the compaction's first request, held until the Esc.
   cockpit.api.script(turn('Something to compact.'), heldTurn());
@@ -71,6 +78,87 @@ it('94 — Esc while /compact runs ends it with no PostCompact, and the input bo
   expect(hooks).not.toContain('PostCompact');
   expect(statesBeforeTheEsc).toEqual(['busy']);
   expect(inputBoxFooter(await session.screen())).not.toContain(BUSY_HINT);
+  // The compaction kept the idle session it found, with its idle time.
+  expect(after).toEqual(before);
+});
+
+/** The text of a transcript's entry: a `system` entry's own, a `user` message's when it is one text. */
+function entryText(entry: TranscriptEntry): string | undefined {
+  if (typeof entry.content === 'string') return entry.content;
+  const message = entry.message as { content?: unknown } | undefined;
+  return typeof message?.content === 'string' ? message.content : undefined;
+}
+
+/** The texts of the local commands' entries a session's transcript holds, from a count of entries on. */
+function commandEntries(cockpit: ContractCockpit, from: number): string[] {
+  return cockpit
+    .terminal(SAID_KEY)
+    .transcript()
+    .slice(from)
+    .flatMap(
+      (entry) => /^<(?:local-command-[a-z]+|command-name)>/.exec(entryText(entry) ?? '') ?? [],
+    )
+    .map(String);
+}
+
+/** The hooks read since a moment of the timeline. */
+function hooksSince(cockpit: ContractCockpit, from: number): HookPayload[] {
+  return cockpit.timeline.slice(from).flatMap((moment) => ('hook' in moment ? [moment.hook] : []));
+}
+
+it("123 — A /compact that fails on an API error fires PreCompact, then StopFailure carrying an agent_id that no SubagentStart named, and no PostCompact; the transcript records the command with <local-command-stderr>; the driver reads the StopFailure as the compaction's end: the session returns to the idle session it left", async () => {
+  // The compaction's request is not tried again.
+  const cockpit = await startContractCockpit({
+    shim: { variables: { CLAUDE_CODE_MAX_RETRIES: '0' } },
+  });
+  cockpit.api.script(turn('Something to compact.'), apiError(500));
+
+  await cockpit.say('say one line');
+  const before = await cockpit.sessionIn(SAID_KEY, 'idle');
+  const entriesBefore = cockpit.terminal(SAID_KEY).transcript().length;
+  const from = cockpit.timeline.length;
+  await cockpit.submitInTerminal(SAID_KEY, '/compact', 'PreCompact');
+  const after = await sessionAfter(cockpit, 'idle', from);
+  const hooks = hooksSince(cockpit, from);
+  const entries = await eventually(() => {
+    const written = commandEntries(cockpit, entriesBefore);
+    expect(written).toContain('<local-command-stderr>');
+    return written;
+  });
+
+  expect(hooks.map((hook) => hook.hook_event_name)).toEqual(['PreCompact', 'StopFailure']);
+  expect(hooks[1]).toMatchObject({ error: 'server_error', agent_id: expect.any(String) });
+  expect(hooks[1]).not.toHaveProperty('agent_type');
+  expect(entries).toEqual(['<local-command-caveat>', '<command-name>', '<local-command-stderr>']);
+  expect(cockpit.states(SAID_KEY).slice(-2)).toEqual(['busy', 'idle']);
+  // The compaction kept the idle session it found, with its idle time.
+  expect(after).toEqual(before);
+});
+
+it("124 — Esc while /compact runs fires no PostCompact and no StopFailure; the transcript records the <local-command-caveat> entry alone after PreCompact, with no command name and no output; the driver reads it as the compaction's end: the session returns to the idle session it left", async () => {
+  const cockpit = await startContractCockpit();
+  // A turn to compact, then the compaction's first request, held until the Esc.
+  cockpit.api.script(turn('Something to compact.'), heldTurn());
+
+  await cockpit.say('say one line');
+  const before = await cockpit.sessionIn(SAID_KEY, 'idle');
+  const entriesBefore = cockpit.terminal(SAID_KEY).transcript().length;
+  const from = cockpit.timeline.length;
+  await cockpit.submitInTerminal(SAID_KEY, '/compact', 'PreCompact');
+  const held = await cockpit.api.heldRequest();
+  const session = cockpit.terminal(SAID_KEY);
+  await eventually(async () => expect(await session.screen()).toContain(BUSY_HINT));
+  await session.press('Escape');
+  const after = await sessionAfter(cockpit, 'idle', from);
+  const entries = await eventually(() => {
+    const written = commandEntries(cockpit, entriesBefore);
+    expect(written).toContain('<local-command-caveat>');
+    return written;
+  });
+
+  expect(await held.ended).toBe('client-gone');
+  expect(hooksSince(cockpit, from).map((hook) => hook.hook_event_name)).toEqual(['PreCompact']);
+  expect(entries).toEqual(['<local-command-caveat>']);
   // The compaction kept the idle session it found, with its idle time.
   expect(after).toEqual(before);
 });

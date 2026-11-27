@@ -302,6 +302,46 @@ describe('the states a session goes through', () => {
     );
     expect(seen.at(-1)).toEqual(idle);
   });
+
+  it('returns to the same `idle` when a compaction typed at `idle` fails on an error of the API: its StopFailure carries no task of the session', async () => {
+    // The API a server error names: no request is made to it.
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'http://127.0.0.1:4010');
+    const { cockpit, directory, host } = await newCockpit();
+    writeScript(directory, [
+      [{ do: 'reply', text: 'Something to compact.' }],
+      [{ do: 'compact-fails', status: 500 }],
+    ]);
+    await cockpit.run('explain', { file: 'a' });
+    const idle = await inState(cockpit, 'explain-a', 'idle');
+    const seen = statesOf(cockpit, 'explain-a');
+
+    await type(host, 'explain-a', '/compact');
+
+    await eventually(() =>
+      expect(seen.map(({ state }) => state)).toEqual(['idle', 'busy', 'idle']),
+    );
+    expect(seen.at(-1)).toEqual(idle);
+  });
+
+  it('returns to the same `idle` when a person interrupts a compaction typed at `idle`: its transcript tells, no hook', async () => {
+    const { cockpit, directory, host } = await newCockpit();
+    writeScript(directory, [
+      [{ do: 'reply', text: 'Something to compact.' }],
+      [{ do: 'compact-stays' }],
+    ]);
+    await cockpit.run('explain', { file: 'a' });
+    const idle = await inState(cockpit, 'explain-a', 'idle');
+    const seen = statesOf(cockpit, 'explain-a');
+    await type(host, 'explain-a', '/compact');
+    await inState(cockpit, 'explain-a', 'busy');
+
+    await host.sendKeys('explain-a', ['Escape']);
+
+    await eventually(() =>
+      expect(seen.map(({ state }) => state)).toEqual(['idle', 'busy', 'idle']),
+    );
+    expect(seen.at(-1)).toEqual(idle);
+  });
 });
 
 describe("the agent's version", () => {

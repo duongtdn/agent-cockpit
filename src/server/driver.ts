@@ -256,8 +256,21 @@ export type DriverEvent =
       readonly type: 'compaction-began';
     }
   | {
-      /** The compaction ended: the session returns to the state it began in. */
+      /**
+       * The compaction ended, done, failed or interrupted: the session
+       * returns to the state it began in.
+       */
       readonly type: 'compaction-ended';
+    }
+  | {
+      /**
+       * The agent recorded the end of a command of its own, run with no turn
+       * and no hook (Claude Code's local commands: `/clear`, `/context`,
+       * `/compact`, an unknown one): it took the input and waits for the
+       * next. A launch prompt that was such a command is done (`idle`); a
+       * compaction begun while `idle` is over, whatever ended it.
+       */
+      readonly type: 'command-done';
     }
   | {
       /** The tasks running in the background, the whole list, at the end of a turn. */
@@ -302,9 +315,15 @@ export interface Conversation {
 }
 
 /**
- * What the agent's screen shows while the core waits for its first hook: a
- * start-up dialog (named when the driver knows it), the ready input box, or
- * nothing it can tell yet.
+ * What the agent's screen shows of where to type and of what waits for a
+ * person in the terminal: a start-up dialog (named when the driver knows
+ * it), a panel the agent drew over its input box, the input box free to
+ * type into, a screen the driver does not know, or nothing yet.
+ *
+ * Never whether the agent is idle or busy: the core reads it to know when a
+ * dialog waits, and when a prompt can be typed (the start's deadline, the
+ * first prompt typed after the start). The few places the screen is a sign
+ * of the agent's state are {@link ScreenStateSigns}, apart.
  */
 export type ScreenReading =
   | {
@@ -315,15 +334,53 @@ export type ScreenReading =
     }
   | {
       /**
-       * The agent's input box, ready for a prompt: the agent idle, whatever a
-       * person typed in the box; never while it works on a turn or a compaction.
+       * A panel drawn in place of the input box, which waits for a key in the
+       * terminal: what a local command opens (Claude Code's `/help`, `/model`).
        */
-      readonly shows: 'ready';
+      readonly shows: 'panel';
+      /** The driver's name for it, for its own tests: the core passes it on nowhere. */
+      readonly panel: string;
     }
   | {
-      /** Nothing the driver can tell: the agent still drawing, or a screen it does not know. */
+      /**
+       * The agent's input box with nothing drawn over it, a prompt typed now
+       * taken as one: never while the agent shows it works, whatever a person
+       * typed in the box.
+       */
+      readonly shows: 'input-box';
+    }
+  | {
+      /**
+       * A screen the driver does not know: no input box, and no dialog or
+       * panel it can name; a panel it has no words for, or a screen half
+       * drawn.
+       */
+      readonly shows: 'unknown';
+    }
+  | {
+      /** Nothing it can tell: a blank screen, or the input box while the agent works. */
       readonly shows: 'nothing';
     };
+
+/**
+ * The places the agent's screen is a sign of its state, where no hook,
+ * transcript entry or other signal of the agent's tells it: the whole list.
+ * Each one was shown to have no other signal, reads only what the agent
+ * draws for that fact, and is held by a contract row on the pinned agent at
+ * every change of the pin. A new place is a decision of its own, recorded
+ * with its evidence, before it joins this list.
+ */
+export interface ScreenStateSigns {
+  /**
+   * Tells that a panel a launch prompt opened has closed: the input box back,
+   * with no sign above it that the agent works. The agent then waits for a
+   * prompt (`idle`): a panel's close fires no hook and writes no entry.
+   *
+   * @param text - The screen, row by row, read once a panel was seen.
+   * @returns `true` once the panel is gone and the agent waits.
+   */
+  launchPanelClosed(text: string): boolean;
+}
 
 /** A value JSON writes and reads back the same: what the cockpit keeps in its files. */
 export type JsonValue =
@@ -518,13 +575,15 @@ export interface Driver {
    */
   networkOf(part?: DriverPart): SessionNetwork;
   /**
-   * Reads the agent's screen, as the terminal shows it in text, while the
-   * core waits for the agent's first hook.
+   * Reads the agent's screen, as the terminal shows it in text: where to
+   * type, and what waits for a person in the terminal.
    *
    * @param text - The screen, line by line.
    * @returns What it shows.
    */
   readScreen(text: string): ScreenReading;
+  /** The screen's signs of the agent's state, where nothing else tells it: see {@link ScreenStateSigns}. */
+  readonly screenStateSigns: ScreenStateSigns;
   /**
    * Reads the agent's input box from its screen, while a prompt is typed:
    * the core checks it before every write.

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { HTTP_HOOK_EVENTS, readHook } from '../../src/claude-code/hook-payloads.ts';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { createHookReader, HTTP_HOOK_EVENTS } from '../../src/claude-code/hook-payloads.ts';
 import { HOOKS_PATH } from '../../src/server/driver.ts';
 import {
   afterPrompt,
@@ -23,6 +23,12 @@ const session = {
   permissionMode: 'default',
 };
 const touch = { id: 'toolu_01', name: 'Bash', input: { command: 'touch a.txt' } };
+
+/** A reader of one driver's hooks, anew for each test: it keeps what each session's hooks told of its tasks. */
+let readHook: ReturnType<typeof createHookReader>;
+beforeEach(() => {
+  readHook = createHookReader();
+});
 
 function eventsOf(hookEvent: HookEvent, path = HOOKS_PATH) {
   return readHook({ key: 'chapter-1', path, body: payloadOf(session, hookEvent) }).events;
@@ -250,9 +256,48 @@ describe("what Claude Code's hooks tell the core", () => {
   });
 
   it("a background task's own Stop, StopFailure or compaction tells nothing of the session", () => {
+    eventsOf(subagentStart);
     for (const hookEvent of [stop('Done.'), stopFailure('server_error', 'x'), preCompact]) {
       expect(eventsOfPayload({ ...payloadOf(session, hookEvent), ...reviewer })).toEqual([]);
     }
+  });
+
+  // Seen of Claude Code: a /compact that fails fires StopFailure with the agent_id of the
+  // compaction's own agent, of no type, which no SubagentStart named.
+  const compactionFailure = {
+    ...payloadOf(session, stopFailure('server_error', 'API Error: 500 Internal server error')),
+    agent_id: 'a54db65769c6bf5c5',
+  };
+
+  it('StopFailure carrying an agent_id that no SubagentStart named: the compaction failed, and ended', () => {
+    expect(eventsOfPayload(compactionFailure)).toEqual([{ type: 'compaction-ended' }]);
+  });
+
+  it("StopFailure of a background task the driver knows, by its SubagentStart, tells nothing, before and after the task's end", () => {
+    eventsOf(subagentStart);
+    const taskFailure = { ...compactionFailure, agent_id: reviewer.agent_id };
+
+    expect(eventsOfPayload(taskFailure)).toEqual([]);
+    eventsOf(subagentStop);
+    expect(eventsOfPayload(taskFailure)).toEqual([]);
+  });
+
+  it("knows a session's tasks by its own hooks: another session's task is none of its", () => {
+    readHook({ key: 'chapter-2', path: HOOKS_PATH, body: payloadOf(session, subagentStart) });
+
+    expect(eventsOfPayload({ ...compactionFailure, agent_id: reviewer.agent_id })).toEqual([
+      { type: 'compaction-ended' },
+    ]);
+  });
+
+  it('forgets the tasks of a process that ended once its session starts again', () => {
+    eventsOf(subagentStart);
+    eventsOf(sessionEnd('other'));
+    eventsOf(sessionStart({ source: 'startup', model: 'm' }));
+
+    expect(eventsOfPayload({ ...compactionFailure, agent_id: reviewer.agent_id })).toEqual([
+      { type: 'compaction-ended' },
+    ]);
   });
 
   it('SessionEnd after /exit: the agent exits by itself', () => {

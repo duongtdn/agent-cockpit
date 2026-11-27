@@ -537,6 +537,47 @@ agreeOn('/compact after a turn', {
   },
 });
 
+agreeOn('/compact that fails on an error of the API, not tried again', {
+  script: [[reply('Something to compact.')], [{ do: 'compact-fails', status: 500 }]],
+  async play(agent) {
+    const session = await agent.startNew({ prompt: 'say one line' });
+    await turnEnded(agent);
+    await compactCommand(agent, session);
+    await agent.hook('StopFailure');
+    await terminated(agent, session);
+  },
+});
+
+agreeOn(
+  '/compact interrupted by Esc: no hook, the command back in the box, cleared, then a prompt',
+  {
+    script: [
+      [reply('Something to compact.')],
+      [{ do: 'compact-stays' }],
+      [reply('After the compaction.')],
+    ],
+    async play(agent) {
+      const session = await agent.startNew({ prompt: 'say one line' });
+      await agent.hook('UserPromptSubmit');
+      await turnEnded(agent);
+      await compactCommand(agent, session);
+      await session.press('Escape');
+      await agent.eventually(async () =>
+        expect(await session.screen()).toContain(
+          '❯\u00a0/compact  <optional custom summarization instructions>',
+        ),
+      );
+      await session.press('C-u');
+      await agent.eventually(async () =>
+        expect(drawnBox(await session.screenWithCursor())?.rows[1]).toBe('❯'),
+      );
+      await submitPrompt(agent, session, 'say more');
+      await turnEnded(agent);
+      await terminated(agent, session);
+    },
+  },
+);
+
 agreeOn('a task in the background: Stop lists it, its calls name it, its end starts a turn', {
   script: [
     [
@@ -804,7 +845,7 @@ async function observeReadingOverDraft(
 }
 
 /**
- * Waits until the driver reads the screen as ready, the draft still in the
+ * Waits until the driver reads the screen as the input box free, the draft still in the
  * box: the agent's spinner stays a moment past the hook that ends its work.
  */
 async function observeReadyOverDraft(
@@ -813,14 +854,14 @@ async function observeReadyOverDraft(
   what: string,
 ): Promise<void> {
   const box = await agent.eventually(async () => {
-    expect(readScreen(await session.screen())).toEqual({ shows: 'ready' });
+    expect(readScreen(await session.screen())).toEqual({ shows: 'input-box' });
     return boxShowing(agent, session, (rows) => rows.includes('❯\u00a0a draft'));
   });
   agent.observe(what, box);
 }
 
 agreeOn(
-  'a draft typed while a turn and a compaction run: the driver reads each screen as busy, then ready once each ended',
+  'a draft typed while a turn and a compaction run: the driver reads each screen as busy, then its box free once each ended',
   {
     script: [[touch('a.txt'), reply('Touched.')], [{ do: 'compact', summary: 'The summary.' }]],
     async play(agent) {

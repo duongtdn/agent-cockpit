@@ -10,16 +10,16 @@ import type { ScreenReading } from '../driver.js';
  */
 export const SCREEN_INTERVAL_MS = 250;
 
-/** What a screen watch works with. */
-export interface ScreenWatchOptions {
+/** What a screen watch works with: what it reads of the screen, a driver's reading or its text. */
+export interface ScreenWatchOptions<Read = ScreenReading> {
   /**
    * Reads what the screen shows now; `undefined` when it cannot be read
    * (the session is gone, the host failed, or a person scrolled it back),
    * which the watch skips.
    */
-  readonly read: () => Promise<ScreenReading | undefined>;
+  readonly read: () => Promise<Read | undefined>;
   /** Called with each reading, in order. */
-  readonly onReading: (reading: ScreenReading) => void;
+  readonly onReading: (reading: Read) => void;
 }
 
 /**
@@ -27,13 +27,13 @@ export interface ScreenWatchOptions {
  * time, until stopped: a read that answers late delays the next, never
  * overlaps it.
  */
-export class ScreenWatch {
-  readonly #options: ScreenWatchOptions;
+export class ScreenWatch<Read = ScreenReading> {
+  readonly #options: ScreenWatchOptions<Read>;
   #timer: NodeJS.Timeout | undefined;
   #stopped = false;
 
   /** @param options - See {@link ScreenWatchOptions}. */
-  constructor(options: ScreenWatchOptions) {
+  constructor(options: ScreenWatchOptions<Read>) {
     this.#options = options;
   }
 

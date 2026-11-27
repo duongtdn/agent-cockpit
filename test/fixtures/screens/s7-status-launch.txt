@@ -1,0 +1,28 @@
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-ogX3fU/work
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+  Settings  Status   Config   Usage   Stats
+
+  Version:                    2.1.332
+  Session name:               /rename to add a name
+  Session ID:                 f9b7af00-6750-4484-be6b-5f644427aa70
+  Session kind:               interactive
+  Peer address:               uds:/tmp/cockpit-real-agent-ogX3fU/tmp/cc-socks/3186.sock
+  cwd:                        /tmp/cockpit-real-agent-ogX3fU/work
+  Auth token:                 none
+  API key:                    ANTHROPIC_API_KEY
+  Anthropic base URL:         http://127.0.0.1:46649
+
+  Model:                      haiku (claude-haiku-5-5) · claude-sonnet-5-5 in plan mode
+  Setting sources:            Command line arguments
+  Managed settings (remote):  not fetched — not available with a custom ANTHROPIC_BASE_URL
+  Organization policy:        not fetched with a custom ANTHROPIC_BASE_URL
+  Auto mode server:           Disabled
+  Features:                   some aren't available while CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set, such as
+                              /advisor, /artifact-diagramming, /design, /design-login, /design-sync, /import,
+                              /skill-doctor: https://code.claude.com/docs/en/env-vars
+
+  System diagnostics
+  ⚠ No write permissions for auto-updates
+
+  ←/→ to switch · Esc to close
