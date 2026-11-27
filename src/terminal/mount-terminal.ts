@@ -33,7 +33,10 @@ export interface MountedTerminal {
    * Follows the connection's status: `connecting`, `open`, `held` (open,
    * while the cockpit types a prompt into the session: what the person
    * types is kept by the server and reaches the session after the send, in
-   * order; then `open` again), `closed` (the
+   * order; then `open` again; while a long first prompt waits for the
+   * input box, a start-up dialog in its place drops the keys kept, never
+   * typed, and the status is `open` again for the person to answer it —
+   * this terminal does not tell the drop apart), `closed` (the
    * connection dropped or was refused; the terminal reconnects by itself,
    * unless the terminal's switch refused it: then it stays `closed`) or
    * `ended` (the session is gone: nothing to attach to). The handler

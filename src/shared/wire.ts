@@ -335,7 +335,10 @@ export interface TerminalHeldMessage {
 /**
  * Sent on a terminal's WebSocket, as text, once the prompt's send is over
  * and every key kept meanwhile has reached the session, in order: the
- * person's keys pass again.
+ * person's keys pass again. Also when a start-up dialog takes the place of
+ * the input box a long first prompt waits for: the keys kept are then
+ * dropped, never typed (`discarded`), and the person's keys pass to answer
+ * the dialog.
  */
 export interface TerminalReleasedMessage {
   /** Its kind. */
