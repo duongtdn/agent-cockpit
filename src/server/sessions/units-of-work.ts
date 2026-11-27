@@ -225,6 +225,11 @@ type Operation = Pick<HistoryEntry, 'operation' | 'jobId' | 'args' | 'at'>;
 interface Admitted {
   readonly take: Take;
   readonly conversationId: string;
+  /**
+   * The conversation the key's session worked in before this launch, as it
+   * ended: one its agent moved to (a `/clear`) may be known to no record.
+   */
+  readonly before: string | undefined;
   readonly stoppedTasks: readonly BackgroundTask[];
   /** The launch, settling once the session left `starting`. */
   readonly launching: Promise<Session>;
@@ -459,7 +464,7 @@ class Units implements UnitsOfWork {
         ...plan,
         take: { kind: 'new', reason: 'conversation-gone' },
       };
-      admitted = { ...(await this.#admit(anew, folder)), stoppedTasks };
+      admitted = { ...(await this.#admit(anew, folder)), stoppedTasks, before: admitted.before };
       session = await this.#launched(anew, folder, admitted);
     }
     const firstPrompt =
@@ -536,6 +541,7 @@ class Units implements UnitsOfWork {
     return this.#admissions.run(ADMISSION, async () => {
       const stoppedTasks =
         plan.endFirst === undefined ? [] : await this.#sessions.end(plan.key, plan.endFirst);
+      const before = this.#sessions.conversationOf(plan.key);
       const { take, conversationId } = await this.#takeUp(plan, folder);
       await this.#makeRoom(plan.key);
       const launching = this.#sessions.launch({
@@ -547,7 +553,7 @@ class Units implements UnitsOfWork {
         ...(plan.run.part === undefined ? {} : { part: plan.run.part }),
       });
       launching.catch(() => {});
-      return { take, conversationId, stoppedTasks, launching };
+      return { take, conversationId, before, stoppedTasks, launching };
     });
   }
 
@@ -616,17 +622,22 @@ class Units implements UnitsOfWork {
     return endable[0]?.key;
   }
 
-  /** Records a launch: the conversation it works in, the earlier ones, its folder and settings, the history. */
-  async #record(plan: Plan, folder: JobFolder, { take, conversationId }: Admitted): Promise<void> {
+  /**
+   * Records a launch: the conversation it works in, the earlier ones, its
+   * folder and settings, the history. Every conversation the key's
+   * sessions worked in is its current one or an earlier one, in the order
+   * they were left: the recorded one, the one the session it replaced
+   * moved to, the one launched, when the agent left it before the launch
+   * settled.
+   */
+  async #record(plan: Plan, folder: JobFolder, admitted: Admitted): Promise<void> {
+    const { take, conversationId } = admitted;
     const before = this.#records.get(plan.key);
     const current = this.#sessions.conversationOf(plan.key) ?? conversationId;
     const earlier = [...(before?.earlierConversations ?? [])];
-    // A new conversation, or one the agent moved to before a restart resumed it.
-    if (before !== undefined && before.conversationId !== conversationId) {
-      earlier.push(before.conversationId);
+    for (const left of [before?.conversationId, admitted.before, conversationId]) {
+      if (left !== undefined && left !== current && !earlier.includes(left)) earlier.push(left);
     }
-    // The agent moved to another conversation (a `/clear`) before the launch settled.
-    if (current !== conversationId) earlier.push(conversationId);
     const history = [...(before?.history ?? [])];
     if (plan.history !== undefined) history.push(historyEntryOf(plan.history, take, current));
     await this.#write({

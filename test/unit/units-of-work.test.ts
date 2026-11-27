@@ -1349,7 +1349,7 @@ describe('the records of the units of work', () => {
     expect(recordOf()).toMatchObject({ conversationId: 'c-cleared', earlierConversations: [old] });
   });
 
-  it('keeps a fresh start’s conversation when the old agent’s move to another was told before its end', async () => {
+  it('keeps a fresh start’s conversation, and the one the old agent moved to among the earlier ones, when the move was told before its end', async () => {
     await open();
     await started();
     idle();
@@ -1364,7 +1364,11 @@ describe('the records of the units of work', () => {
     await settle();
 
     const fresh = driver.launches[1]?.conversationId;
-    expect(recordOf()).toMatchObject({ conversationId: fresh, earlierConversations: [old] });
+    // Every conversation of the key is its current one or an earlier one: the old agent's last is an earlier one.
+    expect(recordOf()).toMatchObject({
+      conversationId: fresh,
+      earlierConversations: [old, 'c-cleared'],
+    });
   });
 
   it('keeps the conversation it left among the earlier ones when a restart resumes the one the agent moved to', async () => {
