@@ -40,6 +40,8 @@ export function describeAnswer(answer: ScriptedAnswer): string {
       return `cut after ${answer.afterEvents} events of ${describeTurn(answer.turn)}`;
     case 'held':
       return `held ${describeTurn(answer.turn)}`;
+    case 'streaming':
+      return `streaming ${describeTurn(answer.turn)}`;
   }
 }
 

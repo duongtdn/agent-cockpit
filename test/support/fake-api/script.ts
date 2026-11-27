@@ -47,8 +47,20 @@ export type CutStream = {
  */
 export type HeldTurn = { readonly kind: 'held'; readonly turn: Turn; readonly afterEvents: number };
 
+/**
+ * A turn held while its first text streams, as a model still writing: the
+ * text is sent in small pieces, one every gap, until the test releases the
+ * turn, then the rest at once.
+ */
+export type StreamingTurn = {
+  readonly kind: 'streaming';
+  readonly turn: Turn;
+  readonly pieceLength: number;
+  readonly gapMs: number;
+};
+
 /** What a test scripts for one conversation request. */
-export type ScriptedAnswer = Turn | ApiError | CutStream | HeldTurn;
+export type ScriptedAnswer = Turn | ApiError | CutStream | HeldTurn | StreamingTurn;
 
 /** Small enough to never matter, and not zero, so that a display of them shows something. */
 const DEFAULT_USAGE: Usage = {
@@ -165,6 +177,32 @@ export function heldTurn(
   where: { readonly afterEvents: number } = { afterEvents: 1 },
 ): HeldTurn {
   return { kind: 'held', turn: scripted, afterEvents: where.afterEvents };
+}
+
+/**
+ * Scripts a turn held while its first text streams: the stream starts, the
+ * text follows in pieces, one every gap, and the rest of the turn is sent
+ * once the test releases it (as a held turn, {@link heldTurn}). A text that
+ * runs out before the release leaves the stream waiting, as a model that
+ * stalls: give one long enough to outlast what the test reads.
+ *
+ * @param scripted - The turn: its first block a text.
+ * @param pace - `pieceLength`, the characters of one piece (24 by
+ *   default), and `gapMs`, the time between two (20 ms by default).
+ * @returns The scripted streaming turn.
+ * @throws Error when the turn's first block is no text.
+ */
+export function streamingTurn(
+  scripted: Turn,
+  pace: { readonly pieceLength?: number; readonly gapMs?: number } = {},
+): StreamingTurn {
+  if (scripted.blocks[0]?.type !== 'text') throw new Error('A streaming turn starts with a text.');
+  return {
+    kind: 'streaming',
+    turn: scripted,
+    pieceLength: pace.pieceLength ?? 24,
+    gapMs: pace.gapMs ?? 20,
+  };
 }
 
 /**

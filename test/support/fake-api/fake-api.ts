@@ -12,7 +12,14 @@ import {
   requestKind,
   type SideRequestRule,
 } from './requests.ts';
-import { type CutStream, type HeldTurn, type ScriptedAnswer, type Turn, turn } from './script.ts';
+import {
+  type CutStream,
+  type HeldTurn,
+  type ScriptedAnswer,
+  type StreamingTurn,
+  type Turn,
+  turn,
+} from './script.ts';
 import { type StreamEvent, sseFrame } from './sse.ts';
 
 /** The options of {@link startFakeApi}. */
@@ -213,6 +220,9 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
       case 'held':
         hold(exchange, scripted);
         break;
+      case 'streaming':
+        streamUntilReleased(exchange, scripted);
+        break;
     }
   }
 
@@ -274,6 +284,50 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
       released = true;
       if (streamed) response.end(frames(rest));
       else sendJson(response, 200, message);
+    };
+    heldRequests.add({ request, release, ended });
+  }
+
+  function streamUntilReleased(exchange: Exchange, scripted: StreamingTurn): void {
+    const { request, response } = exchange;
+    const message = messageFor(exchange, scripted.turn);
+    if (!asksForStream(exchange)) {
+      hold(exchange, { kind: 'held', turn: scripted.turn, afterEvents: 0 });
+      return;
+    }
+    // The first text's events: the message's start, the block's start, its one delta.
+    const [start, blockStart, textDelta, ...rest] = messageEvents(message) as [
+      StreamEvent,
+      StreamEvent,
+      StreamEvent,
+      ...StreamEvent[],
+    ];
+    const text = (textDelta.delta as { text: string }).text;
+    const piece = (from: number, to: number): StreamEvent => ({
+      ...textDelta,
+      delta: { type: 'text_delta', text: text.slice(from, to) },
+    });
+    startStream(response);
+    response.write(frames([start, blockStart]));
+    let sent = 0;
+    const pieces = setInterval(() => {
+      if (sent >= text.length) return clearInterval(pieces);
+      response.write(frames([piece(sent, sent + scripted.pieceLength)]));
+      sent += scripted.pieceLength;
+    }, scripted.gapMs);
+    let released = false;
+    const ended = new Promise<HoldOutcome>((resolve) => {
+      response.once('close', () => {
+        clearInterval(pieces);
+        resolve(released ? 'released' : 'client-gone');
+      });
+    });
+    const release = () => {
+      if (released || response.destroyed) return;
+      released = true;
+      clearInterval(pieces);
+      const left = sent < text.length ? [piece(sent, text.length)] : [];
+      response.end(frames([...left, ...rest]));
     };
     heldRequests.add({ request, release, ended });
   }

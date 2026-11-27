@@ -6,6 +6,7 @@ import {
   type FakeApiOptions,
   heldTurn,
   startFakeApi,
+  streamingTurn,
   TEXT_WRITTEN,
   toolUse,
   turn,
@@ -329,6 +330,42 @@ describe('a held turn', () => {
     expect(await (await answer).json()).toMatchObject({
       content: [{ type: 'text', text: 'At last' }],
     });
+  });
+
+  it('streams a streaming turn’s text in pieces, one each gap, until released, then the rest at once', async () => {
+    const api = await start();
+    api.script(streamingTurn(turn('abcdefghij'.repeat(100)), { pieceLength: 10, gapMs: 20 }));
+
+    const response = await post(api, conversation('write'));
+    const reader = response.body?.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+    const held = await api.heldRequest();
+    let beforeRelease = '';
+    while (parseFrames(beforeRelease).length < 6) {
+      beforeRelease += new TextDecoder().decode((await reader.read()).value);
+    }
+    held.release();
+    let all = beforeRelease;
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+      all += new TextDecoder().decode(chunk.value);
+    }
+    const frames = parseFrames(all);
+    const deltas = frames
+      .filter((frame) => frame.data.type === 'content_block_delta')
+      .map((frame) => (frame.data.delta as { text: string }).text);
+
+    expect(frames.slice(0, 2).map((frame) => frame.data.type)).toEqual([
+      'message_start',
+      'content_block_start',
+    ]);
+    expect(deltas.slice(0, 4)).toEqual(['abcdefghij', 'abcdefghij', 'abcdefghij', 'abcdefghij']);
+    expect(deltas.length).toBeLessThan(100);
+    expect(deltas.join('')).toBe('abcdefghij'.repeat(100));
+    expect(frames.slice(-3).map((frame) => frame.data.type)).toEqual([
+      'content_block_stop',
+      'message_delta',
+      'message_stop',
+    ]);
+    await expect(held.ended).resolves.toBe('released');
   });
 
   it('lets a test await the second request held', async () => {
