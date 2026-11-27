@@ -2,6 +2,7 @@ import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TypingStoppedError, type TypingTerminal } from '../../src/server/driver.ts';
+import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import {
   createSessions,
   INPUT_BOX_BOUND_MS,
@@ -11,6 +12,7 @@ import {
   type Sessions,
   SessionsClosedError,
 } from '../../src/server/sessions/sessions.ts';
+import { START_DEADLINE_MS } from '../../src/server/sessions/start-up-watch.ts';
 import { createTerminalHolds, type TerminalHolds } from '../../src/server/terminal-hold.ts';
 import type { Session } from '../../src/shared/session.ts';
 import {
@@ -836,6 +838,85 @@ describe('ending a live session gracefully', () => {
   it('does nothing for a key with no live session', async () => {
     await expect(sessions.end('nothing-here', 'restarted')).resolves.toEqual([]);
     expect(signals).toEqual([]);
+  });
+
+  it('leaves the session live when the kill fails: the end fails with the host, the agent is heard again, and a later end kills it', async () => {
+    await idleSession();
+    host.failNextKill(new SessionHostError('host-failed', 'tmux failed.'));
+
+    const failed = sessions.end(KEY, 'restarted');
+    failed.catch(() => {});
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    await expect(failed).rejects.toThrow('tmux failed.');
+    hook('/prompt-taken');
+    expect(sessions.session(KEY)?.state).toBe('busy');
+
+    const ended = sessions.end(KEY, 'restarted');
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    await ended;
+    expect(host.kills).toEqual([KEY]);
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'restarted' });
+  });
+
+  it('resolves only once the session ended, though the liveness watch began its going while the kill ran: a launch of the key then starts', async () => {
+    await idleSession();
+    const kill = host.holdNextKill();
+    const resume = driver.holdNextResume();
+
+    const ended = settledLater(sessions.end(KEY, 'restarted'));
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    kill.open();
+    await settle();
+    expect(ended.outcome).toBeUndefined();
+
+    resume.open();
+    await ended.promise;
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'restarted' });
+    const launched = sessions.launch({ key: KEY, directory: DIRECTORY, conversationId: 'next' });
+    await settle();
+    hook('/ready');
+    await expect(launched).resolves.toMatchObject({ state: 'idle' });
+  });
+
+  it('ends the session once, for the reason given, when its agent was gone just before the bound passed', async () => {
+    await idleSession();
+    const ends: Session[] = [];
+    sessions.follow((list) => {
+      const session = list.find((each) => each.key === KEY);
+      if (session?.state === 'ended' && ends.at(-1) !== session) ends.push(session);
+    });
+    const resume = driver.holdNextResume();
+
+    const ended = sessions.end(KEY, 'restarted');
+    await settle();
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    resume.open();
+    await ended;
+    await settle();
+
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({ reason: 'restarted' });
+  });
+
+  it('keeps the reason given when the end was asked of a session whose agent never reported, before its start-up deadline', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+    });
+    launched.catch(() => {});
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS - driver.ending.boundMs / 2);
+
+    // The deadline passes while the end waits for the agent to exit.
+    const ended = sessions.end(KEY, 'restarted');
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    await ended;
+
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'restarted' });
   });
 });
 

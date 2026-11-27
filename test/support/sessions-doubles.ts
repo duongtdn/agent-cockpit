@@ -114,6 +114,8 @@ export interface FakeHost extends SessionHost {
   failIsLive(failing: boolean): void;
   /** Makes the next attach fail with the error. */
   failNextAttach(error: unknown): void;
+  /** Makes the next count of attached terminals wait until the test opens the gate it returns. */
+  holdNextCount(): Gate;
 }
 
 export function createFakeHost(): FakeHost {
@@ -138,6 +140,7 @@ export function createFakeHost(): FakeHost {
   let nextKill: Gate | undefined;
   let isLiveFails = false;
   let nextAttachError: unknown;
+  let nextCount: Gate | undefined;
   const unused = () => Promise.reject(new Error('The sessions core does not use this.'));
 
   return {
@@ -185,6 +188,10 @@ export function createFakeHost(): FakeHost {
     },
     failNextAttach(error) {
       nextAttachError = error;
+    },
+    holdNextCount() {
+      nextCount = gate();
+      return nextCount;
     },
     checkMachine: unused,
     async start(options) {
@@ -243,7 +250,12 @@ export function createFakeHost(): FakeHost {
       attachments.push(attachment);
       return attachment;
     },
-    countAttached: async (name) => attached.get(name) ?? 0,
+    async countAttached(name) {
+      const held = nextCount;
+      nextCount = undefined;
+      if (held) await held.promise;
+      return attached.get(name) ?? 0;
+    },
     async kill(name) {
       const error = nextKillError;
       nextKillError = undefined;
@@ -352,6 +364,8 @@ export interface StubDriver extends Driver {
   resumable: boolean | Error;
   /** Makes the next launch fail with the error. */
   failNextLaunch(error: unknown): void;
+  /** Makes the next `canResume` wait until the test opens the gate it returns. */
+  holdNextResume(): Gate;
 }
 
 /** A conversation a stub driver follows: the test reports for it. */
@@ -374,6 +388,7 @@ export function createStubDriver(): StubDriver {
   const resumeQuestions: Conversation[] = [];
   const follows: Following[] = [];
   let nextLaunchError: unknown;
+  let nextResume: Gate | undefined;
   return {
     launches,
     resumeQuestions,
@@ -388,6 +403,10 @@ export function createStubDriver(): StubDriver {
     typePrompt: typeAsADriverDoes,
     failNextLaunch(error) {
       nextLaunchError = error;
+    },
+    holdNextResume() {
+      nextResume = gate();
+      return nextResume;
     },
     async launch(launch) {
       launches.push(launch);
@@ -419,6 +438,9 @@ export function createStubDriver(): StubDriver {
     },
     async canResume(conversation) {
       resumeQuestions.push(conversation);
+      const held = nextResume;
+      nextResume = undefined;
+      if (held) await held.promise;
       if (this.resumable instanceof Error) throw this.resumable;
       return this.resumable;
     },

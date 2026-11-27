@@ -39,9 +39,11 @@ import type {
 } from '../session-host/session-host.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
 import type { TerminalHold } from '../terminal-hold.js';
+import { settlesBeforeAbort } from './abort-race.js';
 import { InputBoxWait } from './input-box-wait.js';
 import { LaunchPromptWatch } from './launch-prompt-watch.js';
 import { LivenessWatch } from './liveness-watch.js';
+import { SessionLifecycle } from './session-lifecycle.js';
 import { courseAfter, type SessionCourse } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
 import { SessionTypingTerminal } from './typing-terminal.js';
@@ -251,8 +253,11 @@ export interface Sessions {
    * @param reason - Why the cockpit ends it.
    * @returns The background tasks the `idle` session listed, stopped with
    * it; none for a session in another state, or with no live session.
+   * Settles once the session ended, its end told, however its going was
+   * seen first.
    * @throws `SessionHostError` when the host cannot kill a session that
-   * outlived the bound.
+   * outlived the bound: the session is live again, its agent heard, its
+   * reason what it was, and a later end may kill it.
    * @throws `SessionsClosedError` when the core is closed, or is closed
    * while the agent is given its bound: nothing is signalled or killed
    * once it is.
@@ -357,48 +362,11 @@ export function createSessions(options: SessionsOptions): Sessions {
   return new SessionRegistry(options);
 }
 
-/** Where a session's launch and life stand, beyond its public state. */
-type Phase =
-  /** Its key is taken; the host is asked whether an earlier session holds it. */
-  | 'reserved'
-  /**
-   * It is listed `starting`; the agent is not on the host yet. Its hooks
-   * are heard from the moment its token is granted.
-   */
-  | 'launching'
-  /** It lives on the host. */
-  | 'live'
-  /**
-   * It lives on the host, and the cockpit asked its agent to end: its hooks
-   * are heard as it goes, but nothing is typed into it.
-   */
-  | 'ending'
-  /** It lives on the host, and the cockpit is killing it: its hooks are not heard. */
-  | 'killing'
-  /** It is gone from the host; its end is being written. */
-  | 'going'
-  /** It ended. */
-  | 'ended';
-
 /** What a launch waits for: the session out of `starting`, or a failure to end it. */
 interface Departure {
   readonly promise: Promise<Session>;
   resolve(session: Session): void;
   reject(error: unknown): void;
-}
-
-/** A promise settled by hand, once. */
-interface Settled {
-  readonly promise: Promise<void>;
-  settle(): void;
-}
-
-function settled(): Settled {
-  let settle = () => {};
-  const promise = new Promise<void>((resolve) => {
-    settle = resolve;
-  });
-  return { promise, settle };
 }
 
 function departure(): Departure {
@@ -439,8 +407,6 @@ interface Entry {
   readonly departure: Departure;
   /** What became of a first prompt typed after the start: settled once taken, failed, or the session ended. */
   readonly firstPrompt?: Departure;
-  /** Settled once the session ended, or the core closed: what a graceful end waits for. */
-  readonly ending: Settled;
   /** The terminal a prompt is being typed through, which hears the session's hooks. */
   typing?: SessionTypingTerminal;
   /**
@@ -453,7 +419,7 @@ interface Entry {
   compactingFrom?: SessionCourse['compactingFrom'];
   /** When the agent last took a prompt. */
   promptTakenAt?: SessionCourse['promptTakenAt'];
-  phase: Phase;
+  readonly lifecycle: SessionLifecycle;
   /** Why the cockpit itself ends the session, which prevails over the agent's word. */
   endedBecause?: EndReason;
   /** Why the agent said it was ending. */
@@ -488,13 +454,14 @@ class SessionRegistry implements Sessions {
   readonly #followers = new Set<(sessions: readonly Session[]) => void>();
   readonly #conversationListeners = new Set<ConversationListener>();
   readonly #watch: LivenessWatch;
-  #closed = false;
+  /** Aborted by the close: what every operation under way checks before it goes on. */
+  readonly #closing = new AbortController();
 
   constructor(options: SessionsOptions) {
     this.#options = options;
     this.#watch = new LivenessWatch({
       list: () => options.host.list(),
-      onGone: (key) => void this.#gone(key),
+      onGone: (key) => void this.#goneByKey(key),
       intervalMs: LIVENESS_INTERVAL_MS,
     });
   }
@@ -504,7 +471,7 @@ class SessionRegistry implements Sessions {
     if (!isSessionKey(key)) throw new TypeError(`${JSON.stringify(key)} is no session key.`);
     this.#refuseIfClosed(key);
     const existing = this.#entries.get(key);
-    if (existing !== undefined && existing.phase !== 'ended') throw wrongState(existing.session);
+    if (existing !== undefined && !existing.lifecycle.isEnded) throw wrongState(existing.session);
 
     const onCommandLine =
       prompt === undefined || this.#options.driver.promptFitsLaunch(prompt) ? prompt : undefined;
@@ -522,8 +489,10 @@ class SessionRegistry implements Sessions {
         state: 'ended',
       });
     }
-    if (entry.phase === 'ending') throw wrongState(entry.session, 'The cockpit is ending it.');
-    if (!takesInput(entry) || entry.session.state !== 'idle') throw wrongState(entry.session);
+    if (entry.lifecycle.isBeingEnded) throw wrongState(entry.session, 'The cockpit is ending it.');
+    if (!entry.lifecycle.takesInput || entry.session.state !== 'idle') {
+      throw wrongState(entry.session);
+    }
     const outcome = await this.#type(entry, prompt);
     if (outcome !== 'taken') throw typingFailure(outcome, entry.session);
     return entry.session;
@@ -532,23 +501,44 @@ class SessionRegistry implements Sessions {
   async end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]> {
     this.#refuseIfClosed(key);
     const entry = this.#entries.get(key);
-    if (entry?.phase !== 'live') return [];
+    if (entry === undefined || !entry.lifecycle.isLive) return [];
     const { session } = entry;
     const stopped = session.state === 'idle' ? (session.backgroundTasks ?? []) : [];
+    const reasonBefore = entry.endedBecause;
     entry.endedBecause = reason;
     // From the moment it is asked, before the signal: no send types into it meanwhile.
-    entry.phase = 'ending';
+    entry.lifecycle.move('ending');
     const { signal, boundMs } = this.#options.driver.ending;
     await this.#signal(key, signal);
-    const exited = await within(entry.ending.promise, boundMs);
+    const ended = settlesBeforeAbort(entry.lifecycle.ended, this.#closing.signal);
+    const exited = await within(ended, boundMs);
     // Closed, the core no longer watches the session: whether it is gone, nothing tells.
     this.#refuseIfClosed(key);
-    if (!exited) {
-      entry.phase = 'killing';
-      await this.#options.host.kill(key);
-      await this.#gone(key);
-    }
+    if (!exited) await this.#kill(entry, reasonBefore);
     return stopped;
+  }
+
+  /**
+   * Kills a session whose agent did not exit within the driver's bound, and
+   * waits for its end. One the core found gone meanwhile is not killed: its
+   * end is awaited. A kill that fails leaves the session live, its reason
+   * what it was before the end was asked.
+   */
+  async #kill(entry: Entry, reasonBefore: EndReason | undefined): Promise<void> {
+    const { lifecycle } = entry;
+    if (!lifecycle.can('killing')) return lifecycle.ended;
+    lifecycle.move('killing');
+    try {
+      await this.#options.host.kill(entry.key);
+    } catch (error) {
+      // Gone meanwhile, the session ends all the same: the end did what it was asked.
+      if (!lifecycle.can('live')) return lifecycle.ended;
+      lifecycle.move('live');
+      if (reasonBefore === undefined) delete entry.endedBecause;
+      else entry.endedBecause = reasonBefore;
+      throw error;
+    }
+    await this.#gone(entry);
   }
 
   firstPrompt(key: string): Promise<Session> | undefined {
@@ -557,7 +547,7 @@ class SessionRegistry implements Sessions {
 
   session(key: string): Session | undefined {
     const entry = this.#entries.get(key);
-    if (entry?.phase !== 'reserved') return entry?.session;
+    if (entry === undefined || !entry.lifecycle.isReserved) return entry?.session;
     return entry.replaces?.session;
   }
 
@@ -574,7 +564,7 @@ class SessionRegistry implements Sessions {
 
   liveKeys(): string[] {
     return [...this.#entries.values()]
-      .filter((entry) => entry.phase !== 'ended')
+      .filter((entry) => !entry.lifecycle.isEnded)
       .map((entry) => entry.key);
   }
 
@@ -585,7 +575,7 @@ class SessionRegistry implements Sessions {
   /** Asks the session's agent to end: its process sent the signal, if it still has one. */
   async #signal(key: string, signal: NodeJS.Signals): Promise<void> {
     const agent = await this.#options.host.processOf(key).catch(() => undefined);
-    if (agent === undefined || this.#closed) return;
+    if (agent === undefined || this.#closing.signal.aborted) return;
     try {
       (this.#options.signal ?? process.kill)(agent.pid, signal);
     } catch {
@@ -606,7 +596,7 @@ class SessionRegistry implements Sessions {
       key: entry.key,
       host: this.#options.host,
       readInputBox: (text) => this.#options.driver.readInputBox(text),
-      session: () => (takesInput(entry) && !this.#closed ? entry.session : undefined),
+      session: () => (this.#takesInput(entry) ? entry.session : undefined),
     });
     entry.typing = terminal;
     const release = this.#options.holds.hold(entry.key);
@@ -639,7 +629,7 @@ class SessionRegistry implements Sessions {
     try {
       const shown = await this.#inputBoxShown(entry, keys);
       // Ended or closed meanwhile: the end, or the close, settles the launch.
-      if (!takesInput(entry) || this.#closed) return;
+      if (!this.#takesInput(entry)) return;
       const outcome = await this.#typedFirstPrompt(entry, prompt, shown);
       if (outcome !== 'taken') failure = outcome;
     } catch (error) {
@@ -652,7 +642,7 @@ class SessionRegistry implements Sessions {
       settleFirstPrompt(entry, entry.session);
       return;
     }
-    if (!takesInput(entry) || entry.session.state !== 'starting') {
+    if (!entry.lifecycle.takesInput || entry.session.state !== 'starting') {
       failFirstPrompt(entry, failure(entry.session));
       return;
     }
@@ -703,7 +693,7 @@ class SessionRegistry implements Sessions {
     entry.inputBoxWait = wait;
     const shown = await wait.start();
     delete entry.inputBoxWait;
-    if (!shown || !takesInput(entry)) return shown;
+    if (!shown || !entry.lifecycle.takesInput) return shown;
     keys.hold();
     if (entry.session.state === 'waiting') {
       this.#update(entry, { key: entry.key, state: 'starting', since: now() });
@@ -713,14 +703,14 @@ class SessionRegistry implements Sessions {
 
   receive({ key, path, body }: HookRequest): void {
     const entry = this.#entries.get(key);
-    if (!isListened(entry)) return;
+    if (entry === undefined || !entry.lifecycle.isListened) return;
     this.#told(entry, this.#options.driver.readHook({ key, path, body }).events);
   }
 
   /** Follows the session's state from what its agent told, a hook's events or others. */
   #told(entry: Entry, events: readonly DriverEvent[]): void {
     // Closed, the core runs no timer of its own: nothing it hears would be watched.
-    if (this.#closed || !isListened(entry) || events.length === 0) return;
+    if (this.#closing.signal.aborted || !entry.lifecycle.isListened || events.length === 0) return;
     const at = now();
     // One hook is one change: its followers never see a session half told.
     let course: SessionCourse = courseOf(entry);
@@ -777,21 +767,21 @@ class SessionRegistry implements Sessions {
 
   async attach(key: string, size: TerminalSize): Promise<Attachment | undefined> {
     const entry = this.#entries.get(key);
-    if (entry?.phase !== 'live') return undefined;
+    if (entry === undefined || !entry.lifecycle.isLive) return undefined;
     try {
       const attachment = await this.#options.host.attach(key, size);
       attachment.onEnd(() => void this.#checkLive(entry));
       return attachment;
     } catch (error) {
       if (!(error instanceof SessionHostError && error.reason === 'no-session')) throw error;
-      await this.#gone(key);
+      await this.#gone(entry);
       return undefined;
     }
   }
 
   list(): Session[] {
     return [...this.#entries.values()].flatMap((entry) => {
-      if (entry.phase !== 'reserved') return [entry.session];
+      if (!entry.lifecycle.isReserved) return [entry.session];
       return entry.replaces === undefined ? [] : [entry.replaces.session];
     });
   }
@@ -805,11 +795,10 @@ class SessionRegistry implements Sessions {
   }
 
   close(): void {
-    this.#closed = true;
+    // A graceful end stops waiting for its agent.
+    this.#closing.abort();
     this.#watch.close();
     for (const entry of this.#entries.values()) {
-      // A graceful end stops waiting for its agent.
-      entry.ending.settle();
       entry.typing?.close();
       entry.inputBoxWait?.stop();
       stopReadingTheScreen(entry);
@@ -836,9 +825,8 @@ class SessionRegistry implements Sessions {
       awaitsTypedPrompt: typed,
       departure: departure(),
       ...(typed ? { firstPrompt: departure() } : {}),
-      ending: settled(),
       session: { key, state: 'starting', since: now() },
-      phase: 'reserved',
+      lifecycle: new SessionLifecycle('reserved'),
       heard: false,
       stopFollowingLeft: [],
       ...(replaces === undefined ? {} : { replaces }),
@@ -884,7 +872,8 @@ class SessionRegistry implements Sessions {
       const { environment } = entry;
       await this.#options.admitAgent(environment);
       this.#refuseIfClosed(entry.key);
-      this.#setPhase(entry, 'launching');
+      entry.lifecycle.move('launching');
+      this.#notify();
       const confinement = await this.#options.confinement();
       this.#refuseIfClosed(entry.key);
       const files = await folders.prepare(entry.key);
@@ -914,15 +903,15 @@ class SessionRegistry implements Sessions {
       });
     } catch (error) {
       if (granted) hooks.revoke(entry.key);
-      const listed = entry.phase !== 'reserved';
+      const listed = !entry.lifecycle.isReserved;
       this.#unreserve(entry);
       if (listed) this.#notify();
       throw error;
     }
-    entry.phase = 'live';
+    entry.lifecycle.move('live');
     delete entry.replaces;
     // Closed while the host started it: the session goes on, unwatched.
-    if (this.#closed) return;
+    if (this.#closing.signal.aborted) return;
     this.#watch.watch(entry.key);
     this.#follow(entry);
     if (!entry.heard) this.#watchStartUp(entry);
@@ -1041,7 +1030,7 @@ class SessionRegistry implements Sessions {
 
   /** Stops an operation once the core is closed: nothing more is put on the host, or taken off it. */
   #refuseIfClosed(key: string): void {
-    if (this.#closed) throw new SessionsClosedError(key);
+    if (this.#closing.signal.aborted) throw new SessionsClosedError(key);
   }
 
   async #outcome(entry: Entry): Promise<Session> {
@@ -1057,51 +1046,61 @@ class SessionRegistry implements Sessions {
 
   /** Ends a session whose agent never reported: the cockpit keeps none it cannot observe. */
   async #endUnobservable(entry: Entry): Promise<void> {
+    const { lifecycle } = entry;
+    // Being ended by the cockpit already, it ends for the reason it was asked; gone, it ends by itself.
+    if (!lifecycle.isLive) return;
     entry.endedBecause = 'unobservable';
     // From here the run's outcome is `unobservable`: a late hook changes nothing.
-    entry.phase = 'killing';
+    lifecycle.move('killing');
     try {
       await this.#options.host.kill(entry.key);
     } catch (error) {
       // Still on the host, perhaps: the watch ends it when it goes.
-      if (entry.phase === 'killing') entry.phase = 'live';
+      if (lifecycle.can('live')) lifecycle.move('live');
       entry.departure.reject(error);
       return;
     }
-    await this.#gone(entry.key);
+    await this.#gone(entry);
   }
 
   async #checkLive(entry: Entry): Promise<void> {
-    if (entry.phase !== 'live' && entry.phase !== 'ending') return;
+    if (!entry.lifecycle.isOnHost) return;
     try {
-      if (!(await this.#options.host.isLive(entry.key))) await this.#gone(entry.key);
+      if (!(await this.#options.host.isLive(entry.key))) await this.#gone(entry);
     } catch {
       // The watch's next list tells.
     }
   }
 
-  /** Ends a session whose process is gone from the host. */
-  async #gone(key: string): Promise<void> {
+  #goneByKey(key: string): void {
     const entry = this.#entries.get(key);
-    if (entry === undefined || !isOnHost(entry)) return;
-    entry.phase = 'going';
-    entry.inputBoxWait?.stop();
-    stopReadingTheScreen(entry);
-    stopFollowingEveryConversation(entry);
-    this.#watch.unwatch(key);
-    this.#options.hooks.revoke(key);
-    const canResume = await this.#options.driver
-      .canResume(conversationOf(entry))
-      // A conversation the driver cannot find is one it cannot resume.
-      .catch(() => false);
-    entry.phase = 'ended';
-    this.#update(entry, { key, state: 'ended', since: now(), canResume, ...endOf(entry) });
-    entry.ending.settle();
+    if (entry !== undefined) void this.#gone(entry);
   }
 
-  #setPhase(entry: Entry, phase: Phase): void {
-    entry.phase = phase;
-    this.#notify();
+  /**
+   * Ends a session whose process is gone from the host, once, however many
+   * find it gone: each awaits the one end.
+   */
+  #gone(entry: Entry): Promise<void> {
+    return entry.lifecycle.go(async () => {
+      entry.inputBoxWait?.stop();
+      stopReadingTheScreen(entry);
+      stopFollowingEveryConversation(entry);
+      this.#watch.unwatch(entry.key);
+      this.#options.hooks.revoke(entry.key);
+      const canResume = await this.#options.driver
+        .canResume(conversationOf(entry))
+        // A conversation the driver cannot find is one it cannot resume.
+        .catch(() => false);
+      const { key } = entry;
+      return () =>
+        this.#update(entry, { key, state: 'ended', since: now(), canResume, ...endOf(entry) });
+    });
+  }
+
+  /** Whether a prompt may be typed into the session now: the core open, the session not being ended. */
+  #takesInput(entry: Entry): boolean {
+    return entry.lifecycle.takesInput && !this.#closing.signal.aborted;
   }
 
   #update(entry: Entry, session: Session): void {
@@ -1220,21 +1219,6 @@ function conversationOf(entry: Entry): Conversation {
   };
 }
 
-/** Whether the session's agent was started on the host and is not known gone. */
-function isOnHost(entry: Entry): boolean {
-  return entry.phase === 'live' || entry.phase === 'ending' || entry.phase === 'killing';
-}
-
-/** Whether what a session's agent tells is listened to: from its launch until the cockpit kills it, or it is gone. */
-function isListened(entry: Entry | undefined): entry is Entry {
-  return entry?.phase === 'launching' || entry?.phase === 'live' || entry?.phase === 'ending';
-}
-
-/** Whether a prompt may be typed into the session: from its launch until the cockpit asks it to end. */
-function takesInput(entry: Entry): boolean {
-  return entry.phase === 'launching' || entry.phase === 'live';
-}
-
 function courseOf(entry: Entry): SessionCourse {
   const { session, compactingFrom, promptTakenAt } = entry;
   return {
@@ -1283,7 +1267,7 @@ function typingFailure(
 }
 
 /** Whether the promise settles within the time, in milliseconds. */
-async function within(promise: Promise<void>, ms: number): Promise<boolean> {
+async function within(promise: Promise<unknown>, ms: number): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
   const timedOut = new Promise<false>((resolve) => {
     timer = setTimeout(() => resolve(false), ms);
