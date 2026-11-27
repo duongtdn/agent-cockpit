@@ -56,12 +56,14 @@
     "format": "biome check --write .",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "test:coverage": "vitest run --project unit --project integration --coverage",
     "test:contract": "vitest run --project contract --reporter=default --reporter=./test/contract/results-reporter.ts",
+    "test:coverage": "node -e \"fs.rmSync('test-results/coverage-runs', { recursive: true, force: true })\" && pnpm test:coverage:fast && pnpm test:coverage:contract && vitest --merge-reports=test-results/coverage-runs --coverage --reporter=dot",
+    "test:coverage:fast": "vitest run --project unit --project integration --coverage --coverage.thresholds.lines=0 --coverage.thresholds.branches=0 --reporter=default --reporter=blob --outputFile.blob=test-results/coverage-runs/fast.json",
+    "test:coverage:contract": "vitest run --project contract --coverage --coverage.thresholds.lines=0 --coverage.thresholds.branches=0 --reporter=default --reporter=blob --reporter=./test/contract/results-reporter.ts --outputFile.blob=test-results/coverage-runs/contract.json",
     "test:browser": "vitest run --project browser",
     "test:e2e": "vitest run --project e2e",
-    "check": "pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm test:browser && pnpm test:contract && pnpm build && pnpm test:pack && pnpm test:e2e",
     "test:pack": "vitest run --project pack",
+    "check": "pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm test:browser && pnpm build && pnpm test:pack && pnpm test:e2e",
     "check:ci": "node ci/check.ts"
   },
   "dependencies": {

@@ -49,9 +49,13 @@ Packages: `server/` `node-pty`, `ws` and `zod`; `fastify/` `fastify`;
 - `pnpm check` — typecheck, lint, unit, integration and contract tests,
   build, `npm pack --dry-run`, the end-to-end tests: what CI runs. Green before every commit that
   ends a piece of work.
-- `pnpm test:coverage` — the unit and the integration tests in one run, with
-  the coverage gate (90% of `src/`): only real tmux exercises the code that
-  speaks to it, so the gate counts both.
+- `pnpm test:coverage` — the unit and integration tests in one run, then
+  the contract suite alone, each keeping its coverage
+  (`test-results/coverage-runs/`), then the gate on their sum: 90% of the
+  lines and the branches of `src/`, one number. The agent's behavior is the
+  contract suite's to test, and the code that follows it is counted there;
+  no test is written at a level that does not own its criterion only to
+  raise the number.
 - `pnpm test` (unit, quick), `pnpm test:integration` (real tmux),
   `pnpm test:contract` (the real agent, below), `pnpm test:pack` and
   `pnpm test:e2e` (both after a build). The live suite (`test/live/`: the

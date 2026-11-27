@@ -94,6 +94,8 @@ describe('package.json', () => {
     'test',
     'test:integration',
     'test:coverage',
+    'test:coverage:fast',
+    'test:coverage:contract',
     'test:contract',
     'test:browser',
     'check',
@@ -112,11 +114,21 @@ describe('package.json', () => {
     expect(manifest.scripts['test:contract']).not.toContain('passWithNoTests');
   });
 
-  it('measures coverage over the unit and the integration tests together', () => {
-    // Only real tmux exercises the code that speaks to it, so the coverage
-    // gate counts both suites, in one run.
-    expect(manifest.scripts['test:coverage']).toBe(
-      'vitest run --project unit --project integration --coverage',
+  it('measures coverage over the unit, the integration and the contract tests together, as one number', () => {
+    // The agent's behavior is the contract suite's to test, and the code that
+    // follows it is counted there; the contract suite runs alone, never along
+    // with another, so each run keeps its coverage and the gate holds the sum.
+    const fast = manifest.scripts['test:coverage:fast'] ?? '';
+    const contract = manifest.scripts['test:coverage:contract'] ?? '';
+    expect(fast).toMatch(/^vitest run --project unit --project integration --coverage /);
+    expect(contract).toMatch(/^vitest run --project contract --coverage /);
+    for (const run of [fast, contract]) {
+      expect(run).toContain('--coverage.thresholds.lines=0 --coverage.thresholds.branches=0');
+      expect(run).toMatch(/--reporter=blob .*--outputFile\.blob=test-results\/coverage-runs\//);
+    }
+    expect(contract).toContain('--reporter=./test/contract/results-reporter.ts');
+    expect(manifest.scripts['test:coverage']).toMatch(
+      /&& pnpm test:coverage:fast && pnpm test:coverage:contract && vitest --merge-reports=test-results\/coverage-runs --coverage( |$)/,
     );
   });
 });
@@ -130,13 +142,12 @@ describe('the check script and CI', () => {
     .map(([, script]) => script)
     .filter((script) => script !== 'install');
 
-  it('check typechecks, lints, tests, runs the browser and the contract suites, builds, packs, and runs the end-to-end tests on the build', () => {
+  it('check typechecks, lints, runs the unit, integration and contract suites under the coverage gate, the browser suite, builds, packs, and runs the end-to-end tests on the build', () => {
     expect(scriptsOfCheck).toEqual([
       'typecheck',
       'lint',
       'test:coverage',
       'test:browser',
-      'test:contract',
       'build',
       'test:pack',
       'test:e2e',

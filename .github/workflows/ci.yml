@@ -61,26 +61,27 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
+      # The unit and integration suites, then the contract suite alone, under one coverage gate.
+      # The contract suite runs the pinned agent, in tmux, against a scripted API of the suite's own:
+      # no login, no secret. Its sandbox rows fail, saying why, where the sandbox cannot run: the
+      # step above makes it run.
       - run: pnpm test:coverage
-      # The terminal's browser tests run in Playwright's Chromium.
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:browser
-      # The pinned agent, in tmux, against a scripted API of the suite's own: no login, no secret.
-      # Its sandbox rows fail, saying why, where the sandbox cannot run: the step above makes it run.
-      - run: pnpm test:contract
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: contract-results-node-${{ matrix.node }}
           path: test-results/contract.json
-      # What a failed test saw, in order and in time: the screens and the hooks, one file a test.
+      # The terminal's browser tests run in Playwright's Chromium.
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:browser
+      - run: pnpm build
+      - run: pnpm test:pack
+      # A browser through the apps of examples/, on the built package, against the scripted API.
+      - run: pnpm test:e2e
+      # What a failed test saw, whichever step failed: its screens, keys and hooks, in time.
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: timelines-node-${{ matrix.node }}
           path: test-results/timelines/
           if-no-files-found: ignore
-      - run: pnpm build
-      - run: pnpm test:pack
-      # A browser through the apps of examples/, on the built package, against the scripted API.
-      - run: pnpm test:e2e
