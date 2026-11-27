@@ -280,8 +280,10 @@ Nothing is published yet.
   a dialog unseen); the prompt is typed once the person answered it, the
   call pending until then without holding the key: the session is
   recorded at once, the calls on the key act on it as `waiting` (a run or
-  a send `wrong-state`, an open `nothing-to-open`, a `fresh` run ends it
-  and the pending call settles `ended`), the session's state tells what
+  a send `wrong-state`, an open `nothing-to-open`, a `fresh` run or open
+  ends it; any end, the agent's exit among them, settles the pending call
+  `ended`, its history entry kept, a dialog shown once the agent started
+  too), the session's state tells what
   became of the prompt (`busy` taken, `idle` not), and the call's history
   entry goes in the order the calls were asked. Calls on one key run
   one at a time. A session the cap is ending takes no send and no run

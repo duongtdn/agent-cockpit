@@ -480,7 +480,10 @@ the calls asked after it act on the `waiting` session as the run table
 says: a run or a send is refused `wrong-state` (with the dialog in
 `pending`), an open has nothing to open (`nothing-to-open`), a job
 without a prompt nothing to send (`nothing-to-send`), and a `fresh` run
-ends the session, which settles the pending call `ended`. What became of
+or open ends the session. Whatever ends it (those, or the agent exiting),
+the pending call settles `ended`, its entry kept in the key's history;
+so too when the dialog shows once the agent started, in place of its
+input box. What became of
 the prompt shows in the session's state: `busy` when the agent took it,
 `idle` when not. The pending call's entry in the key's history goes in
 the order the calls were asked. Not taken, no box drawn, or the session

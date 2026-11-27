@@ -474,6 +474,84 @@ describe('a run on a key with no record', () => {
       history: [],
     });
   });
+
+  describe('parked behind a dialog shown once the agent was ready', () => {
+    /** Runs the `long` job until the agent is ready, then shows a dialog in place of its box: the run parked. */
+    async function parkedAfterReady(): Promise<{
+      ran: Promise<RunResult>;
+      parked: string | undefined;
+    }> {
+      driver.promptFitsLaunch = () => false;
+      longPrompt = 'A long prompt.';
+      const ran = pending(units.run('long', { file: 'a' }));
+      await settle();
+      hook('/ready');
+      host.show(KEY, stubScreen('dialog'));
+      await vi.advanceTimersByTimeAsync(300);
+      expect(sessionOf()?.state).toBe('waiting');
+      return { ran, parked: driver.launches.at(-1)?.conversationId };
+    }
+
+    it('settles the parked run `ended` on a `fresh` run, its history before the fresh one', async () => {
+      const { ran, parked } = await parkedAfterReady();
+      vi.setSystemTime(T0.getTime() + 60_000);
+      driver.promptFitsLaunch = () => true;
+
+      const fresh = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+      await settle();
+      // The new session's screen: the old one's dialog went with it.
+      host.show(KEY, '');
+      await listHost();
+      hook('/start-and-take');
+
+      await expect(ran).resolves.toEqual({ action: 'started', state: 'ended' });
+      await expect(fresh).resolves.toMatchObject({ reason: 'fresh-on-request', state: 'busy' });
+      await settle();
+      expect(recordOf()?.history).toMatchObject([
+        { jobId: 'long', action: 'started', conversationId: parked },
+        { jobId: 'explain', reason: 'fresh-on-request' },
+      ]);
+    });
+
+    it('settles the parked run of a resumed unit `ended` on an open with `fresh`, its history before the open', async () => {
+      // An open takes up the key's last run: the unit ran once before.
+      await started();
+      idle();
+      await exits();
+      host.show(KEY, '');
+      const { ran } = await parkedAfterReady();
+      const parked = driver.launches[1]?.conversationId;
+      vi.setSystemTime(T0.getTime() + 60_000);
+
+      const opened = pending(units.open(KEY, { fresh: true }));
+      await settle();
+      // The new session's screen: the old one's dialog went with it.
+      host.show(KEY, '');
+      await listHost();
+      hook('/ready');
+
+      await expect(ran).resolves.toEqual({ action: 'resumed', state: 'ended' });
+      await expect(opened).resolves.toMatchObject({ reason: 'fresh-on-request', state: 'idle' });
+      await settle();
+      expect(recordOf()?.history).toMatchObject([
+        { jobId: 'explain', action: 'started' },
+        { jobId: 'long', action: 'resumed', conversationId: parked },
+        { operation: 'open', reason: 'fresh-on-request' },
+      ]);
+    });
+
+    it('settles the parked run `ended` when the agent exits, its history written', async () => {
+      const { ran, parked } = await parkedAfterReady();
+
+      await exits();
+
+      await expect(ran).resolves.toEqual({ action: 'started', state: 'ended' });
+      await settle();
+      expect(recordOf()?.history).toMatchObject([
+        { jobId: 'long', action: 'started', conversationId: parked },
+      ]);
+    });
+  });
 });
 
 describe('a run on a live session', () => {

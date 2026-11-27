@@ -1145,7 +1145,8 @@ class SessionRegistry implements Sessions {
     if (session === entry.session) return;
     entry.session = session;
     if (leftTheStart(entry, session)) entry.departure.resolve(session);
-    if (entry.awaitsTypedPrompt && session.state === 'ended') settleFirstPrompt(entry, session);
+    // Whatever the typing did meanwhile: a prompt it had not settled is settled by the end.
+    if (session.state === 'ended') settleFirstPrompt(entry, session);
     this.#notify();
   }
 
@@ -1180,7 +1181,10 @@ function leftTheStart(entry: Entry, session: Session): boolean {
   return session.state !== 'starting';
 }
 
-/** Settles a first prompt typed after the start, and its launch if it had not settled. */
+/**
+ * Settles a first prompt typed after the start, and its launch, each only
+ * if it had not settled: a promise settles once, so a later end changes neither.
+ */
 function settleFirstPrompt(entry: Entry, session: Session): void {
   entry.firstPrompt?.resolve(session);
   entry.departure.resolve(session);

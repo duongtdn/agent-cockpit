@@ -570,6 +570,68 @@ describe('a first prompt too long for the command line', () => {
     expect(writes()).toEqual([]);
   });
 
+  /** Launches with a long first prompt, the agent ready, then a dialog in place of its box: the launch settled `waiting`. */
+  async function parkedAfterReady(): Promise<void> {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    await settle();
+    hook('/ready');
+    host.show(KEY, stubScreen('dialog'));
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+    await expect(launched).resolves.toMatchObject({ state: 'waiting' });
+  }
+
+  it('settles the first prompt `ended` when the session is ended while a dialog shown once the agent was ready waits, nothing typed', async () => {
+    await parkedAfterReady();
+
+    const ended = sessions.end(KEY, 'restarted');
+    await settle();
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    await ended;
+
+    await expect(sessions.firstPrompt(KEY)).resolves.toMatchObject({
+      state: 'ended',
+      reason: 'restarted',
+    });
+    expect(writes()).toEqual([]);
+  });
+
+  it('settles the first prompt `ended` when the agent exits while a dialog shown once it was ready waits', async () => {
+    await parkedAfterReady();
+
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    await expect(sessions.firstPrompt(KEY)).resolves.toMatchObject({ state: 'ended' });
+    expect(writes()).toEqual([]);
+  });
+
+  it('settles the first prompt `ended` when the agent exits while its input box is awaited past a dialog and the screen cannot be read (scrolled back)', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    await settle();
+    hook('/ready');
+    host.show(KEY, stubScreen('dialog'));
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+    await launched;
+    host.scrollBack(KEY, true);
+    await vi.advanceTimersByTimeAsync(3 * INPUT_BOX_BOUND_MS);
+
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    await expect(sessions.firstPrompt(KEY)).resolves.toMatchObject({ state: 'ended' });
+  });
+
   it('rejects the first prompt still to be typed once the core is closed', async () => {
     const launched = sessions.launch({
       key: KEY,
