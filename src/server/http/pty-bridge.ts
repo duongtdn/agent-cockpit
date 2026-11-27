@@ -71,16 +71,15 @@ const MAX_KEPT_BYTES = 1024 * 1024;
  * size. What the session draws in one turn of the event loop goes as one
  * message; a socket that still holds more than {@link MAX_BUFFERED_BYTES}
  * to send is closed with {@link FELL_BEHIND_CLOSE_CODE} instead, the
- * session untouched. While the cockpit types a prompt into the session (the session's
- * key held), the person's keys are kept, the browser told `held`; once
- * released, they reach the session in the order sent, each as it was sent,
- * at most {@link KEPT_KEYS_GAP_MS} apart, then the browser is told
- * `released`. Kept keys over {@link MAX_KEPT_BYTES} close the socket
- * (1008); a socket that closes drops its kept keys. When the session ends,
- * the socket closes with
- * {@link SESSION_ENDED_CLOSE_CODE}, and so it does at once when no session
- * of the key lives; when the socket closes, the terminal detaches and the
- * session goes on.
+ * session untouched. While the cockpit types a prompt into the session
+ * (the session's key held), the person's keys are kept, the browser told
+ * `held`; once released, they reach the session in the order sent, each
+ * as it was sent, at most {@link KEPT_KEYS_GAP_MS} apart, then the browser
+ * is told `released`. Kept keys over {@link MAX_KEPT_BYTES} close the
+ * socket (1008); a socket that closes drops its kept keys. When the session
+ * ends, the socket closes with {@link SESSION_ENDED_CLOSE_CODE}, and so it
+ * does at once when no session of the key lives; when the socket closes,
+ * the terminal detaches and the session goes on.
  *
  * @param socket - The terminal's WebSocket, open.
  * @param key - The session's key.
