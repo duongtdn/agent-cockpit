@@ -4,7 +4,7 @@ import { PATIENCE, POLL } from '../support/patience.ts';
 
 /**
  * Keys on the start-up dialogs of the real agent, as a person presses them,
- * for the parity scenarios and the driver's rows alike.
+ * for the driver's rows.
  */
 
 /** How many times a key is pressed on a start-up dialog that shows nothing of it. */

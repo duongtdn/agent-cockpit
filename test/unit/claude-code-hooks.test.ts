@@ -15,7 +15,8 @@ import {
   userPromptSubmit,
 } from '../support/fake-agent/hook-events.ts';
 
-// The payloads are the fake agent's, which the parity test holds to the pinned Claude Code's.
+// The payloads are the fake agent's, written by hand: nothing holds them to the pinned Claude
+// Code's until they are recorded from it.
 const session = {
   sessionId: '6f1c2f0e-3b1a-4c66-9d57-0a4b8a3e5c11',
   cwd: '/work',
