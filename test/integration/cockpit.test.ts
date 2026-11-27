@@ -967,6 +967,40 @@ describe('creating and closing the cockpit', () => {
     await expect(cockpit.run('explain', { file: 'b.txt' })).rejects.toThrow(SessionsClosedError);
   });
 
+  it('refuses a run asked once its close began, and makes no folder for one under way', async () => {
+    let choicesAsked = () => {};
+    const asked = new Promise<void>((resolve) => {
+      choicesAsked = resolve;
+    });
+    const inFolder = {
+      ...explain,
+      id: 'in-folder',
+      // Slow to answer: the run is under way, checking its choices, as the close begins.
+      options: {
+        file: async () => {
+          choicesAsked();
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          return [{ value: 'a.txt' }];
+        },
+      },
+      directory: () => 'made-by-the-run',
+    };
+    const { cockpit, directory } = await newCockpit([inFolder as unknown as Job], {
+      port: APP_PORT,
+    });
+    const underWay = cockpit.run('in-folder', { file: 'a.txt' });
+    underWay.catch(() => {});
+    await asked;
+
+    const closing = cockpit.close();
+    const refused = cockpit.run('in-folder', { file: 'a.txt' });
+
+    await expect(refused).rejects.toThrow(SessionsClosedError);
+    await expect(underWay).rejects.toThrow(SessionsClosedError);
+    await closing;
+    expect(existsSync(join(directory, 'made-by-the-run'))).toBe(false);
+  });
+
   it('runs a job in-process, as the browser does', async () => {
     const { cockpit, directory } = await newCockpit(undefined, { port: APP_PORT });
     // At work until the test ends: the second run finds it `busy`, however soon a turn could end.

@@ -145,10 +145,14 @@ export interface UnitsOfWork {
   /**
    * Closes the units of work: every operation that has not begun, waiting
    * for its key's turn or asked from now on, is rejected at once with
-   * `SessionsClosedError`, and does nothing; the sessions core is no
-   * longer followed, and no follower is told anything more.
+   * `SessionsClosedError`, and does nothing; one under way makes no folder
+   * and writes no record from now on. The sessions core is no longer
+   * followed, and no follower is told anything more.
+   *
+   * @returns A promise fulfilled once every record write under way is
+   * done, whatever its outcome: none is written after it.
    */
-  close(): void;
+  close(): Promise<void>;
 }
 
 /**
@@ -248,6 +252,8 @@ class Units implements UnitsOfWork {
   readonly #admissions = new KeyQueue(this.#closing.signal, closedRefusal);
   readonly #followers = new Set<(sessions: readonly Session[]) => void>();
   readonly #stops: (() => void)[];
+  /** The record writes under way, each settled whatever its outcome: what the close waits for. */
+  readonly #writes = new Set<Promise<void>>();
 
   constructor(options: UnitsOfWorkOptions, loaded: Map<string, EndedSession>) {
     this.#options = options;
@@ -301,10 +307,29 @@ class Units implements UnitsOfWork {
     return () => void this.#followers.delete(follower);
   }
 
-  close(): void {
+  close(): Promise<void> {
     this.#closing.abort();
     for (const stop of this.#stops.splice(0)) stop();
     this.#followers.clear();
+    return Promise.all(this.#writes).then(() => undefined);
+  }
+
+  /**
+   * Writes a key's record, unless the units of work are closed: the app's
+   * lock is released once the close settles, and the records' folder may
+   * be another process's then.
+   */
+  async #write(record: UnitRecord): Promise<void> {
+    this.#refuseIfClosed(record.key);
+    const written = this.#records.put(record);
+    const settled = written.catch(() => undefined);
+    this.#writes.add(settled);
+    void settled.then(() => this.#writes.delete(settled));
+    await written;
+  }
+
+  #refuseIfClosed(key: string): void {
+    if (this.#closing.signal.aborted) throw new SessionsClosedError(key);
   }
 
   async #run(run: JobRun, fresh: boolean, at: string, freeTurn: FreeTurn): Promise<RunResult> {
@@ -424,6 +449,7 @@ class Units implements UnitsOfWork {
    * start-up dialog is parked.
    */
   async #launch(plan: Plan): Promise<Launched> {
+    this.#refuseIfClosed(plan.key);
     const folder = await this.#jobs.makeFolder(plan.run.folder);
     let admitted = await this.#admit(plan, folder);
     let session = await this.#launched(plan, folder, admitted);
@@ -478,7 +504,7 @@ class Units implements UnitsOfWork {
     const history = [...record.history];
     const later = history.findIndex((each) => each.at > entry.at);
     history.splice(later === -1 ? history.length : later, 0, entry);
-    await this.#records.put({ ...record, history });
+    await this.#write({ ...record, history });
     this.#notify();
   }
 
@@ -603,7 +629,7 @@ class Units implements UnitsOfWork {
     if (current !== conversationId) earlier.push(conversationId);
     const history = [...(before?.history ?? [])];
     if (plan.history !== undefined) history.push(historyEntryOf(plan.history, take, current));
-    await this.#records.put({
+    await this.#write({
       key: plan.key,
       conversationId: current,
       earlierConversations: earlier,
@@ -622,7 +648,7 @@ class Units implements UnitsOfWork {
    */
   async #recordSent(record: UnitRecord, operation: Operation): Promise<void> {
     const conversationId = this.#sessions.conversationOf(record.key) ?? record.conversationId;
-    await this.#records.put({
+    await this.#write({
       ...record,
       history: [...record.history, { ...operation, action: 'sent', conversationId }],
     });
@@ -639,7 +665,7 @@ class Units implements UnitsOfWork {
   async #moved(key: string, conversationId: string, left: string): Promise<void> {
     const record = this.#records.get(key);
     if (record?.conversationId !== left) return;
-    await this.#records.put({
+    await this.#write({
       ...record,
       conversationId,
       earlierConversations: [...record.earlierConversations, record.conversationId],

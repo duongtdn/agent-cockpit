@@ -76,6 +76,8 @@ let units: UnitsOfWork;
 let reads: string[];
 /** What reading a job throws from now on, by its id. */
 let refusals: Map<string, unknown>;
+/** What every check of a run's job waits for, when set. */
+let checking: Promise<void> | undefined;
 /** The folders made, by their relative path. */
 let made: string[];
 /** Every signal sent, `<key> <signal>`; an agent exits on one when `exitOnSignal`. */
@@ -91,6 +93,7 @@ const jobs: JobRuns = {
       key: run.key,
       ...(run.prompt === undefined ? {} : { prompt: run.prompt }),
       async checked() {
+        await checking;
         const refusal = refusals.get(jobId);
         if (refusal !== undefined) throw refusal;
         reads.push(`${jobId} ${(args as { file: string }).file}`);
@@ -114,6 +117,7 @@ beforeEach(() => {
   driver.launchSettings = (part) => ({ part: (part ?? null) as never });
   reads = [];
   refusals = new Map();
+  checking = undefined;
   made = [];
   signals = [];
   exitOnSignal = true;
@@ -1090,16 +1094,66 @@ describe('closing the units of work', () => {
   beforeEach(() => open());
 
   /** Closes as the cockpit does: the units of work, then the sessions core. */
-  function close(): void {
-    units.close();
+  function close(): Promise<void> {
+    const closed = units.close();
     sessions.close();
+    return closed;
   }
+
+  it('makes no folder for an operation under way once closed', async () => {
+    let checked = () => {};
+    checking = new Promise((resolve) => {
+      checked = resolve;
+    });
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+
+    void close();
+    checked();
+
+    await expect(ran).rejects.toThrow(SessionsClosedError);
+    expect(made).toEqual([]);
+    expect(driver.launches).toEqual([]);
+  });
+
+  it('settles once the record writes under way are done', async () => {
+    const release = records.holdPuts();
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    hook('/start-and-take');
+    await settle();
+    let settled = false;
+    const closed = close().then(() => {
+      settled = true;
+    });
+
+    await settle();
+    expect(settled).toBe(false);
+    release();
+    await closed;
+
+    expect(recordOf()?.conversationId).toBe(driver.launches[0]?.conversationId);
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+  });
+
+  it('writes no record once closed: a launch the close rejected is not recorded', async () => {
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    expect(driver.launches).toHaveLength(1);
+
+    await close();
+    await settle();
+
+    await expect(ran).rejects.toThrow(SessionsClosedError);
+    expect(recordOf()).toBeUndefined();
+    expect(records.puts).toBe(0);
+  });
 
   it('refuses every later run, send and open: nothing launched, signalled or killed', async () => {
     await started();
     idle();
     exitOnSignal = false;
-    close();
+    await close();
 
     await expect(units.run('review', { file: 'a' })).rejects.toThrow(SessionsClosedError);
     await expect(units.send(KEY, 'Hello')).rejects.toThrow(SessionsClosedError);
@@ -1121,7 +1175,7 @@ describe('closing the units of work', () => {
     const fresh = pending(units.run('explain', { file: 'a' }, { fresh: true }));
     const opened = pending(units.open(KEY, { fresh: true }));
     await settle();
-    close();
+    void close();
 
     await expect(fresh).rejects.toThrow(SessionsClosedError);
     await expect(opened).rejects.toThrow(SessionsClosedError);

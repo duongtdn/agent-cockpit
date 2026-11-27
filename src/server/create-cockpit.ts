@@ -271,10 +271,13 @@ export interface Cockpit {
   /** Serves a WebSocket upgrade of the browser's, mounted as `handle` is. */
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
-   * Closes the cockpit: refuses every later request and run, answers 503 to
-   * each request whose admission is still pending (an `authorize` still
-   * out among them), settles every run still pending (it rejects), closes
-   * every WebSocket and detaches every terminal, stops the agent-facing
+   * Closes the cockpit: refuses every later request and run from the
+   * moment it is called (`run`, `send` and `open` reject with
+   * `SessionsClosedError`; one under way makes no folder and writes no
+   * record from then on), answers 503 to each request whose admission is
+   * still pending (an `authorize` still out among them), settles every run
+   * still pending (it rejects), closes every WebSocket and detaches every
+   * terminal, waits for the records being written, stops the agent-facing
    * listener and releases the app's lock. The sessions go on in tmux:
    * nothing is killed, and no timer of the cockpit's is left.
    */
@@ -430,11 +433,14 @@ async function openCockpit(
       upgrade: handler.upgrade,
       close() {
         closing ??= (async () => {
+          // Before any wait: nothing asked from now on begins while the rest closes.
+          const unitsClosed = units.close();
           // A renewal under way writes the token's file: it ends before the lock is released.
           await renewing;
           await handler.close();
-          units.close();
           sessions.close();
+          // So does a record under way: once the lock is released, the folder may be another process's.
+          await unitsClosed;
           await listener.close();
           await lock.release();
         })();

@@ -445,20 +445,40 @@ export function stubFolders(root = '/state/sessions'): SessionFolders {
 export interface MemoryRecords extends RecordStore {
   /** How many records were put, in all. */
   readonly puts: number;
+  /**
+   * Holds every put asked from now on until released: each is kept by
+   * `get` and `list` only then.
+   *
+   * @returns The release.
+   */
+  holdPuts(): () => void;
 }
 
 export function createMemoryRecords(initial: readonly UnitRecord[] = []): MemoryRecords {
   const records = new Map<string, UnitRecord>(initial.map((record) => [record.key, record]));
   let puts = 0;
+  let held: Promise<void> | undefined;
   return {
     get puts() {
       return puts;
+    },
+    holdPuts() {
+      let release = () => {};
+      held = new Promise((resolve) => {
+        release = resolve;
+      });
+      return () => {
+        held = undefined;
+        release();
+      };
     },
     list: () => [...records.values()],
     get: (key) => records.get(key),
     async put(record) {
       puts += 1;
-      records.set(record.key, structuredClone(record));
+      const kept = structuredClone(record);
+      await held;
+      records.set(record.key, kept);
     },
     async remove(key) {
       records.delete(key);
