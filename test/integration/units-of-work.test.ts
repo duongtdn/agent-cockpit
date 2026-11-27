@@ -267,7 +267,7 @@ describe('a run, by the state of its unit of work', () => {
     });
   });
 
-  it('types the prompt into an `idle` session launched with the same settings: sent', async () => {
+  it('types the prompt into an `idle` session launched with the same settings: sent, kept in the history', async () => {
     const { cockpit, directory } = await newCockpit();
     writeScript(directory, [[{ do: 'reply', text: 'One.' }], [{ do: 'reply', text: 'Two.' }]]);
     await cockpit.run('explain', { file: 'a' });
@@ -275,6 +275,13 @@ describe('a run, by the state of its unit of work', () => {
 
     expect(await cockpit.run('explain', { file: 'a' })).toEqual(SENT);
     await idleWith(cockpit, 'explain-a', 'Two.');
+    const { record } = sessionOf(cockpit, 'explain-a') ?? {};
+    expect(record?.history.map(({ action }) => action)).toEqual(['started', 'sent']);
+    expect(record?.history.at(-1)).toMatchObject({
+      operation: 'run',
+      jobId: 'explain',
+      conversationId: record?.conversationId,
+    });
   });
 
   it('refuses a `busy` session: wrong-state, with its state', async () => {

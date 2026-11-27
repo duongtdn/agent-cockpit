@@ -363,10 +363,13 @@ describe('a run on a live session', () => {
     });
   });
 
-  it('types the prompt into an `idle` session launched with the same settings: `sent`, nothing recorded', async () => {
+  it('types the prompt into an `idle` session launched with the same settings: `sent`, kept in the history', async () => {
     await started();
     idle();
-    const puts = records.puts;
+    const conversationId = driver.launches[0]?.conversationId;
+    const before = recordOf();
+    await vi.advanceTimersByTimeAsync(60_000);
+    const at = new Date().toISOString();
 
     const ran = pending(units.run('explain', { file: 'a' }));
     await settle();
@@ -375,7 +378,33 @@ describe('a run on a live session', () => {
     await expect(ran).resolves.toEqual({ action: 'sent', state: 'busy' });
     expect(host.writes).toContain(`${KEY} text:Explain a.`);
     expect(driver.launches).toHaveLength(1);
-    expect(records.puts).toBe(puts);
+    expect(recordOf()).toEqual({
+      ...before,
+      history: [
+        ...(before?.history ?? []),
+        {
+          operation: 'run',
+          jobId: 'explain',
+          args: { file: 'a' },
+          at,
+          action: 'sent',
+          conversationId,
+        },
+      ],
+    });
+    expect(units.list()[0]?.record?.history).toHaveLength(2);
+  });
+
+  it('keeps nothing in the history of a run typed into an `idle` session that the agent did not take', async () => {
+    await started();
+    idle();
+    const before = recordOf();
+
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(ran).rejects.toMatchObject({ code: 'prompt-not-taken', state: 'idle' });
+    expect(recordOf()).toEqual(before);
   });
 
   it('restarts an `idle` session launched with other settings, resuming its conversation with the run’s', async () => {

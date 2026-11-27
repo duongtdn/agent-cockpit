@@ -81,7 +81,8 @@ Open http://127.0.0.1:4310/#cockpit=…
    answer of the fake API", and _History (1)_ holds
    `run of explain {"folder":"src","file":"greet.js","detail":"brief"}: started`.
 4. **Run it again** on the same file once it is `idle`: `sent → busy: the
-   session took the prompt.`, and the card goes `busy`, then `idle`.
+   session took the prompt.`, and the card goes `busy`, then `idle`;
+   _History (2)_ adds `run of explain …: sent`.
 5. **Review the same file**: in _Review a file_, choose `src` and `greet.js`,
    press _Run_: `resumed · settings-changed → busy`. The session was ended
    (_States seen_ shows `ended · restarted`) and launched again in plan mode,

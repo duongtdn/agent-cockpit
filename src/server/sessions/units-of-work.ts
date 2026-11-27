@@ -192,8 +192,11 @@ interface Plan {
   /** Why the key's live session is ended first, when it is. */
   readonly endFirst?: EndReason;
   /** What the key's history keeps of the operation; none for a send. */
-  readonly history?: Pick<HistoryEntry, 'operation' | 'jobId' | 'args' | 'at'>;
+  readonly history?: Operation;
 }
+
+/** A run or an open, as the key's history keeps it before it is known what it did. */
+type Operation = Pick<HistoryEntry, 'operation' | 'jobId' | 'args' | 'at'>;
 
 /** A launch admitted: the conversation it took up, and the tasks the session it replaced stopped. */
 interface Admitted {
@@ -284,6 +287,7 @@ class Units implements UnitsOfWork {
     const { key } = run;
     const record = this.#records.get(key);
     const session = this.#liveSession(key);
+    const history: Operation = { operation: 'run', jobId: run.jobId, args: run.args, at };
     const launch = (take: Take, endFirst?: EndReason) =>
       this.#launch({
         key,
@@ -291,7 +295,7 @@ class Units implements UnitsOfWork {
         prompt: run.prompt,
         take,
         ...(endFirst === undefined ? {} : { endFirst }),
-        history: { operation: 'run', jobId: run.jobId, args: run.args, at },
+        history,
       });
     if (fresh && session?.state === 'starting') throw wrongState(session);
     if (fresh || record === undefined) {
@@ -315,6 +319,7 @@ class Units implements UnitsOfWork {
     if (run.prompt === undefined) return { action: 'nothing-to-send', state: session.state };
     if (session.state !== 'idle') throw wrongState(session);
     const typed = await this.#sessions.send(key, run.prompt);
+    await this.#recordSent(record, history);
     return { action: 'sent', state: typed.state };
   }
 
@@ -532,6 +537,20 @@ class Units implements UnitsOfWork {
       launchSettings: this.#settingsOf(plan.run),
     });
     this.#loaded.delete(plan.key);
+    this.#notify();
+  }
+
+  /**
+   * Records a run typed into the key's live session, in the conversation
+   * the agent works in: the key's operations run one at a time, so the
+   * record read before the typing is still the key's.
+   */
+  async #recordSent(record: UnitRecord, operation: Operation): Promise<void> {
+    const conversationId = this.#sessions.conversationOf(record.key) ?? record.conversationId;
+    await this.#records.put({
+      ...record,
+      history: [...record.history, { ...operation, action: 'sent', conversationId }],
+    });
     this.#notify();
   }
 

@@ -398,6 +398,9 @@ ended first, `starting` refused. A start that ended a session lists the
 background tasks it stopped (`stoppedTasks`). The old conversation stays in
 the record's `earlierConversations`.
 
+Each run that started, resumed or typed its prompt (`sent`) is kept in the
+key's history; one with nothing to send, or refused, is not.
+
 `send(key, prompt)` types the prompt into an `idle` session (`sent`), its
 settings kept; an `ended` one is resumed with the prompt and the settings of
 the key's last run (its job as the app defines it now, with its recorded

@@ -203,11 +203,13 @@ describe('the jobs console, against the scripted API', () => {
       .waitFor();
   });
 
-  it('runs it again on the same file: the live session takes the prompt', async () => {
+  it('runs it again on the same file: the live session takes the prompt, and its record has the run', async () => {
     const status = await runOnFile('Explain a file', 'src', 'greet.js');
 
     await settled(status, 'sent');
     await inState(GREET, 'idle');
+    await card(GREET).getByText('History (2)').waitFor();
+    expect(await historyOf(GREET)).toEqual(['run of explain: started', 'run of explain: sent']);
   });
 
   it('refuses a value that is not among the field’s choices, and starts nothing', async () => {
@@ -340,6 +342,7 @@ describe('the jobs console, against the scripted API', () => {
     expect(await historyOf(GREET)).toEqual(
       expect.arrayContaining([
         'run of explain: started',
+        'run of explain: sent',
         'run of review: resumed · settings-changed',
         'open of review: resumed',
         'open of review: started · fresh-on-request',
