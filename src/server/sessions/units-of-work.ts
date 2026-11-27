@@ -241,8 +241,8 @@ class Units implements UnitsOfWork {
     this.#loaded = loaded;
     this.#stops = [
       this.#sessions.follow(() => this.#notify()),
-      this.#sessions.onConversation((key, conversationId) => {
-        void this.#queue.run(key, () => this.#moved(key, conversationId)).catch(() => {});
+      this.#sessions.onConversation((key, conversationId, left) => {
+        void this.#queue.run(key, () => this.#moved(key, conversationId, left)).catch(() => {});
       }),
     ];
   }
@@ -524,7 +524,10 @@ class Units implements UnitsOfWork {
     const before = this.#records.get(plan.key);
     const current = this.#sessions.conversationOf(plan.key) ?? conversationId;
     const earlier = [...(before?.earlierConversations ?? [])];
-    if (before !== undefined && take.kind === 'new') earlier.push(before.conversationId);
+    // A new conversation, or one the agent moved to before a restart resumed it.
+    if (before !== undefined && before.conversationId !== conversationId) {
+      earlier.push(before.conversationId);
+    }
     // The agent moved to another conversation (a `/clear`) before the launch settled.
     if (current !== conversationId) earlier.push(conversationId);
     const history = [...(before?.history ?? [])];
@@ -562,10 +565,16 @@ class Units implements UnitsOfWork {
     this.#notify();
   }
 
-  /** Records the agent's move to another conversation: the one it left is an earlier one. */
-  async #moved(key: string, conversationId: string): Promise<void> {
+  /**
+   * Records the agent's move to another conversation: the one it left is
+   * an earlier one. A move told while an operation of the key was under
+   * way is recorded after it, and only from the conversation the record
+   * holds: a launch already recorded the conversation of the session that
+   * replaced the one that moved.
+   */
+  async #moved(key: string, conversationId: string, left: string): Promise<void> {
     const record = this.#records.get(key);
-    if (record === undefined || record.conversationId === conversationId) return;
+    if (record?.conversationId !== left) return;
     await this.#records.put({
       ...record,
       conversationId,

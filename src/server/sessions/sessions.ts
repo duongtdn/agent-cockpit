@@ -225,7 +225,7 @@ export interface Sessions {
    * @param prompt - The prompt.
    * @returns The session once the agent took the prompt.
    * @throws `CockpitError` `wrong-state` with the state the session is in
-   * when it is not `idle`, or when the typing found anything but the input
+   * when it is not `idle` or is being ended, or when the typing found anything but the input
    * box, or the hooks told of anything but the prompt's own turn;
    * `prompt-not-taken` when the agent did not take it, the box cleared and
    * the person's draft put back. What the host fails with.
@@ -234,7 +234,9 @@ export interface Sessions {
   /**
    * Ends a live session gracefully: its agent is sent the driver's signal
    * and given the driver's bound to exit, keeping its conversation, then
-   * killed on the host. The session is `ended` for the reason given.
+   * killed on the host. The session is `ended` for the reason given. From
+   * the moment it is asked until the session is gone, a send to it is
+   * refused and its agent is not heard: its state stays as it was.
    *
    * @param key - The session's key.
    * @param reason - Why the cockpit ends it.
@@ -264,12 +266,13 @@ export interface Sessions {
   conversationOf(key: string): string | undefined;
   /**
    * Tells each move of a session's agent to another conversation (Claude
-   * Code's `/clear`).
+   * Code's `/clear`), while the cockpit hears it: not once it is being ended.
    *
-   * @param listener - Called with the key and the new conversation's id.
+   * @param listener - Called with the key, the new conversation's id and
+   * the id of the one the agent left.
    * @returns A function that stops telling it.
    */
-  onConversation(listener: (key: string, conversationId: string) => void): () => void;
+  onConversation(listener: ConversationListener): () => void;
   /**
    * The keys whose session lives, or is being launched or ended.
    *
@@ -327,6 +330,15 @@ export interface Sessions {
 }
 
 /**
+ * Told a move of a session's agent to another conversation.
+ *
+ * @param key - The session's key.
+ * @param conversationId - The conversation it moved to.
+ * @param left - The conversation it left.
+ */
+export type ConversationListener = (key: string, conversationId: string, left: string) => void;
+
+/**
  * Creates the sessions core.
  *
  * @param options - See {@link SessionsOptions}.
@@ -347,6 +359,11 @@ type Phase =
   | 'launching'
   /** It lives on the host. */
   | 'live'
+  /**
+   * It lives on the host, and the cockpit asked its agent to end: its hooks
+   * are not heard, and nothing is typed into it.
+   */
+  | 'ending'
   /** It lives on the host, and the cockpit is killing it: its hooks are not heard. */
   | 'killing'
   /** It is gone from the host; its end is being written. */
@@ -451,7 +468,7 @@ class SessionRegistry implements Sessions {
   readonly #options: SessionsOptions;
   readonly #entries = new Map<string, Entry>();
   readonly #followers = new Set<(sessions: readonly Session[]) => void>();
-  readonly #conversationListeners = new Set<(key: string, conversationId: string) => void>();
+  readonly #conversationListeners = new Set<ConversationListener>();
   readonly #watch: LivenessWatch;
   #closed = false;
   /** Settled by the close: a graceful end stops waiting for its agent. */
@@ -489,6 +506,7 @@ class SessionRegistry implements Sessions {
         state: 'ended',
       });
     }
+    if (entry.phase === 'ending') throw wrongState(entry.session, 'The cockpit is ending it.');
     if (!isListened(entry) || entry.session.state !== 'idle') throw wrongState(entry.session);
     const outcome = await this.#type(entry, prompt);
     if (outcome !== 'taken') throw typingFailure(outcome, entry.session);
@@ -502,6 +520,8 @@ class SessionRegistry implements Sessions {
     const { session } = entry;
     const stopped = session.state === 'idle' ? (session.backgroundTasks ?? []) : [];
     entry.endedBecause = reason;
+    // From the moment it is asked, before the signal: no send types into it meanwhile.
+    entry.phase = 'ending';
     const { signal, boundMs } = this.#options.driver.ending;
     await this.#signal(key, signal);
     const exited = await within(
@@ -528,8 +548,9 @@ class SessionRegistry implements Sessions {
     return this.#entries.get(key)?.conversationId;
   }
 
-  onConversation(listener: (key: string, conversationId: string) => void): () => void {
-    const own = (key: string, conversationId: string) => listener(key, conversationId);
+  onConversation(listener: ConversationListener): () => void {
+    const own: ConversationListener = (key, conversationId, left) =>
+      listener(key, conversationId, left);
     this.#conversationListeners.add(own);
     return () => void this.#conversationListeners.delete(own);
   }
@@ -709,9 +730,10 @@ class SessionRegistry implements Sessions {
    * it can resume.
    */
   #moveTo(entry: Entry, conversationId: string): void {
-    if (conversationId === entry.conversationId) return;
+    const left = entry.conversationId;
+    if (conversationId === left) return;
     entry.conversationId = conversationId;
-    for (const listener of this.#conversationListeners) listener(entry.key, conversationId);
+    for (const listener of this.#conversationListeners) listener(entry.key, conversationId, left);
     // Not followed yet, during the launch: the following starts on the new one.
     if (entry.stopFollowing === undefined) return;
     // An Esc and then a `/clear` within a poll of the driver's leave the
@@ -1015,7 +1037,7 @@ class SessionRegistry implements Sessions {
   }
 
   async #checkLive(entry: Entry): Promise<void> {
-    if (entry.phase !== 'live') return;
+    if (entry.phase !== 'live' && entry.phase !== 'ending') return;
     try {
       if (!(await this.#options.host.isLive(entry.key))) await this.#gone(entry.key);
     } catch {
@@ -1026,7 +1048,7 @@ class SessionRegistry implements Sessions {
   /** Ends a session whose process is gone from the host. */
   async #gone(key: string): Promise<void> {
     const entry = this.#entries.get(key);
-    if (entry?.phase !== 'live' && entry?.phase !== 'killing') return;
+    if (entry === undefined || !isOnHost(entry)) return;
     entry.phase = 'going';
     entry.inputBoxWait?.stop();
     stopReadingTheScreen(entry);
@@ -1107,6 +1129,11 @@ function conversationOf(entry: Entry): Conversation {
     directory: entry.directory,
     environment: entry.environment,
   };
+}
+
+/** Whether the session's agent was started on the host and is not known gone. */
+function isOnHost(entry: Entry): boolean {
+  return entry.phase === 'live' || entry.phase === 'ending' || entry.phase === 'killing';
 }
 
 /** Whether what a session's agent tells is listened to: from its launch until the cockpit ends it. */

@@ -523,6 +523,27 @@ describe('ending a live session gracefully', () => {
     expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'restarted' });
   });
 
+  it('refuses a send from the moment it is asked, and hears nothing more of the agent, until it is gone', async () => {
+    await idleSession();
+    const moves: string[] = [];
+    sessions.onConversation((_key, conversationId) => void moves.push(conversationId));
+
+    const ended = sessions.end(KEY, 'session-cap');
+    await expect(sending()).rejects.toMatchObject({ code: 'wrong-state', key: KEY });
+    await settle();
+    hook(`${CONVERSATION_PATH}c-cleared`);
+    hook('/prompt-taken');
+
+    expect(moves).toEqual([]);
+    expect(sessions.conversationOf(KEY)).toBe(CONVERSATION);
+    expect(sessions.session(KEY)?.state).toBe('idle');
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    await ended;
+    expect(writes()).toEqual([]);
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'session-cap' });
+  });
+
   it('is refused once the core is closed: nothing signalled or killed', async () => {
     await idleSession();
     sessions.close();

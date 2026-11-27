@@ -1044,6 +1044,27 @@ describe('the cap on live sessions', () => {
     await expect(ran).resolves.toEqual({ action: 'sent', state: 'busy' });
   });
 
+  it('refuses a send and a run on the key of a session it is ending, until it is gone', async () => {
+    await open({ maxSessions: 1 });
+    await started('explain', 'a');
+    idle('explain-a');
+    exitOnSignal = false;
+
+    const ran = pending(units.run('explain', { file: 'b' }));
+    await settle();
+    expect(signals).toEqual(['explain-a SIGTERM']);
+    const sent = pending(units.send('explain-a', 'Hello'));
+    const rerun = pending(units.run('explain', { file: 'a' }));
+    await settle();
+
+    expect(host.writes.filter((write) => write.startsWith('explain-a '))).toEqual([]);
+    await expect(sent).rejects.toMatchObject({ code: 'wrong-state', key: 'explain-a' });
+    await expect(rerun).rejects.toMatchObject({ code: 'wrong-state', key: 'explain-a' });
+    await exits('explain-a');
+    hook('/start-and-take', 'explain-b');
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+  });
+
   it('makes room for a resume, an open and a send that start a session', async () => {
     await open({ maxSessions: 1 });
     await started('explain', 'a');
@@ -1122,6 +1143,41 @@ describe('the records of the units of work', () => {
     hook(`${CONVERSATION_PATH}c-cleared`);
     await settle();
 
+    expect(recordOf()).toMatchObject({ conversationId: 'c-cleared', earlierConversations: [old] });
+  });
+
+  it('keeps a fresh start’s conversation when the old agent’s move to another was told before its end', async () => {
+    await open();
+    await started();
+    idle();
+    const old = driver.launches[0]?.conversationId;
+
+    const ran = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+    // The `/clear` is told while the run waits for its turn: its record follows the run.
+    hook(`${CONVERSATION_PATH}c-cleared`);
+    await listHost();
+    hook('/start-and-take');
+    await ran;
+    await settle();
+
+    const fresh = driver.launches[1]?.conversationId;
+    expect(recordOf()).toMatchObject({ conversationId: fresh, earlierConversations: [old] });
+  });
+
+  it('keeps the conversation it left among the earlier ones when a restart resumes the one the agent moved to', async () => {
+    await open();
+    await started();
+    idle();
+    const old = driver.launches[0]?.conversationId;
+
+    const ran = pending(units.run('review', { file: 'a' }));
+    hook(`${CONVERSATION_PATH}c-cleared`);
+    await listHost();
+    hook('/start-and-take');
+    await expect(ran).resolves.toMatchObject({ action: 'resumed', reason: 'settings-changed' });
+    await settle();
+
+    expect(driver.launches[1]).toMatchObject({ conversationId: 'c-cleared', resume: true });
     expect(recordOf()).toMatchObject({ conversationId: 'c-cleared', earlierConversations: [old] });
   });
 
