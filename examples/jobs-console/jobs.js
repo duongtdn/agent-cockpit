@@ -34,7 +34,7 @@ export function jobsOf(appFolder) {
     detail: z.enum(['brief', 'thorough']).default('brief').meta({ label: 'Detail' }),
   });
   // Explain and Review share their key: a file is one unit of work, whichever job runs on it.
-  const fileKey = ({ folder, file }) => `file-${slug(join(folder, file))}`;
+  const fileKey = ({ folder, file }) => `file-${keyPart(join(folder, file))}`;
   const length = (detail) => (detail === 'brief' ? 'in a few sentences' : 'thoroughly');
   return [
     {
@@ -65,7 +65,7 @@ export function jobsOf(appFolder) {
       description: 'No prompt: the agent starts in the folder, and you type in its terminal.',
       args: z.object({ folder: z.string().meta({ label: 'Folder' }) }),
       options: { folder: folders },
-      key: ({ folder }) => `folder-${slug(folder) || 'app'}`,
+      key: ({ folder }) => `folder-${keyPart(folder)}`,
       directory: ({ folder }) => folder,
     },
     {
@@ -80,7 +80,7 @@ export function jobsOf(appFolder) {
         question: z.string().min(1, 'Ask a question.').meta({ label: 'Question' }),
       }),
       options: { topic: { choices: () => TOPICS.map((value) => ({ value })), suggestions: true } },
-      key: ({ topic }) => `ask-${slug(topic)}`,
+      key: ({ topic }) => `ask-${keyPart(topic)}`,
       prompt: ({ topic, question }) => `About ${topic}: ${question}`,
     },
   ];
@@ -118,9 +118,19 @@ function isShown(name) {
   return !name.startsWith('.') && !HIDDEN_FOLDERS.has(name);
 }
 
-function slug(text) {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+/**
+ * A name as a part of a key, which holds only `a`–`z`, `0`–`9` and `-`:
+ * lower-case letters and digits as they are, every other character as its
+ * code point in hex between two `-` (`src/greet.js` → `src-2f-greet-2e-js`).
+ * The part reads back to the name, so two names never share a key — where a
+ * slug would merge `a-b.js` with `a.b.js`, `README.md` with `readme.md`, or
+ * the app's folder `.` with a folder named `app`, and two files would be one
+ * unit of work.
+ */
+function keyPart(name) {
+  return [...name]
+    .map((character) =>
+      /[a-z0-9]/.test(character) ? character : `-${character.codePointAt(0).toString(16)}-`,
+    )
+    .join('');
 }

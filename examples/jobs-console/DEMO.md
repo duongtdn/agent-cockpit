@@ -9,7 +9,13 @@ opens and starts afresh, and shows a session's terminal.
 - `jobs.js` — the jobs, each showing one thing a job can be:
   - **Explain a file**: a _Folder_, then a _File_ among that folder's files
     (dependent choices), and a _Detail_ (an `enum` with a default). Its key
-    names the file: `file-src-greet-js`.
+    names the file: `file-src-2f-greet-2e-js`. A key keeps lower-case
+    letters and digits and writes any other character as its code point in
+    hex between two `-` (`/` is `-2f-`, `.` is `-2e-`): it reads back to the
+    name, so two files never share a key, where a slug would merge
+    `a-b.js` with `a.b.js`, `README.md` with `readme.md`, or the app's folder
+    (`.`) with a folder named `app`. Copy `keyPart` from `jobs.js` for your
+    own keys.
   - **Review a file**: the same fields and the same key, in plan mode (a job
     part, `claudeCode.job({ permissionMode: 'plan' })`): on a session Explain
     started, it restarts it with plan mode, its conversation resumed.
@@ -39,7 +45,11 @@ opens and starts afresh, and shows a session's terminal.
 Every operation's result shows the cockpit's own words, then what they mean:
 `action · reason → state: …`, such as
 `resumed · settings-changed → busy: the session was restarted with this
-job's settings, its conversation resumed.`
+job's settings, its conversation resumed.` An error shows the cockpit's
+message (a `wrong-state` says where your draft went when a send had to
+leave it aside, and which keys bring it back), or the field each issue of
+`invalid-arguments` is in: `topic: Name a topic: at least one letter or
+digit.`
 
 The end-to-end tests (`test/e2e/jobs-console.test.ts`) follow these steps in
 a browser; `test/e2e/examples-end.test.ts` checks that it leaves
@@ -75,7 +85,7 @@ Open http://127.0.0.1:4310/#cockpit=…
    `todo.md`. Choose `src`: it offers `farewell.js` and `greet.js`, and a
    file chosen before is cleared. _Detail_ shows `brief`, its default.
 3. **Run it**: choose `greet.js`, press _Run_. The launcher says
-   `started → busy: a new session started.` A card `file-src-greet-js`
+   `started → busy: a new session started.` A card `file-src-2f-greet-2e-js`
    appears; within a few seconds its state is `idle`, _States seen_ reads
    `starting → busy → idle`, its last answer begins "This is the scripted
    answer of the fake API", and _History (1)_ holds
@@ -92,10 +102,12 @@ Open http://127.0.0.1:4310/#cockpit=…
    cards, the session's terminal shows Claude Code's own screen, `(open)`
    beside its name. Click in it and type a draft, `a draft kept aside`,
    without Enter. In the card's prompt box, type `Summarize it in one line.`
-   and press _Send_. The terminal says `(held)` while the cockpit types (what
-   you type then waits, and arrives after); the draft leaves the input box,
-   the prompt is typed and taken, and the draft comes back. The card says
-   `sent → busy`, and goes `idle` with the answer; the prompt box is empty.
+   and press _Send_. The terminal says `(held)` while the cockpit types; the
+   draft leaves the input box, the prompt is typed and taken, and the draft
+   comes back. The card says `sent → busy`, and goes `idle` with the answer;
+   the prompt box is empty. Send another prompt, and while the terminal
+   says `(held)` type in it: nothing shows until it says `(open)` again,
+   then your keys arrive after the draft, in the order you typed them.
 7. **Open a session the agent left**: in the terminal, clear the draft
    (Ctrl+U) and type `/exit`, then Enter. The card goes `ended · agent-exit`
    and the terminal `(ended)`. Press _Open_: `resumed → idle: the
@@ -116,20 +128,26 @@ Open http://127.0.0.1:4310/#cockpit=…
    live already.`
 10. **Ask anything**: _Topic_ suggests `the project`, `the notes` and `the
     code`; type a topic of your own, `the weather`, and a question, and run:
-    a session `ask-the-weather` starts. A suggestion only suggests.
+    a session `ask-the-20-weather` starts. A suggestion only suggests. Ask
+    about `the-weather`: another session, `ask-the-2d-weather`, starts. A
+    topic with no letter or digit, `?!`, is refused: `topic: Name a topic:
+    at least one letter or digit.`
 11. **The cap**: stop the server and start it with `--max-sessions 2`. Run
     _Explain_ on `src/greet.js`, then on `src/farewell.js`, and let both go
     `idle` with no terminal shown (press _Terminal_ on neither, or reload
     the page without `?session=…`). Run it on `notes/todo.md`: the session
-    `idle` the longest, `file-src-greet-js`, is ended (`ended ·
+    `idle` the longest, `file-src-2f-greet-2e-js`, is ended (`ended ·
     session-cap`) and the new one starts. A session shown in a terminal is
-    not ended for another: press _Terminal_ on `file-src-farewell-js`, then
-    run on `notes/ideas.md`: `file-notes-todo-md` is ended, not it. When no
+    not ended for another: press _Terminal_ on `file-src-2f-farewell-2e-js`,
+    then run on `notes/ideas.md`: `file-notes-2f-todo-2e-md` is ended, not
+    it. When no
     live session can be ended (each busy, or shown in a terminal), a start is
     refused, the cap and the live keys named.
 12. **Reload the page** (no link needed): the cards and their histories come
     back, and the terminal of the session you chose (its key is in the
-    address, `?session=…`) reconnects and shows the same screen.
+    address, `?session=…`) reconnects and shows the same screen. Edit the
+    address to `?session=Not a key`: the terminal's place says "The terminal
+    needs a session key."
 13. **Stop the server** with Ctrl+C (or close its terminal). It prints
     "Stopped.", ends the sessions and their tmux server, stops the fake API
     and removes its folder, the records with it; one that cannot start (its

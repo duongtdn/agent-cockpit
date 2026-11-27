@@ -50,10 +50,17 @@ async function showLaunchers() {
   }
 }
 
-/** Mounts the session's terminal, in place of the one shown before; the session itself goes on. */
+/**
+ * Mounts the session's terminal, in place of the one shown before; the
+ * session itself goes on. A key it cannot show (one in the address, say) is
+ * shown with why, where its terminal would be.
+ */
 function showTerminal(key) {
   terminal?.dispose();
+  terminal = undefined;
   const status = document.getElementById('terminal-status');
+  document.getElementById('terminal-key').textContent = key;
+  document.getElementById('terminal-section').hidden = false;
   try {
     terminal = mountTerminal(document.getElementById('terminal'), key, { baseUrl: BASE_URL });
   } catch (error) {
@@ -63,8 +70,6 @@ function showTerminal(key) {
   terminal.on('status', (current) => {
     status.textContent = `(${current})`;
   });
-  document.getElementById('terminal-key').textContent = key;
-  document.getElementById('terminal-section').hidden = false;
   const address = new URL(location.href);
   address.searchParams.set(CHOSEN, key);
   history.replaceState(history.state, '', address);

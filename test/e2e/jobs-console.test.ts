@@ -17,7 +17,7 @@ import { type ExampleApp, startExampleApp } from '../support/example-app.ts';
 /** The answer the example's fake API gives to every question. */
 const SCRIPTED_ANSWER = 'scripted answer of the fake API';
 /** The unit of work of the sample project's `src/greet.js`, which Explain and Review share. */
-const GREET = 'file-src-greet-js';
+const GREET = 'file-src-2f-greet-2e-js';
 /** The unit of work of "Work in a folder" on the sample project's `notes`. */
 const NOTES = 'folder-notes';
 /** Another site's name, which the browser resolves to the loopback address. */
@@ -127,6 +127,32 @@ async function showTerminalOf(key: string): Promise<void> {
   await page.locator('#terminal-key').getByText(key, { exact: true }).waitFor();
   await page.locator('#terminal-status').getByText('(open)').waitFor();
   await expect.poll(inputBox, { timeout: WAIT_MS }).toBe('❯');
+}
+
+/** Gives the mounted terminal the keyboard, as a click would, without a click the agent could read. */
+async function focusTerminal(): Promise<void> {
+  await terminal().locator('textarea').focus();
+}
+
+/**
+ * Records, at each key the person presses in the mounted terminal, the
+ * terminal's status as the page shows it then.
+ *
+ * @returns What it recorded so far, each time it is called.
+ */
+async function recordStatusAtEachKey(): Promise<() => Promise<string[]>> {
+  await page.evaluate(() => {
+    const recorded: string[] = [];
+    (globalThis as { statusAtKeys?: string[] }).statusAtKeys = recorded;
+    document
+      .getElementById('terminal')
+      ?.addEventListener(
+        'keydown',
+        () => recorded.push(document.getElementById('terminal-status')?.textContent ?? ''),
+        { capture: true },
+      );
+  });
+  return () => page.evaluate(() => (globalThis as { statusAtKeys?: string[] }).statusAtKeys ?? []);
 }
 
 /** Types into the mounted terminal, as a person does, and waits for the input box to show it. */
@@ -255,6 +281,29 @@ describe('the jobs console, against the scripted API', () => {
     expect(await card(GREET).getByLabel(`Prompt for ${GREET}`).inputValue()).toBe('');
   });
 
+  it('holds the keys typed in the terminal while a send types, then passes them on after it, in order', async () => {
+    const draft = 'a draft kept aside';
+    const prompt = 'Say it once more.';
+    const typedMeanwhile = ' and keys typed meanwhile';
+    await expect.poll(inputBox, { timeout: WAIT_MS }).toBe(`❯ ${draft}`);
+    const statusAtKeys = await recordStatusAtEachKey();
+
+    await card(GREET).getByLabel(`Prompt for ${GREET}`).fill(prompt);
+    await card(GREET)
+      .getByRole('button', { name: `Send to ${GREET}` })
+      .click();
+    await page.locator('#terminal-status').getByText('(held)').waitFor();
+    await focusTerminal();
+    await page.keyboard.type(typedMeanwhile);
+
+    await settled(card(GREET).getByRole('status'), 'sent');
+    await page.locator('#terminal-status').getByText('(open)').waitFor();
+    expect(await statusAtKeys()).toEqual([...typedMeanwhile].map(() => '(held)'));
+    await expect.poll(terminalRows, { timeout: WAIT_MS }).toContain(`❯ ${prompt}`);
+    await expect.poll(inputBox, { timeout: WAIT_MS }).toBe(`❯ ${draft}${typedMeanwhile}`);
+    await inState(GREET, 'idle');
+  });
+
   it('opens a session the agent left: its conversation resumed with no prompt', async () => {
     await terminal().click();
     // The draft goes: the input box takes `/exit` alone.
@@ -328,7 +377,33 @@ describe('the jobs console, against the scripted API', () => {
     await ask.getByRole('button', { name: 'Run' }).click();
 
     await settled(ask.getByRole('status'), 'started');
-    await inState('ask-the-weather', 'idle');
+    await inState('ask-the-20-weather', 'idle');
+  });
+
+  it('keeps two topics apart that differ only in their punctuation: each is a unit of work', async () => {
+    const ask = launcher('Ask anything');
+    await ask.getByLabel('Topic').fill('the-weather');
+    await ask.getByLabel('Question').fill('Will it rain?');
+
+    await ask.getByRole('button', { name: 'Run' }).click();
+
+    await settled(ask.getByRole('status'), 'started');
+    await inState('ask-the-2d-weather', 'idle');
+    await inState('ask-the-20-weather', 'idle');
+  });
+
+  it('says which field a refused run’s arguments fail on, in the cockpit’s words', async () => {
+    const ask = launcher('Ask anything');
+    await ask.getByLabel('Topic').fill('?!');
+    await ask.getByLabel('Question').fill('Will it rain?');
+
+    await ask.getByRole('button', { name: 'Run' }).click();
+
+    await ask
+      .getByRole('status')
+      .getByText('topic: Name a topic: at least one letter or digit.', { exact: true })
+      .waitFor();
+    expect(await ask.getByRole('status').getAttribute('data-error')).toBe('invalid-arguments');
   });
 
   it('works again when the page is reopened without the link’s fragment: the sessions, their records and the terminal', async () => {
@@ -351,6 +426,16 @@ describe('the jobs console, against the scripted API', () => {
     );
     await page.locator('#terminal-key').getByText(NOTES, { exact: true }).waitFor();
     await page.locator('#terminal-status').getByText('(open)').waitFor();
+  });
+
+  it('says why a terminal cannot be shown for a key in the address that is no key', async () => {
+    const address = new URL(page.url());
+    address.searchParams.set('session', 'Not a key');
+
+    await page.goto(address.href);
+
+    await page.locator('#terminal-key').getByText('Not a key', { exact: true }).waitFor();
+    await page.locator('#terminal-status').getByText('The terminal needs a session key.').waitFor();
   });
 
   it('keeps the token to the page’s origin: a page on another port has none', async () => {

@@ -90,11 +90,9 @@ export function explain(error) {
     case 'unreachable':
       return 'The server cannot be reached; trying again.';
     case 'invalid-arguments':
-      return error.issues.map((issue) => issue.message).join(' ');
+      return error.issues.map(issueText).join(' ');
     case 'not-a-choice':
       return `${JSON.stringify(error.value)} is not among the choices of ${error.field} any more: choose again.`;
-    case 'wrong-state':
-      return `${error.key} is ${error.state}: wait until it is idle.`;
     case 'prompt-not-taken':
       return `${error.key} did not take the prompt; it is ${error.state}. Your draft is back in its box.`;
     case 'prompt-too-long':
@@ -104,6 +102,12 @@ export function explain(error) {
     case 'session-cap-reached':
       return `The cap of ${error.cap} live sessions is reached (${error.live.join(', ')}), and none is idle to end for this one.`;
     default:
+      // `wrong-state` among them: its message says where the person's draft went, when it moved.
       return error.message;
   }
+}
+
+/** One way the arguments do not fit, after the field it is in, when it is in one. */
+function issueText({ path, message }) {
+  return path.length === 0 ? message : `${path.join('.')}: ${message}`;
 }
