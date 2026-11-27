@@ -68,7 +68,8 @@ export async function folderInsideApp(appFolder: string, folder: string): Promis
   if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
     throw new CockpitError(
       'folder-outside-app',
-      `The folder ${JSON.stringify(folder)} lies outside the app's folder ${app}: it is ${path}.`,
+      // Named as given alone: the server's paths stay off the wire and the pages.
+      `The folder ${JSON.stringify(folder)} lies outside the app's folder.`,
       { folder },
     );
   }

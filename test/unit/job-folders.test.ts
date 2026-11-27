@@ -116,12 +116,15 @@ describe("a job's folder", () => {
     ['a link leading out', 'links/out'],
     ['a folder below a link leading out', 'links/out/deep'],
     ['a missing folder below a link leading out', 'links/out/new/deeper'],
-  ])('refuses %s: folder-outside-app, naming the folder the job gave', async (_, folder) => {
-    expect(await refusal(folderOfJob(app, inFolder, { folder }))).toMatchObject({
-      code: 'folder-outside-app',
-      folder,
-    });
-  });
+  ])(
+    'refuses %s: folder-outside-app, naming the folder the job gave and no path of the server',
+    async (_, folder) => {
+      const error = await refusal(folderOfJob(app, inFolder, { folder }));
+
+      expect(error).toMatchObject({ code: 'folder-outside-app', folder });
+      expect((error as Error).message).not.toContain(root);
+    },
+  );
 
   it('refuses a folder that is no text: invalid-options, naming the job', async () => {
     const error = await refusal(
