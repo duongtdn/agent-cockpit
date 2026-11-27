@@ -6,7 +6,17 @@ import type { Attachment, TerminalSize } from '../../src/server/session-host/ses
 import { CockpitError } from '../../src/shared/cockpit-error.ts';
 import type { JobDescription } from '../../src/shared/job.ts';
 import type { RunResult, Session } from '../../src/shared/session.ts';
-import { SESSION_ENDED_CLOSE_CODE } from '../../src/shared/wire.ts';
+import {
+  FOLLOW_SESSIONS_PATH,
+  JOBS_PATH,
+  OPEN_PATH,
+  OPTIONS_PATH,
+  RUN_PATH,
+  SEND_PATH,
+  SESSION_ENDED_CLOSE_CODE,
+  SESSIONS_PATH,
+  terminalPath,
+} from '../../src/shared/wire.ts';
 import { eventually } from '../support/eventually.ts';
 import { FakeAttachment } from '../support/fake-attachment.ts';
 import {
@@ -113,14 +123,36 @@ function errorOf(body: string): Record<string, unknown> {
 }
 
 describe('the handler’s request checks', () => {
-  it('refuses a request without the token, before any route is told: no-token', async () => {
-    for (const path of ['/sessions', '/run', '/nothing']) {
-      const reply = await call(`${base}${path}`);
+  it.each([
+    ['GET', SESSIONS_PATH],
+    ['POST', RUN_PATH],
+    ['POST', SEND_PATH],
+    ['POST', OPEN_PATH],
+    ['GET', JOBS_PATH],
+    ['POST', OPTIONS_PATH],
+    ['GET', FOLLOW_SESSIONS_PATH],
+    ['GET', terminalPath(idle.key)],
+    ['GET', '/nothing'],
+  ])(
+    'refuses %s %s without the token, before any route is told: no-token',
+    async (method, path) => {
+      // A body each operation would take, so that only the missing token refuses it.
+      const body = JSON.stringify({
+        jobId: 'explain',
+        args: {},
+        key: idle.key,
+        prompt: 'Hi',
+        field: 'file',
+      });
+
+      const reply = await call(`${base}${path}`, method === 'POST' ? { method, body } : { method });
 
       expect(reply.status).toBe(401);
       expect(errorOf(reply.body)).toMatchObject({ name: 'CockpitError', code: 'no-token' });
-    }
-  });
+      expect(runs).toEqual([]);
+      expect(asked).toEqual([]);
+    },
+  );
 
   it('refuses a request with another token: no-token', async () => {
     expect((await call(`${base}/sessions`, { token: 'not-it' })).status).toBe(401);
