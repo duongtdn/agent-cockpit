@@ -313,6 +313,46 @@ it('116 — A run on an idle session launched with other settings ends it gracef
   expect(idle).toMatchObject({ lastMessage: 'Planned.' });
 });
 
+/** Vietnamese, every letter precomposed: most of three bytes of UTF-8. */
+const VIETNAMESE = 'Những điều đẹp đẽ ở quê hương: ầẩẫậắằẳẵặ, ềểễệ, ồổỗộ, ờởỡợ, ừửữự. ';
+
+// The agent's screen is still blank when its SessionStart is read: its
+// input box was drawn 34–48 ms later in five runs. Typed at once, the
+// prompt finds no box.
+it('117 — A first prompt longer than the command line takes (over 120,000 bytes of UTF-8) is typed once SessionStart came: the session stays starting until UserPromptSubmit carries it, exact', {
+  timeout: 120_000,
+}, async () => {
+  const cockpit = await startContractCockpit();
+  cockpit.api.script(turn('Read it all.'));
+  const units = Array.from(VIETNAMESE);
+  const prompt = Array.from({ length: 70_000 }, (_, index) => units[index % units.length])
+    .join('')
+    .trimEnd();
+
+  const ran = await cockpit.say(prompt);
+  const idle = await cockpit.sessionIn(SAID_KEY, 'idle');
+
+  expect(Buffer.byteLength(prompt)).toBeGreaterThan(120_000);
+  expect(ran).toEqual({ action: 'started', state: expect.stringMatching(/^(busy|idle)$/) });
+  expect(cockpit.launches[0]?.args).not.toContain('--');
+  const moments = cockpit.timeline.map((moment) =>
+    'hook' in moment
+      ? String(moment.hook.hook_event_name)
+      : 'session' in moment
+        ? moment.session.state
+        : 'told',
+  );
+  const taken = moments.indexOf('UserPromptSubmit');
+  expect(moments.indexOf('SessionStart')).toBeLessThan(taken);
+  expect(moments.slice(0, taken).filter((moment) => /^[a-z]+$/.test(moment))).toEqual(['starting']);
+  const submitted = hooksSince(cockpit, 0).filter(
+    (hook) => hook.hook_event_name === 'UserPromptSubmit',
+  );
+  expect(submitted).toHaveLength(1);
+  expect(submitted[0]?.prompt === prompt).toBe(true);
+  expect(idle).toMatchObject({ lastMessage: 'Read it all.' });
+});
+
 /** Types a draft as a person does, a line break as Alt+Enter, and waits until the box shows it. */
 async function typeDraft(session: AgentSession, lines: readonly string[]): Promise<void> {
   for (const [index, line] of lines.entries()) {

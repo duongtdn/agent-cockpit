@@ -176,7 +176,8 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   (113–119, through the cockpit's `run`, `send` and `open`: 113 an ended
   unit of work resumed, 114 a conversation the agent no longer keeps started anew,
   115 `fresh` ending an idle or busy session gracefully, 116 a restart on
-  other settings, 118 a send over a draft of several lines, 119 a
+  other settings, 117 a first prompt over the command line's bound typed
+  once the agent started, 118 a send over a draft of several lines, 119 a
   permission dialog drawn while a send types).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
