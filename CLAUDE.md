@@ -253,7 +253,11 @@ back to the draft), Ctrl+E to the end of the line, Ctrl+U back to the start
 of the screen row (or the line break), Ctrl+Y what kills in a row killed
 and Alt+Y right after it the kill before, Backspace, ESC CR; the terminal's
 cursor put on the box's; a `!` into an empty box turns shell mode on, Backspace or
-Ctrl+U on the empty box off. A prompt taken is trimmed of blanks and line
+Ctrl+U on the empty box off. While it works on a turn or a compaction,
+its spinner's row is drawn above the box, a draft in it or none; the
+footer is the mode's hint (`default`, `acceptEdits`, `plan`,
+`bypassPermissions`), followed over an empty box only by `esc to
+interrupt` while busy and its other hints. A prompt taken is trimmed of blanks and line
 breaks at its end and of U+2063 at its ends; a tab typed is dropped. A
 permission dialog is drawn 400 ms after its `PermissionRequest` (the keys
 typed meanwhile reach the box) and takes the box's place: text on it does

@@ -279,6 +279,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
   let toolCalls = 0;
   let ending = false;
   let subagentEnded = false;
+  let compacting = false;
 
   function view(drawnBox: DrawnBox = box.drawn()): ScreenView {
     return {
@@ -291,6 +292,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       problem,
       box: drawnBox,
       subagentEnded,
+      compacting,
       startUpDialog: shownStartUpDialog(),
       farewell,
     };
@@ -797,6 +799,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       return;
     }
     state = 'busy';
+    compacting = true;
     lastPrompt = COMPACT_COMMAND;
     show();
     try {
@@ -807,6 +810,7 @@ export function createFakeAgent(surroundings: AgentSurroundings): FakeAgent {
       return;
     }
     state = 'idle';
+    compacting = false;
     show();
   }
 

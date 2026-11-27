@@ -58,15 +58,46 @@ describe("the fake agent's screen", () => {
     expect(starting).not.toContain(RULE);
   });
 
-  it('draws the footer of the modes and states it was seen in, and none in the others', () => {
-    expect(renderScreen({ ...view, state: 'busy' }).at(-1)).toBe(
-      '  ⏸ manual mode on · esc to interrupt · ← for agents',
-    );
-    expect(renderScreen({ ...view, permissionMode: 'bypassPermissions' }).at(-1)).toBe(
-      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
-    );
-    expect(renderScreen({ ...view, permissionMode: 'plan' }).at(-1)).toBe(RULE);
+  it.each([
+    ['default', '⏸ manual mode on', ' · ? for shortcuts'],
+    ['acceptEdits', '⏵⏵ accept edits on (shift+tab to cycle)', ''],
+    ['plan', '⏸ plan mode on (shift+tab to cycle)', ''],
+    ['bypassPermissions', '⏵⏵ bypass permissions on (shift+tab to cycle)', ''],
+  ])(
+    'draws the footer of %s idle and busy, over an empty box and over text, as it was seen',
+    (permissionMode, hint, shortcuts) => {
+      const footer = (state: 'idle' | 'busy', box: DrawnBox) =>
+        renderScreen({ ...view, permissionMode, state, box }).at(-1);
+
+      expect(footer('idle', typed(''))).toBe(`  ${hint}${shortcuts} · ← for agents`);
+      expect(footer('busy', typed(''))).toBe(`  ${hint} · esc to interrupt · ← for agents`);
+      expect(footer('idle', typed('a draft'))).toBe(`  ${hint}`);
+      expect(footer('busy', typed('a draft'))).toBe(`  ${hint}`);
+    },
+  );
+
+  it('draws no footer in the modes it was not seen in, nor while a dialog waits', () => {
+    expect(renderScreen({ ...view, permissionMode: 'dontAsk' }).at(-1)).toBe(RULE);
     expect(renderScreen({ ...view, state: 'waiting' }).at(-1)).toBe(RULE);
+  });
+
+  it("draws the spinner's row above the input box while a turn runs, a draft in the box or none", () => {
+    for (const box of [typed(''), typed('a draft')]) {
+      const lines = renderScreen({ ...view, state: 'busy', step: 'reply', box });
+
+      expect(lines.slice(-5, -3)).toEqual(['✶ Frosting…', RULE]);
+    }
+  });
+
+  it("draws the spinner's row of a compaction while it runs", () => {
+    const lines = renderScreen({ ...view, state: 'busy', compacting: true });
+
+    expect(lines.slice(-5, -3)).toEqual(['✶ Compacting conversation…', RULE]);
+    expect(lines.at(-1)).toBe('  ⏸ manual mode on · esc to interrupt · ← for agents');
+  });
+
+  it("draws no spinner's row while idle", () => {
+    expect(renderScreen(view).some((line) => line.includes('…'))).toBe(false);
   });
 
   it('draws a start-up dialog alone, as Claude Code draws it, its selected option marked', () => {
@@ -166,14 +197,6 @@ describe("the fake agent's screen", () => {
     ]);
   });
 
-  it('draws the footer of a box with text alike while a turn runs', () => {
-    expect(renderScreen({ ...view, state: 'busy', box: typed('a draft') }).slice(-3)).toEqual([
-      '❯ a draft',
-      RULE,
-      '  ⏸ manual mode on',
-    ]);
-  });
-
   it('draws the footer of an empty box over the invisible separator alone', () => {
     expect(renderScreen({ ...view, box: typed('\u2063') }).slice(-3)).toEqual([
       '❯\u00a0',
@@ -192,6 +215,11 @@ describe("the fake agent's screen", () => {
 
   it("puts the terminal's cursor on the input box's, counted up from the last row", () => {
     expect(drawScreen({ ...view, box: typed('one\ntwo') }).cursor).toEqual({
+      rowsUp: 2,
+      column: 5,
+    });
+    // The spinner's row above the box moves nothing below it.
+    expect(drawScreen({ ...view, state: 'busy', box: typed('one\ntwo') }).cursor).toEqual({
       rowsUp: 2,
       column: 5,
     });

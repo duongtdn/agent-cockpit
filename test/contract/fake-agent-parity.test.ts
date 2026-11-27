@@ -790,6 +790,69 @@ agreeOn(
   },
 );
 
+/**
+ * Waits until the input box shows a draft, and observes what the driver
+ * reads of the screen then: a busy agent's never ready, whatever the box holds.
+ */
+async function observeReadingOverDraft(
+  agent: ParityAgent,
+  session: AgentSession,
+  what: string,
+): Promise<void> {
+  await boxShowing(agent, session, (rows) => rows.includes('❯\u00a0a draft'));
+  agent.observe(what, readScreen(await session.screen()));
+}
+
+/**
+ * Waits until the driver reads the screen as ready, the draft still in the
+ * box: the agent's spinner stays a moment past the hook that ends its work.
+ */
+async function observeReadyOverDraft(
+  agent: ParityAgent,
+  session: AgentSession,
+  what: string,
+): Promise<void> {
+  const box = await agent.eventually(async () => {
+    expect(readScreen(await session.screen())).toEqual({ shows: 'ready' });
+    return boxShowing(agent, session, (rows) => rows.includes('❯\u00a0a draft'));
+  });
+  agent.observe(what, box);
+}
+
+agreeOn(
+  'a draft typed while a turn and a compaction run: the driver reads each screen as busy, then ready once each ended',
+  {
+    script: [[touch('a.txt'), reply('Touched.')], [{ do: 'compact', summary: 'The summary.' }]],
+    async play(agent) {
+      agent.hooks.hold('PreToolUse');
+      agent.hooks.hold('PreCompact');
+      const session = await agent.startNew();
+      await agent.hook('SessionStart');
+      await submitPrompt(agent, session, 'touch it');
+      const call = await agent.hook('PreToolUse');
+      await session.type('a draft');
+      await observeReadingOverDraft(agent, session, 'the screen as the call waits');
+      call.answer({});
+      await turnEnded(agent);
+      await observeReadyOverDraft(agent, session, 'the box after the turn');
+      await pressUntilRedrawn(agent, session, 'C-u');
+      await session.type('/compact');
+      const begun = await submitInputBox(
+        agent,
+        session,
+        (box) => box.trim() === '/compact',
+        'PreCompact',
+      );
+      await session.type('a draft');
+      await observeReadingOverDraft(agent, session, 'the screen as the compaction waits');
+      begun.hook.answer({});
+      await agent.hook('PostCompact');
+      await observeReadyOverDraft(agent, session, 'the box after the compaction');
+      await terminated(agent, session);
+    },
+  },
+);
+
 agreeOn(
   'a draft in the box as a background task ends: its turn starts by itself, the draft stays',
   {

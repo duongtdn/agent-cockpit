@@ -38,6 +38,8 @@ export interface ScreenView {
   readonly box: DrawnBox;
   /** Whether a subagent ran in the background and ended: the footer then says where to see it. */
   readonly subagentEnded?: boolean;
+  /** Whether the agent compacts the conversation, on the person's `/compact`: its spinner says so. */
+  readonly compacting?: boolean;
   /** The start-up dialog that covers the screen, if any: Claude Code draws nothing else then. */
   readonly startUpDialog?: ShownStartUpDialog | undefined;
   /** What the agent printed as it left, below what it showed. */
@@ -48,20 +50,33 @@ export interface ScreenView {
 const DEFAULT_WIDTH = 80;
 
 /**
- * The footer under the input box, as Claude Code 2.1.332 draws it in the
- * modes and states it was seen in; none in the others. In the default mode
- * a box with text drops the hints, idle or while a turn runs, and an idle
- * box in shell mode says so.
+ * The mode's hint, the footer's first words, as Claude Code 2.1.332 draws
+ * it in the modes it was seen in; no footer in the others.
  */
-const FOOTERS: Readonly<Record<string, Partial<Record<AgentState, string>>>> = {
-  default: {
-    idle: '⏸ manual mode on · ? for shortcuts · ← for agents',
-    busy: '⏸ manual mode on · esc to interrupt · ← for agents',
-  },
-  bypassPermissions: { idle: '⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents' },
+const MODE_HINTS: Readonly<Record<string, string>> = {
+  default: '⏸ manual mode on',
+  acceptEdits: '⏵⏵ accept edits on (shift+tab to cycle)',
+  plan: '⏸ plan mode on (shift+tab to cycle)',
+  bypassPermissions: '⏵⏵ bypass permissions on (shift+tab to cycle)',
 };
-const DEFAULT_FOOTER_OVER_TEXT = '⏸ manual mode on';
+/**
+ * What follows the mode's hint over an empty box, idle and busy; over text
+ * the hint shows alone, idle or busy, in every mode.
+ */
+const HINTS_OVER_AN_EMPTY_BOX: Readonly<Record<'idle' | 'busy', string>> = {
+  idle: '← for agents',
+  busy: 'esc to interrupt · ← for agents',
+};
+/** Seen in the default mode only: its idle footer offers the shortcuts first. */
+const DEFAULT_IDLE_SHORTCUTS = '? for shortcuts';
 const SHELL_MODE_FOOTER = '! for shell mode';
+/**
+ * The spinner's row, which Claude Code draws above the box while it works,
+ * a draft in the box or none: its verb changes from turn to turn (one seen
+ * here), a compaction's says so.
+ */
+const SPINNER_OF_A_TURN = '✶ Frosting…';
+const SPINNER_OF_A_COMPACTION = '✶ Compacting conversation…';
 /** Seen of Claude Code once a subagent ended: a hint in place of the shortcuts', over an empty box and over text. */
 const FOOTERS_AFTER_A_SUBAGENT = {
   empty: '⏸ manual mode on · /tasks to see subagents · ← for agents',
@@ -124,7 +139,7 @@ export function drawScreen(view: ScreenView, width = DEFAULT_WIDTH): DrawnScreen
   // Once the session started, the box has a rule above it.
   const cursorIndex = (view.state === 'starting' ? 0 : 1) + view.box.cursor.row;
   return {
-    rows: [...shownFacts, ...box, ...farewell],
+    rows: [...shownFacts, ...spinner(view), ...box, ...farewell],
     cursor: {
       rowsUp: box.length - 1 - cursorIndex + farewell.length,
       column: view.box.cursor.column,
@@ -145,6 +160,12 @@ function facts(view: ScreenView): string[] {
   ];
 }
 
+/** Seen of Claude Code: while it works, its spinner's row is above the input box. */
+function spinner(view: ScreenView): string[] {
+  if (view.state !== 'busy') return [];
+  return [view.compacting ? SPINNER_OF_A_COMPACTION : SPINNER_OF_A_TURN];
+}
+
 /** Seen of Claude Code: the box is drawn once the session started; keys typed before are kept in it. */
 function inputBox(view: ScreenView, width: number): string[] {
   const { box } = view;
@@ -159,17 +180,18 @@ function inputBox(view: ScreenView, width: number): string[] {
 }
 
 function footerOf({ box, permissionMode, state, subagentEnded }: ScreenView): string | undefined {
+  const hint = MODE_HINTS[permissionMode];
+  if (hint === undefined || (state !== 'idle' && state !== 'busy')) return undefined;
   if (permissionMode === 'default' && state === 'idle') {
     if (box.inShellMode) return SHELL_MODE_FOOTER;
     if (subagentEnded) {
       return box.looksEmpty ? FOOTERS_AFTER_A_SUBAGENT.empty : FOOTERS_AFTER_A_SUBAGENT.overText;
     }
   }
-  const drawsTheBox = state === 'idle' || state === 'busy';
-  if (permissionMode === 'default' && drawsTheBox && !box.looksEmpty) {
-    return DEFAULT_FOOTER_OVER_TEXT;
-  }
-  return FOOTERS[permissionMode]?.[state];
+  if (!box.looksEmpty) return hint;
+  const shortcuts =
+    permissionMode === 'default' && state === 'idle' ? [DEFAULT_IDLE_SHORTCUTS] : [];
+  return [hint, ...shortcuts, HINTS_OVER_AN_EMPTY_BOX[state]].join(' · ');
 }
 
 /** A rule across the terminal, with what it says after three of its dashes, as Claude Code draws it. */
