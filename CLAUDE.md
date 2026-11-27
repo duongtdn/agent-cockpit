@@ -53,6 +53,16 @@ Packages: `server/` `node-pty`, `ws` and `zod`; `fastify/` `fastify`;
 - `pnpm check` — typecheck, lint, unit, integration and contract tests,
   build, `npm pack --dry-run`, the end-to-end tests: what CI runs. Green before every commit that
   ends a piece of work.
+- `pnpm check:ci` — the same, then the contract suite again, in a container
+  made like CI's runner (`ci/Dockerfile`: its Ubuntu and tmux, Node 22 and
+  Node 24 side by side, the agent's sandbox, Playwright's Chromium), each
+  Node on 2 CPUs of its own at `COCKPIT_TEST_SLOWNESS=2`, as CI runs: this
+  machine is much faster than CI's runner and runs another tmux and one
+  Node, so green here says little about CI. Green before every push. Each
+  run's output, contract results and failed tests' timelines are kept in
+  `test-results/ci/node<major>/`. `--node <major>` runs one Node;
+  `--command '<shell>'` runs that on the same machine instead (a row run
+  again and again); `CHECK_CI_CPUS` sets the CPUs of each run.
 - `pnpm test:coverage` — the unit and integration tests in one run, then
   the contract suite alone, each keeping its coverage
   (`test-results/coverage-runs/`), then the gate on their sum: 90% of the
@@ -288,10 +298,26 @@ whose assertion is made at its owning level is not written.
 ## How code is written here
 
 - **Test first.** A failing test for the next behavior (red), the simplest
-  code that passes (green), then refactor with the tests green. Tests at
-  every level that applies: unit; integration against real tmux; contract
-  (the real agent against the scripted fake API in `test/support/`); end to
-  end (a browser through an example app).
+  code that passes (green), then refactor with the tests green.
+- **One level owns each behavior**, and its test is written there only:
+  unit — decisions, state machines and their interleavings, refusal tables,
+  every edge case; integration — what only real tmux, processes, files and
+  sockets show; contract — everything about how the agent behaves (the real
+  agent against the scripted fake API); end to end — one journey per
+  feature, a browser through an example app. A level above the owner adds a
+  test only for what the owner cannot show; the same assertion is not
+  repeated up the levels. New lifecycle events of a session join the
+  generated test of interleavings (`test/unit/session-interleavings.test.ts`,
+  its one list of commands).
+- **A test waits for the effect it needs, never for a time.** Every bound a
+  test waits under comes from `test/support/patience.ts` (`PATIENCE`),
+  multiplied by `COCKPIT_TEST_SLOWNESS` (1 here, 2 in `check:ci` and on CI);
+  no bound is a literal in a test. Where the agent drops a key (a dialog as
+  it shows, an Enter now and then), the key is pressed again only once a
+  whole scaled patience passed with no effect, at most three times, then the
+  test fails saying what the terminal shows. A failed test's hooks, keys,
+  screens and states are written under `test-results/timelines/` (CI keeps
+  them).
 - **Simple, not easy.** The design that is simple to read and extend, not the
   one quickest to type; no shortcut that leaves debt.
 - **Clean code.** Clear names, small functions, one job each, no duplicated
@@ -318,8 +344,11 @@ compare the documented exports and error codes with the code.
 ## Commits and releases
 
 - Conventional commits (`feat:`, `fix:`, `test:`, `refactor:`, `docs:`,
-  `chore:`, `ci:`); work on `main`; a finished feature's last commit is
-  tagged `feature/NN-<name>`.
+  `chore:`, `ci:`). Work goes on `next`, pushed after `pnpm check:ci` is
+  green; CI runs on every push to it, and a red there is fixed before more
+  is added. `main` moves only by fast-forward to a commit of `next` CI
+  passed; a finished feature's last commit is tagged `feature/NN-<name>`
+  once `main` is on it.
 - `CHANGELOG.md` keeps an "Unreleased" section current.
 - A release is the maintainer's act: they push a `vX.Y.Z` tag, and CI
   publishes with provenance. Never publish to npm or push a `v…` tag
