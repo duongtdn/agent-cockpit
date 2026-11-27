@@ -56,9 +56,10 @@ has the details.
 [docs/guide.md](docs/guide.md#getting-started) shows the server (Fastify, or
 a plain `node:http` server), the page and the link.
 [examples/jobs-console](examples/jobs-console/DEMO.md) is one, whole: a
-Fastify app that mounts the cockpit, offers a job and prints its link, and a
-page in plain JavaScript that runs the job, follows the sessions and mounts
-a terminal. It runs with no login against a scripted API.
+Fastify app that mounts the cockpit, offers four jobs and prints its link,
+and a page in plain JavaScript that draws a launcher form for each job,
+runs, opens and starts afresh, follows the sessions and mounts a terminal.
+It runs with no login against a scripted API.
 [examples/translate-and-access](examples/translate-and-access/DEMO.md) shows
 access: the link and its token, the app's own API checking it, a page of
 the network refused, then served once the app opens itself with
