@@ -1,48 +1,11 @@
-import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { WebSocket } from 'ws';
 import { type BridgedSessions, bridgeTerminal } from '../../src/server/http/pty-bridge.ts';
 import { createTerminalHolds, type TerminalHolds } from '../../src/server/terminal-hold.ts';
 import { FakeAttachment } from '../support/fake-attachment.ts';
+import { FakeServerSocket } from '../support/fake-server-socket.ts';
 
 const keyRules = [{ key: 'Enter', modifiers: ['shift'] as const, send: '\x1b\r' }];
-
-/** The server's side of a terminal's WebSocket, as the bridge uses it, driven by the test. */
-class FakeServerSocket extends EventEmitter {
-  readonly OPEN = 1;
-  readyState = 1;
-  /** The text messages the bridge sent, parsed. */
-  readonly messages: unknown[] = [];
-  closedWith: number | undefined;
-
-  send(data: string | Buffer): void {
-    if (typeof data === 'string') this.messages.push(JSON.parse(data));
-  }
-
-  close(code: number): void {
-    if (this.readyState !== this.OPEN) return;
-    this.readyState = 3;
-    this.closedWith = code;
-    this.emit('close', code);
-  }
-
-  /** The browser sends its size. */
-  resize(columns: number, rows: number): void {
-    this.emit('message', Buffer.from(JSON.stringify({ type: 'resize', columns, rows })), false);
-  }
-
-  /** The person types. */
-  type(text: string): void {
-    this.emit('message', Buffer.from(text, 'utf8'), true);
-  }
-
-  /** The kinds of the hold's messages the bridge sent, in order. */
-  holdMessages(): unknown[] {
-    return this.messages
-      .map((message) => (message as { type: string }).type)
-      .filter((type) => type === 'held' || type === 'released');
-  }
-}
 
 let holds: TerminalHolds;
 let attachment: FakeAttachment;

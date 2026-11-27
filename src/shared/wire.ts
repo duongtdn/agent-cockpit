@@ -388,3 +388,14 @@ export type TerminalClientMessage = TerminalResizeMessage;
  * terminal reconnects.
  */
 export const SESSION_ENDED_CLOSE_CODE = 4000;
+
+/**
+ * The close code of a terminal's WebSocket that fell behind: it still held
+ * more of the session's output to send than the server keeps for one
+ * terminal (4 MiB), its page reading too slowly or not at all. Nothing of
+ * the session changed, and its other terminals go on: the terminal
+ * reconnects at once, and tmux draws the whole screen anew on the attach.
+ * The lines that scrolled past meanwhile are missing from the terminal's
+ * scrollback.
+ */
+export const FELL_BEHIND_CLOSE_CODE = 4001;

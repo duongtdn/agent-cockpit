@@ -1,5 +1,6 @@
 import type { RawData, WebSocket } from 'ws';
 import {
+  FELL_BEHIND_CLOSE_CODE,
   type KeyRule,
   SESSION_ENDED_CLOSE_CODE,
   type TerminalResizeMessage,
@@ -26,6 +27,14 @@ export interface BridgedSessions {
    */
   joinHold(key: string, terminal: HeldTerminal): () => void;
 }
+
+/**
+ * The most bytes a terminal's socket may still hold to send before it is
+ * closed as fallen behind: far more than the agent draws (a screenful is a
+ * few kilobytes, a long reply some tens), and a bound on what a page that
+ * stopped reading costs the server.
+ */
+const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
 /** The close code of a socket whose first message was not the terminal's size. */
 const POLICY_VIOLATION = 1008;
@@ -59,7 +68,10 @@ const MAX_KEPT_BYTES = 1024 * 1024;
  * the terminal's size, its first message, attaches the session at that
  * size, sends the driver's key rules, then passes what the session draws
  * out as binary messages and the person's keys in, and applies each later
- * size. While the cockpit types a prompt into the session (the session's
+ * size. What the session draws in one turn of the event loop goes as one
+ * message; a socket that still holds more than {@link MAX_BUFFERED_BYTES}
+ * to send is closed with {@link FELL_BEHIND_CLOSE_CODE} instead, the
+ * session untouched. While the cockpit types a prompt into the session (the session's
  * key held), the person's keys are kept, the browser told `held`; once
  * released, they reach the session in the order sent, each as it was sent,
  * at most {@link KEPT_KEYS_GAP_MS} apart, then the browser is told
@@ -117,7 +129,7 @@ export function bridgeTerminal(
     attachment = attached;
     if (socket.readyState !== socket.OPEN) return;
     tell({ type: 'keys', rules: keyRules });
-    attached.onData((data) => socket.send(Buffer.from(data, 'utf8')));
+    attached.onData(outputSender(socket));
     attached.onEnd(() => void closeOnEnd(socket, key, sessions));
     gate = keyGate(
       (text) => attached.write(text),
@@ -248,6 +260,33 @@ function keyGate(
       if (!held) stopKeeping();
     },
     drop: dropKept,
+  };
+}
+
+/**
+ * Gives what passes the session's output to the socket. Under a flood the
+ * pty hands over thousands of chunks of a few bytes a second, and each
+ * message the socket holds costs many times its bytes: the chunks that
+ * arrive in one turn of the event loop are joined, which delays a key's
+ * echo by that turn alone. A socket still holding more than
+ * {@link MAX_BUFFERED_BYTES} is closed rather than given more: the server
+ * would hold the session's output for a page that does not read it.
+ */
+function outputSender(socket: WebSocket): (data: string) => void {
+  let pending: string[] = [];
+  const flush = (): void => {
+    const output = pending.join('');
+    pending = [];
+    if (socket.readyState !== socket.OPEN) return;
+    if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
+      socket.close(FELL_BEHIND_CLOSE_CODE, 'The terminal fell behind the session.');
+      return;
+    }
+    socket.send(Buffer.from(output, 'utf8'));
+  };
+  return (data) => {
+    if (pending.length === 0) setImmediate(flush);
+    pending.push(data);
   };
 }
 

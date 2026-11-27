@@ -556,6 +556,14 @@ session has ended there is nothing to attach to: the status is `ended`.
 `refused` with its `cause`, `unreachable`); refused by the app's `terminal`
 switch (`terminal-off`), it stays `closed` and stops trying.
 
+The server sends a terminal what the session draws as it comes, the pieces
+that arrive together joined into one message. A page that stops reading (a
+tab the browser froze, a sleeping laptop, a dead connection) is let go once
+the server holds 4 MiB of output for it: its socket is closed with `4001`
+and the terminal reconnects at once (`connecting`, then `open`), the screen
+drawn anew; the lines that scrolled past meanwhile are missing from its
+scrollback. The session and its other terminals go on untouched.
+
 While the cockpit types a prompt into a session (a send, a run into an
 `idle` session, a long first prompt), every page terminal attached to it is
 `held`: what the person types is kept by the server, not typed into the

@@ -39,7 +39,9 @@ export interface MountedTerminal {
    * this terminal does not tell the drop apart), `closed` (the
    * connection dropped or was refused; the terminal reconnects by itself,
    * unless the terminal's switch refused it: then it stays `closed`) or
-   * `ended` (the session is gone: nothing to attach to). The handler
+   * `ended` (the session is gone: nothing to attach to). A terminal the
+   * server let go for falling behind the session's output reconnects at
+   * once, never `closed`: `connecting`, then `open`. The handler
    * receives the status at once, then each change. A handler that throws
    * stops neither the other handlers nor the terminal; what it threw goes
    * to the console.
@@ -86,7 +88,11 @@ export interface MountedTerminal {
  * page's link as the client takes it). After a drop it reconnects by itself,
  * waiting 0.5 s, doubling up to 10 s, and at once when a link opened in the
  * page's tab gives a new token; once the session has ended it stays
- * `ended`. Why it could not connect goes to `on('error')`; refused by the
+ * `ended`. A page that falls far behind the session's output (the server
+ * holds 4 MiB of it for one terminal) is let go by the server and
+ * reconnects at once, `connecting` then `open`: the screen is drawn anew,
+ * and the lines that scrolled past meanwhile are missing from its
+ * scrollback. Why it could not connect goes to `on('error')`; refused by the
  * terminal's switch (`terminal-off`), it stays `closed`.
  * While the cockpit types a prompt into the session it is `held`.
  *

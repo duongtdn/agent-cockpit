@@ -347,6 +347,13 @@ Nothing is published yet.
   terminal does not show yet). A terminal that keeps over a
   megabyte of keys is closed with 1008. A person's own `tmux attach` is not
   held.
+- A terminal's output goes in fewer messages: what the session draws in one
+  turn of the server's event loop is joined. A terminal whose socket holds
+  more than 4 MiB of output (a page that stopped reading) is closed with
+  `4001`, the session and its other terminals untouched, and the mounted
+  terminal reconnects at once (`connecting`, then `open`): the screen is
+  drawn anew, and the lines that scrolled past meanwhile are missing from
+  its scrollback.
 
 ### Not yet: refused or missing in this version
 

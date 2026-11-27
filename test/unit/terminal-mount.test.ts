@@ -453,6 +453,19 @@ describe('reconnecting', () => {
     expect(statuses).toEqual(['connecting', 'open', 'closed', 'connecting']);
   });
 
+  it('connects again at once, never closed, when the server closes with 4001: the terminal fell behind', async () => {
+    const { socket } = mountAttached();
+
+    socket.closeWith(4001);
+    expect(FakeWebSocket.created).toHaveLength(2);
+    const again = FakeWebSocket.last();
+    again.accept();
+    again.deliver(claudeCodeKeys);
+
+    expect(statuses).toEqual(['connecting', 'open', 'connecting', 'open']);
+    expect(again.sent).toEqual([JSON.stringify({ type: 'resize', columns: 100, rows: 30 })]);
+  });
+
   it('sends the size first again on the new socket', async () => {
     const { socket } = mountAttached();
     socket.drop();

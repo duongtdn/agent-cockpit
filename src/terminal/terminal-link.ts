@@ -2,6 +2,7 @@ import type { Connection } from '../client/connection.js';
 import { reconnectDelay } from '../client/reconnect-delay.js';
 import { type CockpitError, isCockpitError } from '../shared/cockpit-error.js';
 import {
+  FELL_BEHIND_CLOSE_CODE,
   type KeyRule,
   SESSION_ENDED_CLOSE_CODE,
   type TerminalClientMessage,
@@ -52,8 +53,10 @@ export interface TerminalLink {
  * Connects a terminal to its session over the wire's WebSocket: the size
  * first, as the server attaches at that size, then input and output as
  * binary messages. A close with {@link SESSION_ENDED_CLOSE_CODE} ends it;
- * any other close is the connection's, and the link reconnects, waiting
- * longer after each attempt that did not reach the session. A handshake
+ * one with {@link FELL_BEHIND_CLOSE_CODE} reconnects it at once, the
+ * session's screen drawn anew; any other close is the connection's, and the
+ * link reconnects, waiting longer after each attempt that did not reach the
+ * session. A handshake
  * that failed is explained first (`Connection.explainFailedSocket`) and the
  * screen told why, once the next attempt is set — unless the server asked
  * for it to be made again, a drop; when the terminal is off, the link
@@ -137,6 +140,11 @@ export function linkTerminal(
       if (code === SESSION_ENDED_CLOSE_CODE) {
         closed = true;
         screen.status('ended');
+        return;
+      }
+      // The server let go of a page that read too slowly: the link itself is fine, and the attach redraws the screen.
+      if (code === FELL_BEHIND_CLOSE_CODE) {
+        connect();
         return;
       }
       screen.status('closed');
