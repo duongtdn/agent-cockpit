@@ -155,6 +155,9 @@ const COMPACT_COMMAND = '/compact';
  * How long after `PermissionRequest` is sent the permission dialog is
  * drawn: Claude Code was seen to draw it 324 to 514 ms after the hook
  * reached its receiver, the input box on screen and taking keys until then.
+ * Not played: keys typed into the box meanwhile put it off until about
+ * 1.5 s after the last of them, and on a loaded machine it took keys as a
+ * dialog's a few ms after the hook arrived, so no test may count on the gap.
  */
 const PERMISSION_DIALOG_DELAY_MS = 400;
 

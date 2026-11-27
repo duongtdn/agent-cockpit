@@ -126,15 +126,23 @@ function drawnBox({ text, cursor }: TerminalScreen): BoxSeen | undefined {
   };
 }
 
-/** Waits until the input box drawn passes a check, and gives it. */
+/**
+ * Waits until the input box drawn passes a check, and gives it. The real
+ * agent writes a screen in several writes, which tmux may show half done
+ * under load: a box counts once two reads in a row found it the same.
+ */
 function boxShowing(
   agent: ParityAgent,
   session: AgentSession,
   check: (rows: readonly string[], cursor: BoxSeen['cursor']) => boolean,
 ): Promise<BoxSeen> {
+  let lastRead: string | undefined;
   return agent.eventually(async () => {
     const box = drawnBox(await session.screenWithCursor());
-    expect(box !== undefined && check(box.rows, box.cursor)).toBe(true);
+    const read = JSON.stringify(box);
+    const settled = read === lastRead;
+    lastRead = read;
+    expect(box !== undefined && settled && check(box.rows, box.cursor)).toBe(true);
     return box as BoxSeen;
   });
 }
@@ -159,7 +167,7 @@ async function pressUntilRedrawn(
   session: AgentSession,
   ...keys: string[]
 ): Promise<BoxSeen> {
-  const before = JSON.stringify(drawnBox(await session.screenWithCursor())?.rows);
+  const before = JSON.stringify((await boxShowing(agent, session, () => true)).rows);
   await session.press(...keys);
   return boxShowing(agent, session, (rows) => JSON.stringify(rows) !== before);
 }
@@ -172,13 +180,30 @@ async function typeAsAPerson(session: AgentSession, text: string): Promise<void>
   }
 }
 
-/** Whether the box drawn shows no text: between its rules, one row, the sign alone. */
-function looksEmpty(box: readonly string[]): boolean {
-  const rows = box.slice(
+/** The rows of the box drawn between its rules: its text, the sign first. */
+function rowsInside(box: readonly string[]): string[] {
+  return box.slice(
     1,
     box.findLastIndex((row) => BOX_RULE.test(row)),
   );
+}
+
+/** Whether the box drawn shows no text: between its rules, one row, the sign alone. */
+function looksEmpty(box: readonly string[]): boolean {
+  const rows = rowsInside(box);
   return rows.length === 1 && /^[❯!]$/.test(rows[0] ?? '');
+}
+
+/**
+ * Whether the box drawn holds a whole text, whatever blanks and breaks its
+ * wrapping drew: the sign and its blank left out.
+ */
+function holdsText(box: readonly string[], text: string): boolean {
+  const bare = (drawn: string) => drawn.replace(/\s+/gu, '');
+  const shown = rowsInside(box)
+    .join('\n')
+    .replace(/^[❯!]\s/u, '');
+  return bare(shown) === bare(text);
 }
 
 /**
@@ -207,10 +232,10 @@ async function typeOverTheDraft(
   } while (!looksEmpty(box.rows));
   agent.observe('the kills that emptied the box', kills);
   await typeAsAPerson(session, prompt);
-  // The prompt's last characters end the last row it fills, wrapped or not.
-  const end = prompt.slice(-8);
-  await observeBox(agent, session, 'the box with the prompt typed', (row: string) =>
-    row.endsWith(end),
+  // Typed in several writes: a box drawn halfway would already show some of its last characters.
+  agent.observe(
+    'the box with the prompt typed',
+    await boxShowing(agent, session, (box) => holdsText(box, prompt)),
   );
   await submitInputBox(agent, session, (text) => text.trim() !== '');
   await turnEnded(agent);
@@ -738,13 +763,18 @@ agreeOn(
     script: [[touch('a.txt'), reply('Touched.')]],
     permissions: {},
     async play(agent) {
+      agent.hooks.hold('PreToolUse');
       agent.hooks.hold('PermissionRequest');
       const session = await agent.startNew();
       await agent.hook('SessionStart');
       await submitPrompt(agent, session, 'touch it');
-      const asked = await agent.hook('PermissionRequest');
-      // The hook comes well before the dialog is drawn: these keys reach the box.
+      // Keys typed once PermissionRequest came may beat the dialog or not: under load the real
+      // agent takes them on a dialog not drawn yet. While PreToolUse waits, nothing is asked yet.
+      const before = await agent.hook('PreToolUse');
       await session.type('typed early');
+      await observeBox(agent, session, 'the box as the call waits', '❯\u00a0typed early');
+      before.answer({});
+      const asked = await agent.hook('PermissionRequest');
       const dialogShown = await agent.eventually(async () => {
         const screen = await session.screenWithCursor();
         expect(drawnBox(screen)).toBeUndefined();
@@ -784,7 +814,12 @@ agreeOn(
       await agent.releaseTask();
       await agent.hook('SubagentStop');
       await turnEnded(agent);
-      await observeBox(agent, session, 'the box once the task turn ended', '❯\u00a0my draft');
+      // Either agent works on until it has read Stop's answer, its busy footer drawn; once
+      // the turn is over, the footer points to the subagents.
+      agent.observe(
+        'the box once the task turn ended',
+        await boxShowing(agent, session, (rows) => rows.at(-1)?.includes('/tasks') === true),
+      );
       agent.observe('the box emptied', await pressUntilRedrawn(agent, session, 'C-u'));
       await terminated(agent, session);
     },
