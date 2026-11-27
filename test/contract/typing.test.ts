@@ -61,17 +61,30 @@ async function typeDraft(session: AgentSession, draft: string): Promise<void> {
   });
 }
 
+/** Where the cursor is in the draft: its row, those scrolled out above counted, and its column. */
+async function cursorInDraft(session: AgentSession): Promise<{ row: number; column: number }> {
+  const { text, cursor } = await session.screenWithCursor();
+  const box = readInputBoxView(text);
+  if (box === undefined) throw new Error(`No input box shows:\n${text}`);
+  return { row: box.hiddenAbove + cursor.row - box.firstRow, column: cursor.column };
+}
+
 /**
- * Presses keys one at a time, as a person does, each once the agent drew
- * what the one before did: the cursor moved, or the box scrolled under it.
+ * Presses a key one time after another, as a person does, each once the
+ * agent drew what the one before did: the cursor a row up, or a column
+ * left on its row. Not merely once the screen changed: a hint or a status
+ * line may change first, and the next key, or the driver's read, would
+ * meet the cursor where it was.
  */
-async function pressEach(session: AgentSession, key: string, times: number): Promise<void> {
+async function pressEach(session: AgentSession, key: 'Up' | 'Left', times: number): Promise<void> {
   for (let pressed = 0; pressed < times; pressed++) {
-    const before = JSON.stringify(await session.screenWithCursor());
+    const before = await cursorInDraft(session);
+    const moved =
+      key === 'Up'
+        ? (now: typeof before) => now.row === before.row - 1
+        : (now: typeof before) => now.row === before.row && now.column === before.column - 1;
     await session.press(key);
-    await eventually(async () =>
-      expect(JSON.stringify(await session.screenWithCursor())).not.toBe(before),
-    );
+    await eventually(async () => expect(moved(await cursorInDraft(session))).toBe(true));
   }
 }
 
