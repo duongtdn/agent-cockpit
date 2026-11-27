@@ -257,6 +257,27 @@ describe.each([
     });
     follower.socket.close();
   });
+
+  it('renews the app’s token: every open socket, a follower’s and a terminal’s, is dropped at once (1006), the old token refused on an upgrade, the new one served', async () => {
+    const { cockpit, token, directory, base } = await start();
+    writeScript(directory, [{ do: 'turn', reply: 'Done.' }, { do: 'hold' }]);
+    await cockpit.run('explain', { file: 'a' });
+    const follower = await openedSocket(ws(base, '/follow/sessions'), { token });
+    const terminal = await openedSocket(ws(base, '/terminal/explain-a'), { token });
+    terminal.socket.send(JSON.stringify({ type: 'resize', columns: 80, rows: 24 }));
+    await terminal.next(() => true);
+
+    await cockpit.renewToken();
+
+    expect(await follower.closed).toBe(1006);
+    expect(await terminal.closed).toBe(1006);
+    const renewed = tokenOf(cockpit);
+    expect(await openSocket(ws(base, '/follow/sessions'), { token })).toMatchObject({
+      refused: { status: 401 },
+    });
+    const again = await openedSocket(ws(base, '/terminal/explain-a'), { token: renewed });
+    again.socket.close();
+  });
 });
 
 describe('the request checks, through a mount', () => {
