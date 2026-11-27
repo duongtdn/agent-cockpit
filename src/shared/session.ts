@@ -48,7 +48,7 @@ export type EndReason =
 
 /** What every listed session carries, whatever its state. */
 interface SessionBase {
-  /** The key of its unit of work, `[a-z0-9-]+`. */
+  /** The key of its unit of work, `[a-z0-9-]+`, 100 characters at most. */
   readonly key: string;
   /**
    * When it entered its state, as an ISO 8601 date and time in UTC. A string,
@@ -297,16 +297,29 @@ export interface OpenOptions {
   readonly fresh?: boolean;
 }
 
-/** A key: lower-case ASCII letters, digits and `-`, at least one. */
-const SESSION_KEY = /^[a-z0-9-]+$/;
+/**
+ * The most characters a session's key holds. A key is a file name's start:
+ * its record is `<key>.json`, first written aside as
+ * `<key>.json.<uuid>`, 42 characters more. A file name holds 255 bytes on
+ * the common file systems, but 143 in a home folder encrypted with
+ * eCryptfs, where the state folder may be: 100 leaves that margin. tmux
+ * bounds a session's name only by its command's message, 16 KiB, which
+ * the agent's command line shares.
+ */
+export const SESSION_KEY_MAX_LENGTH = 100;
+
+/** A key: lower-case ASCII letters, digits and `-`, from one to the bound. */
+const SESSION_KEY = new RegExp(`^[a-z0-9-]{1,${SESSION_KEY_MAX_LENGTH}}$`);
 
 /**
  * Tells whether a text can be a session's key. A key names a tmux session, a
- * folder of the state folder and a segment of the wire's paths, so it holds
- * only characters that are safe in all three, unencoded.
+ * folder of the state folder, a record's file and a segment of the wire's
+ * paths, so it holds only characters that are safe in all of them,
+ * unencoded, and no more of them than a file name takes.
  *
  * @param text - What a job's `key` returned, or what a request named.
- * @returns `true` when the text is of the form `[a-z0-9-]+`.
+ * @returns `true` when the text is of the form `[a-z0-9-]+`, of
+ * {@link SESSION_KEY_MAX_LENGTH} characters at most.
  */
 export function isSessionKey(text: string): boolean {
   return SESSION_KEY.test(text);

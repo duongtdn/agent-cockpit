@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import { CockpitError, type Issue } from '../shared/cockpit-error.js';
 import type { Choice } from '../shared/job.js';
-import { isSessionKey } from '../shared/session.js';
+import { isSessionKey, SESSION_KEY_MAX_LENGTH } from '../shared/session.js';
 import type { DriverPart } from './driver.js';
 
 /**
@@ -21,7 +21,7 @@ export interface Job<Args extends z.ZodType = z.ZodType> {
   readonly args: Args;
   /**
    * Names the unit of work the arguments stand for: the session's key, of
-   * the form `[a-z0-9-]+`. Two runs whose arguments give one key share a
+   * the form `[a-z0-9-]+`, 100 characters at most. Two runs whose arguments give one key share a
    * session.
    *
    * @param args - The arguments, as the schema gave them.
@@ -126,7 +126,8 @@ export function jobOf(jobs: ReadonlyMap<string, Job>, jobId: string): Job {
  * the schema gave them.
  * @throws `CockpitError` `invalid-arguments`, with each issue, when the
  * arguments do not fit; `invalid-options`, its issue at `key`, when the
- * job's `key` gives no session key (`[a-z0-9-]+`). What the job's own `key`
+ * job's `key` gives no session key (`[a-z0-9-]+`, 100 characters at
+ * most). What the job's own `key`
  * or `prompt` throws.
  */
 export function launchOfJob(job: Job, args: unknown): JobLaunch {
@@ -178,7 +179,7 @@ function keyOf(job: Job, args: unknown): string {
       issues: [
         {
           path: ['key'],
-          message: `Expected a session key, [a-z0-9-]+: got ${JSON.stringify(key)}.`,
+          message: `Expected a session key, [a-z0-9-]+ of ${SESSION_KEY_MAX_LENGTH} characters at most: got ${JSON.stringify(key)}.`,
         },
       ],
     },

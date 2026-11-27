@@ -57,7 +57,11 @@ const sayHello = {
   id: 'hello',
   title: 'Say hello',
   args: z.object({
-    name: z.string().regex(/[A-Za-z0-9]/, 'Give a name: at least one letter or digit.'),
+    name: z
+      .string()
+      .regex(/[A-Za-z0-9]/, 'Give a name: at least one letter or digit.')
+      // A key holds 100 characters at most: `hello-` and the slug fit.
+      .max(80, 'Give a name of 80 characters at most.'),
   }),
   key: ({ name }) => `hello-${slug(name)}`,
   prompt: ({ name }) => `Say hello to ${name} in one sentence.`,

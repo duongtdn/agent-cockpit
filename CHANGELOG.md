@@ -257,7 +257,9 @@ Nothing is published yet.
   in its real path; another folder than the one the key's record keeps
   `folder-changed` (but for a start of a new conversation, which records
   the job's folder anew); a prompt over 100,000 characters
-  `prompt-too-long`. A job with no prompt restarts an `idle` session
+  `prompt-too-long`. A job's `key` gives `[a-z0-9-]+` of 100 characters at
+  most (a key names a tmux session, a folder and a file of the state
+  folder), else the run is refused `invalid-options`. A job with no prompt restarts an `idle` session
   launched with other settings (`resumed`, `settings-changed`). A session
   is ended for a fresh start or a restart by SIGTERM (a kill after 5
   seconds), its turn not interrupted first. A first prompt over 120,000

@@ -252,7 +252,10 @@ What an app declares: a named piece of work for the agent. A job has an
 `id`, a `title` and a `description`; its arguments, a zod 4 object schema
 every run is checked against (`invalid-arguments`), each field's `label`
 and `hint` given as its metadata (`.meta({ label, hint })`); its `key`,
-which names the unit of work from the arguments (`[a-z0-9-]+`); its
+which names the unit of work from the arguments (`[a-z0-9-]+`, 100
+characters at most, else the run is refused `invalid-options`: a key names
+a tmux session and a folder and a file of the state folder; the sample
+below gives every name a key of its own, a long one cut and hashed); its
 `prompt`, built from the arguments, or none for a job the person types
 into; and, each optional:
 
@@ -273,6 +276,37 @@ into; and, each optional:
 - `driver`: the job's driver part, below.
 
 ```js
+import { createHash } from 'node:crypto';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+
+// A key from a name: lower-case letters and digits as they are, any other
+// character as its code point in hex between two `-` (`src/a.js` gives
+// `src-2f-a-2e-js`), so that two names never share a key; past 100
+// characters, cut, and ended with `--` and a hash of the name.
+function keyOf(prefix, name) {
+  const part = [...name]
+    .map((c) => (/[a-z0-9]/.test(c) ? c : `-${c.codePointAt(0).toString(16)}-`))
+    .join('');
+  const key = `${prefix}${part}`;
+  if (key.length <= 100) return key;
+  const hash = createHash('sha256').update(name).digest('hex').slice(0, 16);
+  return `${key.slice(0, 82)}--${hash}`;
+}
+
+// The app's data: its folders, and the files of one of them. The folder a
+// page gives is checked first: a source must not list what lies elsewhere.
+async function namesIn(folder, isWanted) {
+  const entries = await readdir(folder, { withFileTypes: true });
+  return entries.filter(isWanted).map((entry) => ({ value: entry.name }));
+}
+const listFolders = () => namesIn('.', (entry) => entry.isDirectory());
+async function listFiles(folder) {
+  const folders = await listFolders();
+  if (!folders.some((choice) => choice.value === folder)) return [];
+  return namesIn(folder, (entry) => entry.isFile());
+}
+
 const cockpit = await createCockpit({
   // …
   jobs: [
@@ -284,10 +318,10 @@ const cockpit = await createCockpit({
         file: z.string().meta({ label: 'File', hint: 'One of the folder’s files.' }),
       }),
       options: {
-        folder: () => listFolders(), // [{ value: 'src' }, { value: 'notes', label: 'Notes' }]
+        folder: () => listFolders(), // [{ value: 'src' }, { value: 'notes' }]
         file: ({ folder }) => listFiles(folder), // depends on the folder chosen
       },
-      key: ({ folder, file }) => `file-${slug(`${folder}/${file}`)}`,
+      key: ({ folder, file }) => keyOf('file-', join(folder, file)),
       prompt: ({ folder, file }) => `Explain the file ${folder}/${file}.`,
     },
     {
@@ -295,7 +329,7 @@ const cockpit = await createCockpit({
       title: 'Work in a folder',
       args: z.object({ folder: z.string().meta({ label: 'Folder' }) }),
       options: { folder: { choices: () => listFolders(), suggestions: true } },
-      key: ({ folder }) => `folder-${slug(folder)}`,
+      key: ({ folder }) => keyOf('folder-', folder),
       directory: ({ folder }) => folder, // no prompt: the person types in the terminal
     },
   ],

@@ -14,8 +14,9 @@ opens and starts afresh, and shows a session's terminal.
     hex between two `-` (`/` is `-2f-`, `.` is `-2e-`): it reads back to the
     name, so two files never share a key, where a slug would merge
     `a-b.js` with `a.b.js`, `README.md` with `readme.md`, or the app's folder
-    (`.`) with a folder named `app`. Copy `keyPart` from `jobs.js` for your
-    own keys.
+    (`.`) with a folder named `app`. A key holds 100 characters at most: a
+    longer name's is cut and ends with `--` and 16 hex digits of the name's
+    hash. Copy `keyPart` and `keyOf` from `jobs.js` for your own keys.
   - **Review a file**: the same fields and the same key, in plan mode (a job
     part, `claudeCode.job({ permissionMode: 'plan' })`): on a session Explain
     started, it restarts it with plan mode, its conversation resumed.

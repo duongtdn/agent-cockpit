@@ -179,6 +179,16 @@ describe('the launch of a run', () => {
     },
   );
 
+  it('refuses a key the job gives of more than 100 characters: invalid-options', () => {
+    const key = 'a'.repeat(101);
+    expect(() => launchOfJob(jobWith({ key: () => key }), { book: 'a', chapter: 'b' })).toThrow(
+      expect.objectContaining({
+        code: 'invalid-options',
+        issues: [{ path: ['key'], message: expect.stringContaining('100 characters at most') }],
+      }),
+    );
+  });
+
   it('refuses a key that is no text: invalid-options', () => {
     expect(() => launchOfJob(jobWith({ key: () => 7 }), { book: 'a', chapter: 'b' })).toThrow(
       expect.objectContaining({ code: 'invalid-options' }),

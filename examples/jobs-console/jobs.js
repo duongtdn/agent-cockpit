@@ -4,6 +4,7 @@
 // same key (Review), a job with no prompt that works in a folder of its own
 // (Work in a folder), and suggestions that take any value (Ask anything).
 
+import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { claudeCode } from '@duongtdn/agent-cockpit/claude-code';
@@ -14,6 +15,12 @@ const APP_FOLDER = '.';
 
 /** Folders never offered: the app's tooling, not its work. */
 const HIDDEN_FOLDERS = new Set(['node_modules', 'dist', 'coverage']);
+
+/** The most characters a session's key holds: the cockpit refuses a longer one. */
+const KEY_MAX_LENGTH = 100;
+
+/** How many hex digits of a name's hash end a key too long to name it whole. */
+const HASH_LENGTH = 16;
 
 /** What "Ask anything" suggests: any other topic is taken too. */
 const TOPICS = ['the project', 'the notes', 'the code'];
@@ -34,7 +41,7 @@ export function jobsOf(appFolder) {
     detail: z.enum(['brief', 'thorough']).default('brief').meta({ label: 'Detail' }),
   });
   // Explain and Review share their key: a file is one unit of work, whichever job runs on it.
-  const fileKey = ({ folder, file }) => `file-${keyPart(join(folder, file))}`;
+  const fileKey = ({ folder, file }) => keyOf('file-', join(folder, file));
   const length = (detail) => (detail === 'brief' ? 'in a few sentences' : 'thoroughly');
   return [
     {
@@ -65,7 +72,7 @@ export function jobsOf(appFolder) {
       description: 'No prompt: the agent starts in the folder, and you type in its terminal.',
       args: z.object({ folder: z.string().meta({ label: 'Folder' }) }),
       options: { folder: folders },
-      key: ({ folder }) => `folder-${keyPart(folder)}`,
+      key: ({ folder }) => keyOf('folder-', folder),
       directory: ({ folder }) => folder,
     },
     {
@@ -80,7 +87,7 @@ export function jobsOf(appFolder) {
         question: z.string().min(1, 'Ask a question.').meta({ label: 'Question' }),
       }),
       options: { topic: { choices: () => TOPICS.map((value) => ({ value })), suggestions: true } },
-      key: ({ topic }) => `ask-${keyPart(topic)}`,
+      key: ({ topic }) => keyOf('ask-', topic),
       prompt: ({ topic, question }) => `About ${topic}: ${question}`,
     },
   ];
@@ -133,4 +140,18 @@ function keyPart(name) {
       /[a-z0-9]/.test(character) ? character : `-${character.codePointAt(0).toString(16)}-`,
     )
     .join('');
+}
+
+/**
+ * A key: the prefix, then the name as a key part. A key holds 100
+ * characters at most, and a long file name or topic gives more: then the
+ * part is cut and ends with `--` and 16 hex digits of the name's hash. A
+ * whole part never ends so (after `--` it has a code point, then `-`), so
+ * a cut key never takes a whole one's place.
+ */
+function keyOf(prefix, name) {
+  const key = `${prefix}${keyPart(name)}`;
+  if (key.length <= KEY_MAX_LENGTH) return key;
+  const hash = createHash('sha256').update(name).digest('hex').slice(0, HASH_LENGTH);
+  return `${key.slice(0, KEY_MAX_LENGTH - HASH_LENGTH - 2)}--${hash}`;
 }

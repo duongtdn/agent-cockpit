@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { isSessionKey } from '../../shared/session.js';
 import { appFileName } from '../app-name.js';
 import type { SessionFolders } from '../sessions/sessions.js';
 import { openOwnFolder, type UntrustedStateError } from './own-files.js';
@@ -10,9 +11,6 @@ const COCKPIT_FOLDER = 'agent-cockpit';
 
 /** The folder of the state folder that holds a folder per session. */
 const SESSIONS_FOLDER = 'sessions';
-
-/** What a session's key may hold, so that its folder never leaves the sessions' folder. */
-const SESSION_KEY = /^[a-z0-9-]+$/;
 
 /** The app's state folder, open. */
 export interface StateFolder {
@@ -91,8 +89,8 @@ export async function openStateFolder(
     path,
     sessions: {
       async prepare(key) {
-        if (!SESSION_KEY.test(key))
-          throw new TypeError(`${JSON.stringify(key)} is no session key.`);
+        // A key holds no `/` or `.`, so its folder never leaves the sessions' folder.
+        if (!isSessionKey(key)) throw new TypeError(`${JSON.stringify(key)} is no session key.`);
         const folder = join(sessions, key);
         await openOwnFolder(folder);
         return folder;

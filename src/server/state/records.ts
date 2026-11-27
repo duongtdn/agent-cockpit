@@ -9,7 +9,7 @@
 import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { isSessionKey, type SessionRecord } from '../../shared/session.js';
+import { isSessionKey, SESSION_KEY_MAX_LENGTH, type SessionRecord } from '../../shared/session.js';
 import type { DriverSettings } from '../driver.js';
 import { openOwnFolder, readOwnFile, UntrustedStateError } from './own-files.js';
 import { asideTarget, writePrivateFile } from './private-files.js';
@@ -105,7 +105,12 @@ const historyEntrySchema = z.object({
 });
 
 const unitRecordSchema: z.ZodType<UnitRecord> = z.object({
-  key: z.string().refine(isSessionKey, 'Expected a session key: [a-z0-9-]+.'),
+  key: z
+    .string()
+    .refine(
+      isSessionKey,
+      `Expected a session key: [a-z0-9-]+, ${SESSION_KEY_MAX_LENGTH} characters at most.`,
+    ),
   conversationId: z.string().min(1),
   earlierConversations: z.array(z.string().min(1)),
   history: z.array(historyEntrySchema),

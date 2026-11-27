@@ -4,7 +4,7 @@ import { callEach } from '../client/app-handlers.js';
 import { createConnection } from '../client/connection.js';
 import { takeTokenFromLink } from '../client/token.js';
 import { CockpitError } from '../shared/cockpit-error.js';
-import { isSessionKey } from '../shared/session.js';
+import { isSessionKey, SESSION_KEY_MAX_LENGTH } from '../shared/session.js';
 import { clipboardTextOf, writeClipboard } from './clipboard.js';
 import { ruleForKey } from './key-rules.js';
 import { linkTerminal, type TerminalLink, type TerminalStatus } from './terminal-link.js';
@@ -170,7 +170,12 @@ export function mountTerminal(
 function checkKey(key: string): void {
   if (typeof key === 'string' && isSessionKey(key)) return;
   throw new CockpitError('invalid-options', 'The terminal needs a session key.', {
-    issues: [{ path: ['key'], message: 'Expected a session key: [a-z0-9-]+.' }],
+    issues: [
+      {
+        path: ['key'],
+        message: `Expected a session key: [a-z0-9-]+, ${SESSION_KEY_MAX_LENGTH} characters at most.`,
+      },
+    ],
   });
 }
 
