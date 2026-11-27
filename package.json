@@ -61,7 +61,8 @@
     "test:browser": "vitest run --project browser",
     "test:e2e": "vitest run --project e2e",
     "check": "pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm test:browser && pnpm test:contract && pnpm build && pnpm test:pack && pnpm test:e2e",
-    "test:pack": "vitest run --project pack"
+    "test:pack": "vitest run --project pack",
+    "check:ci": "node ci/check.ts"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",

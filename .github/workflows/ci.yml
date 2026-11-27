@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, next]
   pull_request:
     branches: [main]
 
@@ -11,7 +11,13 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # The Ubuntu of ci/Dockerfile, where `pnpm check:ci` runs the same checks first: the two move
+    # together, never one alone.
+    runs-on: ubuntu-26.04
+    # The tests' bounds are measured on a fast machine; this runner is slower. `pnpm check:ci` runs
+    # at the same factor on fewer CPUs, so that what is red here is red there first.
+    env:
+      COCKPIT_TEST_SLOWNESS: 2
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +73,13 @@ jobs:
         with:
           name: contract-results-node-${{ matrix.node }}
           path: test-results/contract.json
+      # What a failed test saw, in order and in time: the screens and the hooks, one file a test.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: timelines-node-${{ matrix.node }}
+          path: test-results/timelines/
+          if-no-files-found: ignore
       - run: pnpm build
       - run: pnpm test:pack
       # A browser through the apps of examples/, on the built package, against the scripted API.
