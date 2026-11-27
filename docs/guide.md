@@ -57,7 +57,8 @@ console.log(`Open ${cockpit.link('http://127.0.0.1:4310/')}`);
 waits 5 seconds for the first to exit, then rejects with `cockpit-locked`.
 On a stop, `await cockpit.close()` before closing the server: it closes the
 page's WebSockets, which would hold the server open. The sessions go on in
-tmux.
+tmux: a call still waiting for its key's turn is rejected and never runs,
+and nothing is ended or killed after `close()`.
 
 Listen on `127.0.0.1` (or `::1`): by default the cockpit serves the
 loopback only, and refuses what reaches it otherwise
@@ -402,7 +403,8 @@ removes it: the conversation a resume takes up, the earlier ones (left by a
 fresh start, a conversation the agent no longer kept, or the agent's own
 move, such as Claude Code's `/clear`), its folder, the settings its session
 was launched with, and the history of its runs and opens — each with its
-job, arguments, time, what it did (`started`, `resumed`, `sent`), why, and
+job, arguments as the run was given them (never what the schema made of
+them), time, what it did (`started`, `resumed`, `sent`), why, and
 the conversation it acted in. A send is not in the history. Every listed
 session carries its `record`. A restarted server lists every recorded key,
 `ended` (`lost`) when no session of it lives, ready to be resumed.
@@ -483,7 +485,8 @@ the driver was tested on (`agent-too-old`), or cannot be sandboxed as the
 app asked (`sandbox-unavailable`), and ended with `unobservable` when the
 agent neither reports nor shows a dialog in time.
 
-A prompt is at most 100,000 characters (`prompt-too-long`). A prompt typed
+A prompt holds more than whitespace (`invalid-arguments` otherwise) and at
+most 100,000 characters (`prompt-too-long`). A prompt typed
 into a session keeps what the person left in its input box: the half-typed
 draft is put back after, and the page's terminal holds the person's keys
 meanwhile. Should anything but the box show up while it types (a turn the
@@ -492,8 +495,12 @@ is put back while the box still shows, else the error's message says where
 it is and which keys bring it back. A person browsing the prompt history in
 the box (Up recalled a past prompt) is not typed over: the send is refused
 (`wrong-state`), nothing typed. A first prompt too long for the agent's
-command line is typed the same way once the agent has started: the session
-stays `starting` until the agent takes it. The [API
+command line is typed the same way once the agent has started, the
+page's terminals held from its start but while a start-up dialog waits for
+the person: the session stays `starting` until the agent takes it, and the
+run settles then (pending while a dialog waits). A session the cockpit is
+ending to make room under the cap takes no send or run (`wrong-state`).
+The [API
 reference](api.md#units-of-work) has the tables.
 
 ## Interrupt, end and remove

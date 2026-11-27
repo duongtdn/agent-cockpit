@@ -23,7 +23,8 @@ Nothing is published yet.
   (`link`), serves the browser on the mounted handler (`handle`,
   `upgrade`: running a job, listing and following the sessions, and each
   session's terminal over a WebSocket), and `close()`s, the sessions going
-  on in tmux. The state folder (`$XDG_STATE_HOME/agent-cockpit/<name>` by
+  on in tmux: a call still waiting for its key's turn is rejected and never
+  runs, and nothing is ended or killed after `close()`. The state folder (`$XDG_STATE_HOME/agent-cockpit/<name>` by
   default) and the app's token are readable by the app's user alone; the
   token and the agent-facing port stay the same from one start to the next.
   The state folder is the cockpit's own: one that exists must be the user's
@@ -253,10 +254,12 @@ Nothing is published yet.
   arguments, its driver part included (`invalid-options`, an open mode
   refused beyond loopback without `acceptOpenNetwork`). A value not
   among its field's choices is refused `not-a-choice`; a folder outside
-  the app's `folder-outside-app`, created when missing, the agent launched
+  the app's `folder-outside-app` (`folder` as the job gave it, no path of
+  the server in its message), created when missing, the agent launched
   in its real path; another folder than the one the key's record keeps
   `folder-changed` (but for a start of a new conversation, which records
-  the job's folder anew); a prompt over 100,000 characters
+  the job's folder anew); a prompt that is empty or only whitespace
+  `invalid-arguments` (its issue at `prompt`), one over 100,000 characters
   `prompt-too-long`. A job's `key` gives `[a-z0-9-]+` of 100 characters at
   most (a key names a tmux session, a folder and a file of the state
   folder), else the run is refused `invalid-options`. A job with no prompt restarts an `idle` session
@@ -264,10 +267,14 @@ Nothing is published yet.
   is ended for a fresh start or a restart by SIGTERM (a kill after 5
   seconds), its turn not interrupted first. A first prompt over 120,000
   UTF-8 bytes, too long for the agent's command line, is typed once the
-  agent started and drew its input box: the session stays `starting` until
-  the agent takes it; not taken, it is `idle`, the call rejects as a send
-  does, and the unit of work is recorded. Calls on one key run one at a
-  time. `jobs()` describes the jobs (their
+  agent started and drew its input box, the page's terminals' keys held
+  from the agent's start (let through while a start-up dialog waits for
+  the person): the session stays `starting` until the agent takes it, and
+  the call settles then, pending while a dialog waits; not taken, it is
+  `idle`, the call rejects as a send does, and the unit of work is
+  recorded, the run kept out of the key's history. Calls on one key run
+  one at a time. A session the cap is ending takes no send and no run
+  until it is gone (`wrong-state`). `jobs()` describes the jobs (their
   schema as JSON Schema, which fields have choices, whether there is a
   prompt; never a key, prompt, folder or driver part); `options(jobId,
   field, argsSoFar?)` reads a field's choices. The handler serves `POST
@@ -276,7 +283,9 @@ Nothing is published yet.
 - Records per key in the state folder (`records/<key>.json`, 0600),
   loaded at `createCockpit`: each listed session carries its `record` (its
   conversation, the earlier ones, the history of its runs and opens, a run
-  typed into a live session among them as `sent`; a send is not kept); a
+  typed into a live session among them as `sent`, each run's arguments as
+  the run was given them, read through the job's schema again at an open
+  or a send; a send is not kept); a
   recorded key with no live session is listed `ended` (`lost` when it was
   recorded before the server started). A record that is not the cockpit's
   own (a link, another user's, torn) is refused `invalid-options`.
