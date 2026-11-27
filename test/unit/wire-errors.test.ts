@@ -16,6 +16,9 @@ describe('the wire’s answer to a failure', () => {
     [new CockpitError('unobservable', 'Silent.', { key: 'k', cause: 'c' }), 502],
     [new CockpitError('agent-not-found', 'None.', { command: 'claude' }), 503],
     [new CockpitError('sandbox-unavailable', 'No sandbox.', { cause: 'No bwrap.' }), 503],
+    [new CockpitError('no-app-port', 'No port of the app is known.'), 503],
+    [new CockpitError('not-a-choice', 'Not a choice.', { field: 'file', value: 'z' }), 400],
+    [new CockpitError('unknown-key', 'No unit of work.', { key: 'k' }), 404],
   ])('carries %s with its status and its JSON, nothing else', (error, status) => {
     const answer = answerOfFailure(error);
 

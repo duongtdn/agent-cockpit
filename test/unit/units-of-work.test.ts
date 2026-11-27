@@ -858,6 +858,17 @@ describe('a run on an `ended` session', () => {
     await expect(ran).resolves.toEqual({ action: 'started', reason: 'fresh', state: 'busy' });
     expect(driver.launches[1]?.conversationId).not.toBe(old);
     expect(recordOf()?.earlierConversations).toEqual([old]);
+    expect(recordOf()?.history.at(-1)).toMatchObject({ action: 'started', reason: 'fresh' });
+  });
+
+  it('resumes it for a job with no prompt, which resolves at `idle`: `resumed`', async () => {
+    const ran = pending(units.run('type', { file: 'a' }));
+    await settle();
+    hook('/ready');
+
+    await expect(ran).resolves.toEqual({ action: 'resumed', state: 'idle' });
+    expect(driver.launches[1]).toMatchObject({ resume: true });
+    expect(driver.launches[1]).not.toHaveProperty('prompt');
   });
 
   it('starts a new conversation with `fresh`: `fresh-on-request`', async () => {
