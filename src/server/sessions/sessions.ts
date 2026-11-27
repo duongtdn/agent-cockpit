@@ -26,24 +26,20 @@ import {
   type DriverPart,
   type HookAddress,
   type HookRequest,
-  type LaunchCommand,
   type ScreenReading,
   type TypingOutcome,
   TypingStoppedError,
 } from '../driver.js';
-import type {
-  Attachment,
-  SessionEnvironment,
-  SessionHost,
-  TerminalSize,
-} from '../session-host/session-host.js';
+import type { Attachment, SessionHost, TerminalSize } from '../session-host/session-host.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
 import type { TerminalHold } from '../terminal-hold.js';
 import { settlesBeforeAbort } from './abort-race.js';
+import { FirstPrompt, type StartingSession } from './first-prompt.js';
 import { Followers } from './followers.js';
-import { InputBoxWait } from './input-box-wait.js';
+import { Launches } from './launch.js';
 import { LaunchPromptWatch } from './launch-prompt-watch.js';
 import { LivenessWatch } from './liveness-watch.js';
+import { typingFailure, wrongState } from './refusals.js';
 import { SessionLifecycle } from './session-lifecycle.js';
 import { courseAfter, type SessionCourse } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
@@ -51,6 +47,7 @@ import { SessionTypingTerminal } from './typing-terminal.js';
 
 export { INPUT_BOX_BOUND_MS } from './input-box-wait.js';
 export { PROMPT_BOUND_MS } from './launch-prompt-watch.js';
+export { wrongState } from './refusals.js';
 export { SCREEN_INTERVAL_MS } from './screen-watch.js';
 export { READY_BOUND_MS, START_DEADLINE_MS } from './start-up-watch.js';
 
@@ -62,13 +59,6 @@ export { READY_BOUND_MS, START_DEADLINE_MS } from './start-up-watch.js';
  * session's end sooner.
  */
 export const LIVENESS_INTERVAL_MS = 1000;
-
-/**
- * The terminal a session is started with, until a terminal attaches and
- * gives its own: wide enough that an agent's screen reads well when read
- * without a page.
- */
-const DETACHED_SIZE: TerminalSize = { columns: 120, rows: 40 };
 
 /**
  * Why an operation on a session — a run, a send, an open, an end — did
@@ -364,25 +354,6 @@ export function createSessions(options: SessionsOptions): Sessions {
   return new SessionRegistry(options);
 }
 
-/** What a launch waits for: the session out of `starting`, or a failure to end it. */
-interface Departure {
-  readonly promise: Promise<Session>;
-  resolve(session: Session): void;
-  reject(error: unknown): void;
-}
-
-function departure(): Departure {
-  let resolve: (session: Session) => void = () => {};
-  let reject: (error: unknown) => void = () => {};
-  const promise = new Promise<Session>((resolved, rejected) => {
-    resolve = resolved;
-    reject = rejected;
-  });
-  // A close may settle it before the run awaits it.
-  promise.catch(() => {});
-  return { promise, resolve, reject };
-}
-
 /** A session as the registry keeps it. */
 interface Entry {
   readonly key: string;
@@ -398,17 +369,8 @@ interface Entry {
   conversationIsNew: boolean;
   /** Whether the session has a first prompt: on the command line, or typed once the agent is ready. */
   readonly launchedWithPrompt: boolean;
-  /** A first prompt too long for the command line, to type once the agent is ready; gone once begun. */
-  promptToType?: string;
-  /**
-   * Whether the launch waits for its first prompt to be typed: it settles
-   * once the agent took it, or the typing failed, or the session ended, or
-   * at `waiting`, after which {@link firstPrompt} tells the rest.
-   */
-  awaitsTypedPrompt: boolean;
-  readonly departure: Departure;
-  /** What became of a first prompt typed after the start: settled once taken, failed, or the session ended. */
-  readonly firstPrompt?: Departure;
+  /** What becomes of the launch, and of a first prompt typed once the agent is ready. */
+  readonly firstPrompt: FirstPrompt;
   /** The terminal a prompt is being typed through, which hears the session's hooks. */
   typing?: SessionTypingTerminal;
   /**
@@ -421,6 +383,7 @@ interface Entry {
   compactingFrom?: SessionCourse['compactingFrom'];
   /** When the agent last took a prompt. */
   promptTakenAt?: SessionCourse['promptTakenAt'];
+  /** Where its launch and life stand: what the core may do with it. */
   readonly lifecycle: SessionLifecycle;
   /** Why the cockpit itself ends the session, which prevails over the agent's word. */
   endedBecause?: EndReason;
@@ -435,12 +398,6 @@ interface Entry {
   startUp?: StartUpWatch;
   /** Reads the screen for a panel a launch prompt opened, which no hook nor entry tells. */
   promptWatch?: LaunchPromptWatch;
-  /**
-   * Reads the screen, once the agent started, until it draws the input box
-   * a first prompt too long for the command line is typed into; no hook
-   * tells it.
-   */
-  inputBoxWait?: InputBoxWait;
   /** Stops following what the agent tells outside its hooks. */
   stopFollowing?: () => void;
   /**
@@ -458,6 +415,7 @@ class SessionRegistry implements Sessions {
   readonly #watch: LivenessWatch;
   /** Aborted by the close: what every operation under way checks before it goes on. */
   readonly #closing = new AbortController();
+  readonly #launches: Launches<Entry>;
 
   constructor(options: SessionsOptions) {
     this.#options = options;
@@ -466,20 +424,31 @@ class SessionRegistry implements Sessions {
       onGone: (key) => void this.#goneByKey(key),
       intervalMs: LIVENESS_INTERVAL_MS,
     });
+    this.#launches = new Launches({
+      ...options,
+      entries: this.#entries,
+      closing: this.#closing.signal,
+      notify: () => this.#notify(),
+      refusal: (key) => new SessionsClosedError(key),
+    });
   }
 
   async launch(launch: SessionLaunch): Promise<Session> {
-    const { key, prompt } = launch;
+    const { key, prompt, part, resume } = launch;
     if (!isSessionKey(key)) throw new TypeError(`${JSON.stringify(key)} is no session key.`);
     this.#refuseIfClosed(key);
     const existing = this.#entries.get(key);
     if (existing !== undefined && !existing.lifecycle.isEnded) throw wrongState(existing.session);
 
-    const onCommandLine =
-      prompt === undefined || this.#options.driver.promptFitsLaunch(prompt) ? prompt : undefined;
-    const entry = this.#reserve(launch, prompt, existing);
-    await this.#refuseLeftOver(entry);
-    await this.#launch(entry, { ...launch, prompt: onCommandLine });
+    const typed = prompt !== undefined && !this.#options.driver.promptFitsLaunch(prompt);
+    const entry = this.#newEntry(launch, typed ? prompt : undefined, existing);
+    this.#launches.reserve(entry);
+    await this.#launches.start(entry, {
+      prompt: typed ? undefined : prompt,
+      ...(resume === undefined ? {} : { resume }),
+      ...(part === undefined ? {} : { part }),
+    });
+    this.#watchLive(entry);
     return this.#outcome(entry);
   }
 
@@ -544,7 +513,7 @@ class SessionRegistry implements Sessions {
   }
 
   firstPrompt(key: string): Promise<Session> | undefined {
-    return this.#entries.get(key)?.firstPrompt?.promise;
+    return this.#entries.get(key)?.firstPrompt.typed;
   }
 
   session(key: string): Session | undefined {
@@ -612,95 +581,6 @@ class SessionRegistry implements Sessions {
       if (entry.typing === terminal) delete entry.typing;
       release();
     }
-  }
-
-  /**
-   * Types a first prompt too long for the command line, once the agent is
-   * ready and its input box drawn, the page's terminals' keys held from
-   * the agent's start (those kept dropped, then let through, while a
-   * dialog in place of the box waits for a person): the session stays
-   * `starting` until the agent takes it, and the launch settles then, or
-   * at `waiting`, the prompt's own outcome told apart. Not taken, no box drawn in
-   * time, or the session no longer `starting` once the box shows (nothing
-   * typed then), the launch fails as a send does; a session still
-   * `starting` is then `idle`.
-   */
-  async #typeFirstPrompt(entry: Entry, prompt: string): Promise<void> {
-    const keys = heldKeys(this.#options.holds, entry.key);
-    let failure: ((session: Session) => unknown) | undefined;
-    try {
-      const shown = await this.#inputBoxShown(entry, keys);
-      // Ended or closed meanwhile: the end, or the close, settles the launch.
-      if (!this.#takesInput(entry)) return;
-      const outcome = await this.#typedFirstPrompt(entry, prompt, shown);
-      if (outcome !== 'taken') failure = outcome;
-    } catch (error) {
-      failure = () => error;
-    } finally {
-      keys.release();
-      entry.awaitsTypedPrompt = false;
-    }
-    if (failure === undefined) {
-      settleFirstPrompt(entry, entry.session);
-      return;
-    }
-    if (!entry.lifecycle.takesInput || entry.session.state !== 'starting') {
-      failFirstPrompt(entry, failure(entry.session));
-      return;
-    }
-    const idle: Session = { key: entry.key, state: 'idle', since: now() };
-    failFirstPrompt(entry, failure(idle));
-    this.#update(entry, idle);
-  }
-
-  /**
-   * Types the first prompt into the box shown, while the session is still
-   * `starting`: nothing else began meanwhile (a turn of a prompt a person
-   * typed, an ask).
-   *
-   * @returns `taken`, or why the launch fails, given the session as it is then.
-   */
-  async #typedFirstPrompt(
-    entry: Entry,
-    prompt: string,
-    shown: boolean,
-  ): Promise<'taken' | ((session: Session) => unknown)> {
-    if (!shown) return (session) => typingFailure('no-input-box', session);
-    if (entry.session.state !== 'starting') {
-      return (session) => wrongState(session, 'Its first prompt was not typed.');
-    }
-    const outcome = await this.#type(entry, prompt);
-    return outcome === 'taken' ? outcome : (session) => typingFailure(outcome, session);
-  }
-
-  /**
-   * Waits for the agent to draw its input box, which Claude Code does a
-   * moment after its `SessionStart`: a dialog in its place makes the
-   * session wait in the terminal, the page's terminals' keys kept so far
-   * dropped, then let through for the person to answer it; `starting`
-   * again, the keys held again, once the box shows.
-   *
-   * @returns Whether the box showed; `false` once the bound passed, or the
-   * wait was stopped.
-   */
-  async #inputBoxShown(entry: Entry, keys: HeldKeys): Promise<boolean> {
-    const wait = new InputBoxWait({
-      read: () => this.#readScreen(entry.key),
-      onDialog: (shown) => {
-        // Typed toward the box, the keys kept would answer a dialog the person had not seen.
-        keys.discard();
-        this.#waitInTerminal(entry, shown);
-      },
-    });
-    entry.inputBoxWait = wait;
-    const shown = await wait.start();
-    delete entry.inputBoxWait;
-    if (!shown || !entry.lifecycle.takesInput) return shown;
-    keys.hold();
-    if (entry.session.state === 'waiting') {
-      this.#update(entry, { key: entry.key, state: 'starting', since: now() });
-    }
-    return shown;
   }
 
   receive({ key, path, body }: HookRequest): void {
@@ -798,116 +678,37 @@ class SessionRegistry implements Sessions {
     this.#watch.close();
     for (const entry of this.#entries.values()) {
       entry.typing?.close();
-      entry.inputBoxWait?.stop();
+      entry.firstPrompt.stop();
       stopReadingTheScreen(entry);
       stopFollowingEveryConversation(entry);
-      failFirstPrompt(entry, new SessionsClosedError(entry.key));
+      entry.firstPrompt.fail(new SessionsClosedError(entry.key));
     }
   }
 
-  /** Takes the key at once, so that a second launch of it is refused before any wait. */
-  #reserve(
-    { key, directory, conversationId, resume }: SessionLaunch,
-    prompt: string | undefined,
+  /** A session to launch, `reserved`: listed only once its launch begins. */
+  #newEntry(
+    { key, directory, conversationId, resume, prompt }: SessionLaunch,
+    toType: string | undefined,
     replaces: Entry | undefined,
   ): Entry {
-    const typed = prompt !== undefined && !this.#options.driver.promptFitsLaunch(prompt);
-    const entry: Entry = {
+    return {
       key,
       directory,
       environment: this.#options.environment(),
       conversationId,
       conversationIsNew: resume !== true,
       launchedWithPrompt: prompt !== undefined,
-      ...(typed ? { promptToType: prompt } : {}),
-      awaitsTypedPrompt: typed,
-      departure: departure(),
-      ...(typed ? { firstPrompt: departure() } : {}),
+      firstPrompt: new FirstPrompt(toType),
       session: { key, state: 'starting', since: now() },
       lifecycle: new SessionLifecycle('reserved'),
       heard: false,
       stopFollowingLeft: [],
       ...(replaces === undefined ? {} : { replaces }),
     };
-    this.#entries.set(key, entry);
-    return entry;
   }
 
-  /** Gives the key back to what it held before a launch that failed: its ended session, or nothing. */
-  #unreserve(entry: Entry): void {
-    if (this.#entries.get(entry.key) !== entry) return;
-    if (entry.replaces === undefined) this.#entries.delete(entry.key);
-    else this.#entries.set(entry.key, entry.replaces);
-  }
-
-  /**
-   * Refuses a key whose session an earlier process left on the host, before
-   * anything is written: its agent may read its settings again, and must
-   * never be handed this launch's token.
-   */
-  async #refuseLeftOver(entry: Entry): Promise<void> {
-    const leftOver = await this.#options.host.isLive(entry.key).catch((error: unknown) => {
-      this.#unreserve(entry);
-      throw error;
-    });
-    if (leftOver) {
-      this.#unreserve(entry);
-      throw new SessionHostError(
-        'session-exists',
-        `A session of the key ${entry.key} lives on the host, left by an earlier run.`,
-      );
-    }
-  }
-
-  async #launch(
-    entry: Entry,
-    { prompt, part, resume }: Omit<SessionLaunch, 'prompt'> & { prompt: string | undefined },
-  ): Promise<void> {
-    const { host, driver, hooks, folders } = this.#options;
-    let granted = false;
-    try {
-      this.#refuseIfClosed(entry.key);
-      const { environment } = entry;
-      await this.#options.admitAgent(environment);
-      this.#refuseIfClosed(entry.key);
-      entry.lifecycle.move('launching');
-      this.#notify();
-      const confinement = await this.#options.confinement();
-      this.#refuseIfClosed(entry.key);
-      const files = await folders.prepare(entry.key);
-      this.#refuseIfClosed(entry.key);
-      const address = hooks.grant(entry.key);
-      granted = true;
-      const command = await driver.launch({
-        key: entry.key,
-        conversationId: entry.conversationId,
-        ...(resume === true ? { resume: true } : {}),
-        directory: entry.directory,
-        files,
-        hooks: address,
-        ...(prompt === undefined ? {} : { prompt }),
-        ...(part === undefined ? {} : { part }),
-        environment,
-        confinement,
-      });
-      this.#refuseIfClosed(entry.key);
-      await host.start({
-        name: entry.key,
-        folder: entry.directory,
-        command: command.command,
-        args: command.args,
-        environment: exactly(command),
-        size: DETACHED_SIZE,
-      });
-    } catch (error) {
-      if (granted) hooks.revoke(entry.key);
-      const listed = !entry.lifecycle.isReserved;
-      this.#unreserve(entry);
-      if (listed) this.#notify();
-      throw error;
-    }
-    entry.lifecycle.move('live');
-    delete entry.replaces;
+  /** Watches a session put on the host: its liveness, its agent's conversation and its start. */
+  #watchLive(entry: Entry): void {
     // Closed while the host started it: the session goes on, unwatched.
     if (this.#closing.signal.aborted) return;
     this.#watch.watch(entry.key);
@@ -960,12 +761,7 @@ class SessionRegistry implements Sessions {
    */
   #awaitPrompt(entry: Entry): void {
     if (!entry.launchedWithPrompt || entry.session.state !== 'starting') return;
-    const { promptToType } = entry;
-    if (promptToType !== undefined) {
-      delete entry.promptToType;
-      void this.#typeFirstPrompt(entry, promptToType);
-      return;
-    }
+    if (entry.firstPrompt.typeOnceReady(this.#starting(entry))) return;
     this.#watchForPanel(entry);
   }
 
@@ -1032,7 +828,7 @@ class SessionRegistry implements Sessions {
   }
 
   async #outcome(entry: Entry): Promise<Session> {
-    const session = await entry.departure.promise;
+    const session = await entry.firstPrompt.launched;
     if (session.state === 'ended' && session.reason === 'unobservable') {
       throw new CockpitError('unobservable', 'The agent reported nothing; its session was ended.', {
         key: entry.key,
@@ -1055,7 +851,7 @@ class SessionRegistry implements Sessions {
     } catch (error) {
       // Still on the host, perhaps: the watch ends it when it goes.
       if (lifecycle.can('live')) lifecycle.move('live');
-      entry.departure.reject(error);
+      entry.firstPrompt.failLaunch(error);
       return;
     }
     await this.#gone(entry);
@@ -1081,7 +877,7 @@ class SessionRegistry implements Sessions {
    */
   #gone(entry: Entry): Promise<void> {
     return entry.lifecycle.go(async () => {
-      entry.inputBoxWait?.stop();
+      entry.firstPrompt.stop();
       stopReadingTheScreen(entry);
       stopFollowingEveryConversation(entry);
       this.#watch.unwatch(entry.key);
@@ -1096,6 +892,20 @@ class SessionRegistry implements Sessions {
     });
   }
 
+  /** The session as its first prompt is typed into it. */
+  #starting(entry: Entry): StartingSession {
+    return {
+      key: entry.key,
+      holds: this.#options.holds,
+      session: () => entry.session,
+      takesInput: () => this.#takesInput(entry),
+      readScreen: () => this.#readScreen(entry.key),
+      waitInTerminal: (shown) => this.#waitInTerminal(entry, shown),
+      type: (prompt) => this.#type(entry, prompt),
+      update: (session) => this.#update(entry, session),
+    };
+  }
+
   /** Whether a prompt may be typed into the session now: the core open, the session not being ended. */
   #takesInput(entry: Entry): boolean {
     return entry.lifecycle.takesInput && !this.#closing.signal.aborted;
@@ -1104,9 +914,7 @@ class SessionRegistry implements Sessions {
   #update(entry: Entry, session: Session): void {
     if (session === entry.session) return;
     entry.session = session;
-    if (leftTheStart(entry, session)) entry.departure.resolve(session);
-    // Whatever the typing did meanwhile: a prompt it had not settled is settled by the end.
-    if (session.state === 'ended') settleFirstPrompt(entry, session);
+    entry.firstPrompt.changed(session);
     this.#notify();
   }
 
@@ -1128,60 +936,6 @@ function endOf(entry: Entry): Pick<EndedSession, 'reason' | 'dialog'> {
   return declined.dialog === undefined
     ? { reason: 'declined' }
     : { reason: 'declined', dialog: declined.dialog };
-}
-
-/**
- * Whether the launch settles on the session as it is now: once it left
- * `starting`, or, for a first prompt typed after the start, once it waits
- * for a person or ended — the typing settles it otherwise.
- */
-function leftTheStart(entry: Entry, session: Session): boolean {
-  if (entry.awaitsTypedPrompt) return session.state === 'waiting' || session.state === 'ended';
-  return session.state !== 'starting';
-}
-
-/**
- * Settles a first prompt typed after the start, and its launch, each only
- * if it had not settled: a promise settles once, so a later end changes neither.
- */
-function settleFirstPrompt(entry: Entry, session: Session): void {
-  entry.firstPrompt?.resolve(session);
-  entry.departure.resolve(session);
-}
-
-/** Fails a first prompt typed after the start, and its launch if it had not settled. */
-function failFirstPrompt(entry: Entry, error: unknown): void {
-  entry.firstPrompt?.reject(error);
-  entry.departure.reject(error);
-}
-
-/** A hold of the page's terminals' keys of a session, let go and taken again. */
-interface HeldKeys {
-  /** Holds the keys, unless they are held already. */
-  hold(): void;
-  /** Lets the keys through, if they are held: those kept reach the session first. */
-  release(): void;
-  /** Lets the keys through, if they are held, the keys kept dropped. */
-  discard(): void;
-}
-
-/** Holds the page's terminals' keys of a session from now on. */
-function heldKeys(holds: TerminalHold, key: string): HeldKeys {
-  let release: (() => void) | undefined = holds.hold(key);
-  return {
-    hold() {
-      release ??= holds.hold(key);
-    },
-    release() {
-      release?.();
-      release = undefined;
-    },
-    discard() {
-      if (release === undefined) return;
-      holds.discard(key);
-      this.release();
-    },
-  };
 }
 
 /**
@@ -1225,44 +979,6 @@ function courseOf(entry: Entry): SessionCourse {
   };
 }
 
-/**
- * The refusal of an operation the session's state does not allow: on a
- * `waiting` session, with everything it waits for.
- *
- * @param session - The session as it is.
- * @param detail - A sentence the message ends with: what the refused operation left.
- * @returns The error.
- */
-export function wrongState(session: Session, detail?: string): CockpitError<'wrong-state'> {
-  const message = `The session ${session.key} is ${session.state}.`;
-  return new CockpitError('wrong-state', detail === undefined ? message : `${message} ${detail}`, {
-    key: session.key,
-    state: session.state,
-    ...(session.state === 'waiting' ? { pending: session.pending } : {}),
-  });
-}
-
-/**
- * Why a prompt typed was not taken: the agent did not take it, or no input
- * box took it, the message saying where the person's draft is when the
- * driver could not put it back.
- */
-function typingFailure(
-  outcome: Exclude<TypingOutcome, 'taken'>,
-  session: Session,
-): CockpitError<'wrong-state' | 'prompt-not-taken'> {
-  if (outcome === 'no-input-box') return wrongState(session);
-  if (outcome !== 'not-taken') return wrongState(session, outcome.draftLeft);
-  return new CockpitError(
-    'prompt-not-taken',
-    `The session ${session.key} did not take the prompt.`,
-    {
-      key: session.key,
-      state: session.state,
-    },
-  );
-}
-
 /** Whether the promise settles within the time, in milliseconds. */
 async function within(promise: Promise<unknown>, ms: number): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
@@ -1274,17 +990,6 @@ async function within(promise: Promise<unknown>, ms: number): Promise<boolean> {
   } finally {
     clearTimeout(timer);
   }
-}
-
-/**
- * The host gives a session the calling process's environment with changes;
- * the driver's is the agent's whole one, so every other variable is removed.
- */
-function exactly(command: LaunchCommand): SessionEnvironment {
-  const remove = Object.keys(process.env).filter(
-    (name) => !Object.hasOwn(command.environment, name),
-  );
-  return { set: command.environment, remove };
 }
 
 function now(): string {

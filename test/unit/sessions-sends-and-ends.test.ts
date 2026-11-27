@@ -386,6 +386,25 @@ describe('a first prompt too long for the command line', () => {
     expect(pageTerminal).toEqual(['held', 'released']);
   });
 
+  it('asks the driver once whether the prompt fits the command line', async () => {
+    const asked: string[] = [];
+    driver.promptFitsLaunch = (prompt) => {
+      asked.push(prompt);
+      return false;
+    };
+
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    launched.catch(() => {});
+    await settle();
+
+    expect(asked).toEqual(['A long prompt.']);
+  });
+
   it('fails the launch `prompt-not-taken` when the agent did not take it: the session is `idle`', async () => {
     const launched = sessions.launch({
       key: KEY,
