@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  freshOf,
   isWireToken,
   keyOfTerminalPath,
   terminalPath,
@@ -124,5 +125,19 @@ describe('the path of a session terminal', () => {
     ['another path', '/sessions'],
   ])('reads no key from %s', (_, path) => {
     expect(keyOfTerminalPath(path)).toBeUndefined();
+  });
+});
+
+describe('the `fresh` a request carries', () => {
+  it.each([true, false])('carries `fresh: %s` when the caller gave it', (fresh) => {
+    expect(freshOf({ fresh })).toEqual({ fresh });
+  });
+
+  it.each([
+    ['no options', undefined],
+    ['options without it', {}],
+    ['it left undefined', { fresh: undefined }],
+  ])('carries nothing for %s', (_, options) => {
+    expect(freshOf(options)).toStrictEqual({});
   });
 });

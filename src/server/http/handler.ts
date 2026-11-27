@@ -13,6 +13,7 @@ import type {
   Session,
 } from '../../shared/session.js';
 import {
+  freshOf,
   type JobsResponse,
   type KeyRule,
   type OpenRequest,
@@ -326,15 +327,13 @@ async function serve(
   const { operations } = options;
   switch (route.route) {
     case 'run':
-      return await answered(request, RUN_BODY, ({ jobId, args, fresh }) =>
-        operations.run(jobId, args, freshOf(fresh)),
+      return await answered(request, RUN_BODY, (body) =>
+        operations.run(body.jobId, body.args, freshOf(body)),
       );
     case 'send':
       return await answered(request, SEND_BODY, ({ key, prompt }) => operations.send(key, prompt));
     case 'open':
-      return await answered(request, OPEN_BODY, ({ key, fresh }) =>
-        operations.open(key, freshOf(fresh)),
-      );
+      return await answered(request, OPEN_BODY, (body) => operations.open(body.key, freshOf(body)));
     case 'options':
       return await answered(request, OPTIONS_BODY, async ({ jobId, field, args }) => {
         const answer: OptionsResponse = {
@@ -415,11 +414,6 @@ function bodyOf<Body>(text: string, shape: z.ZodType<Body>): Body {
   throw new CockpitError('invalid-arguments', 'The request’s body does not fit.', {
     issues: issuesOf(parsed.error.issues),
   });
-}
-
-/** The options of a run or an open: `fresh` when the body asks, none else. */
-function freshOf(fresh: boolean | undefined): { fresh?: boolean } {
-  return fresh === undefined ? {} : { fresh };
 }
 
 const UPGRADE_REQUIRED: WireAnswer = { status: 426, headers: { upgrade: 'websocket' } };

@@ -189,6 +189,21 @@ export interface OpenRequest {
 /** The answer to an {@link OPEN_PATH} request that succeeded: what the open did. */
 export type OpenResponse = OpenResult;
 
+/**
+ * The `fresh` of a run or an open, as the wire carries it and as the
+ * cockpit's operations take it: present only when the caller gave it, so
+ * that a run left without it lets the job decide.
+ *
+ * @param options - A run's or an open's options, or a request's body;
+ * `undefined` when there are none.
+ * @returns `{ fresh }` when `fresh` is given, `{}` otherwise.
+ */
+export function freshOf(options: { readonly fresh?: boolean | undefined } | undefined): {
+  fresh?: boolean;
+} {
+  return options?.fresh === undefined ? {} : { fresh: options.fresh };
+}
+
 /** The answer to a {@link JOBS_PATH} request. */
 export interface JobsResponse {
   /** Every job the app offers, in the order the app gave them. */

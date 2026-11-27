@@ -9,6 +9,7 @@ import type {
   Session,
 } from '../shared/session.js';
 import {
+  freshOf,
   JOBS_PATH,
   type JobsResponse,
   OPEN_PATH,
@@ -186,9 +187,4 @@ export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitC
       };
     },
   };
-}
-
-/** The `fresh` a request carries: only when the caller gave it. */
-function freshOf(options: RunOptions | OpenOptions | undefined): { fresh?: boolean } {
-  return options?.fresh === undefined ? {} : { fresh: options.fresh };
 }
