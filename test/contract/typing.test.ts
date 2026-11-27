@@ -209,14 +209,14 @@ it('106 — Typed while the command menu or the file menu is open: the prompt ar
 
   await typeDraft(session, '/he');
   const command = await typed(cockpit, session, 'a prompt over a command');
-  const commandDraft = (await boxOf(session))?.text;
+  // The keys that put the draft back go as the turn runs: the box may draw them after it ended.
+  await eventually(async () => expect((await boxOf(session))?.text).toBe('/he'));
   await session.press('C-u');
   await typeDraft(session, 'first line\ncompare @alp');
   const file = await typed(cockpit, session, 'a prompt over a file menu');
   const fileDraft = await submitBox(cockpit, session);
 
   expect(command.prompts).toEqual(['a prompt over a command']);
-  expect(commandDraft).toBe('/he');
   expect(file.prompts).toEqual(['a prompt over a file menu']);
   expect(fileDraft).toMatch(/^first line\ncompare @alp/);
 });
