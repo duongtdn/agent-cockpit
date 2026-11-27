@@ -237,8 +237,10 @@ class Units implements UnitsOfWork {
   readonly #jobs: JobRuns;
   readonly #options: UnitsOfWorkOptions;
   readonly #loaded: Map<string, EndedSession>;
-  readonly #queue = new KeyQueue();
-  readonly #admissions = new KeyQueue();
+  /** Aborted by the close: one signal every wait of the queues races against. */
+  readonly #closing = new AbortController();
+  readonly #queue = new KeyQueue(this.#closing.signal, closedRefusal);
+  readonly #admissions = new KeyQueue(this.#closing.signal, closedRefusal);
   readonly #followers = new Set<(sessions: readonly Session[]) => void>();
   readonly #stops: (() => void)[];
 
@@ -293,9 +295,7 @@ class Units implements UnitsOfWork {
   }
 
   close(): void {
-    const closed = (key: string) => new SessionsClosedError(key);
-    this.#queue.close(closed);
-    this.#admissions.close(closed);
+    this.#closing.abort();
     for (const stop of this.#stops.splice(0)) stop();
     this.#followers.clear();
   }
@@ -625,6 +625,10 @@ class Units implements UnitsOfWork {
     const sessions = this.list();
     for (const follower of this.#followers) follower(sessions);
   }
+}
+
+function closedRefusal(key: string): SessionsClosedError {
+  return new SessionsClosedError(key);
 }
 
 /** A plan whose operation the key's history does not keep. */

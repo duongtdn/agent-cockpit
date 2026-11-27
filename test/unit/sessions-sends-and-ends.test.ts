@@ -1,3 +1,5 @@
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TypingStoppedError, type TypingTerminal } from '../../src/server/driver.ts';
 import {
@@ -688,6 +690,31 @@ describe('ending a live session gracefully', () => {
   it('does nothing for a key with no live session', async () => {
     await expect(sessions.end('nothing-here', 'restarted')).resolves.toEqual([]);
     expect(signals).toEqual([]);
+  });
+});
+
+describe('what the core keeps of the sessions a key had', () => {
+  it('keeps nothing of an ended session once a later launch of its key is live, however many were ended', async () => {
+    setFlagsFromString('--expose-gc');
+    const collect = runInNewContext('gc') as () => void;
+    let first: WeakRef<Session> | undefined;
+    for (let each = 0; each < 20; each += 1) {
+      await idleSession();
+      const ended = sessions.end(KEY, 'restarted');
+      await settle();
+      host.exit(KEY);
+      await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+      await ended;
+      first ??= new WeakRef(sessions.session(KEY) as Session);
+    }
+    await idleSession();
+    // The stub keeps every following it was asked for, the core's callbacks with them.
+    driver.follows.splice(0);
+
+    collect();
+
+    expect(first?.deref()).toBeUndefined();
+    expect(sessions.list()).toMatchObject([{ key: KEY, state: 'idle' }]);
   });
 });
 

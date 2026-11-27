@@ -426,12 +426,15 @@ interface Entry {
    */
   awaitsTypedPrompt: boolean;
   readonly departure: Departure;
-  /** Settled once the session ended: what a graceful end waits for. */
+  /** Settled once the session ended, or the core closed: what a graceful end waits for. */
   readonly ending: Settled;
   /** The terminal a prompt is being typed through, which hears the session's hooks. */
   typing?: SessionTypingTerminal;
-  /** The ended session of the key this launch replaces: listed until the launch is, and back if it fails. */
-  readonly replaces?: Entry;
+  /**
+   * The ended session of the key this launch replaces: listed until the
+   * launch is, and back if it fails; let go once the launch is on the host.
+   */
+  replaces?: Entry;
   session: Session;
   /** What a compaction begun while `idle` returns the session to. */
   compactingFrom?: SessionCourse['compactingFrom'];
@@ -480,8 +483,6 @@ class SessionRegistry implements Sessions {
   readonly #conversationListeners = new Set<ConversationListener>();
   readonly #watch: LivenessWatch;
   #closed = false;
-  /** Settled by the close: a graceful end stops waiting for its agent. */
-  readonly #closing = settled();
 
   constructor(options: SessionsOptions) {
     this.#options = options;
@@ -533,10 +534,7 @@ class SessionRegistry implements Sessions {
     entry.phase = 'ending';
     const { signal, boundMs } = this.#options.driver.ending;
     await this.#signal(key, signal);
-    const exited = await within(
-      Promise.race([entry.ending.promise, this.#closing.promise]),
-      boundMs,
-    );
+    const exited = await within(entry.ending.promise, boundMs);
     // Closed, the core no longer watches the session: whether it is gone, nothing tells.
     this.#refuseIfClosed(key);
     if (!exited) {
@@ -826,9 +824,10 @@ class SessionRegistry implements Sessions {
 
   close(): void {
     this.#closed = true;
-    this.#closing.settle();
     this.#watch.close();
     for (const entry of this.#entries.values()) {
+      // A graceful end stops waiting for its agent.
+      entry.ending.settle();
       entry.typing?.close();
       entry.inputBoxWait?.stop();
       stopReadingTheScreen(entry);
@@ -938,6 +937,7 @@ class SessionRegistry implements Sessions {
       throw error;
     }
     entry.phase = 'live';
+    delete entry.replaces;
     // Closed while the host started it: the session goes on, unwatched.
     if (this.#closed) return;
     this.#watch.watch(entry.key);

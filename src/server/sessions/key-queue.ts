@@ -1,66 +1,69 @@
+import { settlesBeforeAbort } from './abort-race.js';
+
+/**
+ * Lets the next operation of the key begin while the one that calls it
+ * runs on: an operation left waiting for a person frees its turn.
+ */
+export type FreeTurn = () => void;
+
 /**
  * Runs operations one at a time per key, in the order they were asked:
- * each starts once the one before it settled, whatever its outcome, and
- * acts on the state that one left. Operations of different keys run side
- * by side.
+ * each starts once the one before it settled, or freed its turn, whatever
+ * its outcome, and acts on the state that one left. Operations of
+ * different keys run side by side.
  */
 export class KeyQueue {
-  readonly #last = new Map<string, Promise<unknown>>();
-  /** Settled once the queue is closed: an operation waiting for its turn stops waiting. */
-  readonly #closing: Promise<void>;
-  #close: () => void = () => {};
-  /** What an operation that has not begun is rejected with, once the queue is closed. */
-  #refusal: ((key: string) => unknown) | undefined;
+  /** Each key's last turn asked: over once its operation settled, or freed it. */
+  readonly #last = new Map<string, Promise<void>>();
+  readonly #closing: AbortSignal;
+  readonly #refusal: (key: string) => unknown;
 
-  constructor() {
-    this.#closing = new Promise((resolve) => {
-      this.#close = resolve;
-    });
+  /**
+   * @param closing - Closes the queue once aborted: every operation that
+   * has not begun, waiting for its turn or asked from then on, is rejected
+   * at once with the refusal and never runs. One that has begun runs on.
+   * @param refusal - Gives what an operation of the key is rejected with
+   * once the queue is closed.
+   */
+  constructor(closing: AbortSignal, refusal: (key: string) => unknown) {
+    this.#closing = closing;
+    this.#refusal = refusal;
   }
 
   /**
-   * Runs an operation on a key once the operations asked before it settled.
+   * Runs an operation on a key once the operations asked before it
+   * settled, or freed their turn.
    *
    * @param key - The key.
-   * @param operation - The operation.
+   * @param operation - The operation, given the function that frees its turn.
    * @returns What the operation gives; once the queue is closed, before
    * its turn came, the queue's refusal.
    */
-  run<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  run<T>(key: string, operation: (freeTurn: FreeTurn) => Promise<T>): Promise<T> {
     const before = this.#last.get(key) ?? Promise.resolve();
-    const turn = Promise.race([before.then(settledAnyhow, settledAnyhow), this.#closing]);
-    const result = turn.then(() => {
-      if (this.#refusal !== undefined) throw this.#refusal(key);
-      return operation();
+    let endTurn = () => {};
+    const turn = new Promise<void>((resolve) => {
+      endTurn = resolve;
     });
-    const settled = result.catch(() => undefined);
-    this.#last.set(key, settled);
-    void settled.then(() => {
-      if (this.#last.get(key) === settled) this.#last.delete(key);
+    const freeTurn: FreeTurn = () => {
+      endTurn();
+      if (this.#last.get(key) === turn) this.#last.delete(key);
+    };
+    this.#last.set(key, turn);
+    const result = settlesBeforeAbort(before, this.#closing).then((came) => {
+      if (!came || this.#closing.aborted) throw this.#refusal(key);
+      return operation(freeTurn);
     });
+    result.then(freeTurn, freeTurn);
     return result;
   }
 
   /**
-   * Tells whether an operation runs, or waits, on a key.
+   * Tells whether an operation runs, or waits, on a key, its turn not freed.
    *
    * @param key - The key.
    */
   isBusy(key: string): boolean {
     return this.#last.has(key);
   }
-
-  /**
-   * Closes the queue: every operation that has not begun, waiting for its
-   * turn or asked from now on, is rejected at once with the refusal and
-   * never runs. One that has begun runs on.
-   *
-   * @param refusal - Gives what an operation of the key is rejected with.
-   */
-  close(refusal: (key: string) => unknown): void {
-    this.#refusal ??= refusal;
-    this.#close();
-  }
 }
-
-function settledAnyhow(): void {}
