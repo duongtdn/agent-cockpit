@@ -90,6 +90,7 @@ async function settled(
   session: AgentSession,
   box: string,
   footer: (footer: string) => boolean,
+  spinner: (spinner: string | undefined) => boolean = () => true,
 ): Promise<Seen> {
   const shape = (view: Seen) => ({ ...view, spinner: view.spinner !== undefined });
   return eventually(async () => {
@@ -97,6 +98,7 @@ async function settled(
     const second = seen(await session.screen());
     expect(second.box).toBe(box);
     expect(footer(second.footer)).toBe(true);
+    expect(spinner(second.spinner)).toBe(true);
     expect(shape(second)).toEqual(shape(first));
     return second;
   });
@@ -126,6 +128,12 @@ async function idleScreen(
 
 const withHint = (footer: string) => footer.includes('esc to interrupt');
 const any = () => true;
+/**
+ * The compaction's own spinner: until the agent redraws it, the row may
+ * still name the `PreCompact` hooks it ran first (`Running PreCompact hooks…`).
+ */
+const compactingSpinner = (spinner: string | undefined) =>
+  spinner?.includes('Compacting conversation…') === true;
 
 /** The cockpit's waits, as the contract agent's: they fail saying what was awaited. */
 function waits(cockpit: ContractCockpit) {
@@ -178,9 +186,9 @@ for (const mode of ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as co
     const compactionBegins = cockpit.timeline.length;
     await cockpit.submitInTerminal(SAID_KEY, '/compact', 'PreCompact');
     const compactionHeld = await cockpit.api.heldRequest(2);
-    const compacting = await settled(eventually, session, '', withHint);
+    const compacting = await settled(eventually, session, '', withHint, compactingSpinner);
     await session.type(DRAFT);
-    const compactingOverDraft = await settled(eventually, session, DRAFT, any);
+    const compactingOverDraft = await settled(eventually, session, DRAFT, any, compactingSpinner);
     compactionHeld.release();
     await eventually(() =>
       expect(
