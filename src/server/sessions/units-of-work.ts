@@ -49,8 +49,10 @@ export interface UnitsOfWorkOptions {
   readonly environment: () => Readonly<Record<string, string>>;
   /**
    * The most sessions live at once; no cap when left out. At the cap, a
-   * start ends the `idle` session idle longest that has no background task
-   * and no terminal attached, else fails `session-cap-reached`.
+   * start ends the `idle` session idle longest that has no background
+   * task, no terminal attached and no operation under way on its key,
+   * else fails `session-cap-reached`. A session it is ending takes no send
+   * or run until it is gone.
    */
   readonly maxSessions?: number;
 }

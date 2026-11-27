@@ -65,9 +65,12 @@ export interface Cockpit {
    * | `starting`, `busy`, `waiting` | Refused `wrong-state`. |
    *
    * A job with no prompt starts or resumes with none, and on a live
-   * session has nothing to send (`nothing-to-send`, with the state). With
-   * `fresh`, a new conversation (`started`, `fresh-on-request`): a live
-   * `idle`, `busy` or `waiting` session is ended first, `starting` refused.
+   * session has nothing to send (`nothing-to-send`, with the state),
+   * unless its settings differ from an `idle` session's: then it is
+   * restarted with none (`resumed`, `settings-changed`). With `fresh`, a
+   * new conversation (`started`, `fresh-on-request`): a live `idle`,
+   * `busy` or `waiting` session is ended first, `starting` refused. A
+   * fresh start, either way, records the folder its job gives now.
    * A launch resolves once the session leaves `starting`: `busy` once the
    * agent took the prompt, `idle` for a job without one, `waiting` while a
    * start-up dialog waits for the person in the terminal, `ended` when the
@@ -84,9 +87,10 @@ export interface Cockpit {
    * @param options - `fresh`: start a new conversation for the key.
    * @returns What the run did, and the state it left the session in.
    * @throws `CockpitError` `unknown-job`, `invalid-arguments` (also for a
-   * prompt that is empty or only whitespace); `not-a-choice` for a value not among its field's choices;
-   * `folder-outside-app` when the job's folder lies outside the app's;
-   * `folder-changed` when it is not the folder the key's record keeps;
+   * prompt that is empty or only whitespace); `not-a-choice` for a value
+   * not among its field's choices; `folder-outside-app` when the job's
+   * folder lies outside the app's; `folder-changed` when it is not the
+   * folder the key's record keeps (never on a fresh start);
    * `prompt-too-long` over 100,000 characters; `wrong-state`;
    * `prompt-not-taken`; `session-cap-reached` at the cap with no session
    * to end; `invalid-options` when the job's driver part does not fit, or

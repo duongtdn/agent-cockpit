@@ -44,7 +44,10 @@ export interface Job<Args extends z.ZodType = z.ZodType> {
   /**
    * Gives the folder the agent works in, relative to the app's folder and
    * inside it; without it, the app's folder. The first start of a key
-   * records it, and a later run that gives another is refused.
+   * records it, and so does a fresh start (a run with `fresh`, a `fresh`
+   * job's on an `ended` session, an open with `fresh`); any other run that
+   * gives another is refused (`folder-changed`), and so is an open or a
+   * send to an `ended` session, which read the key's last run again.
    *
    * @param args - The arguments, as the schema gave them.
    */
@@ -57,8 +60,9 @@ export interface Job<Args extends z.ZodType = z.ZodType> {
   /**
    * The job's driver part, built by the driver's factory
    * (`claudeCode.job(…)`): the agent's own options for the job's sessions,
-   * laid over the app's. The driver checks it, at `createCockpit` and at
-   * each run.
+   * laid over the app's. The driver checks it, at `createCockpit`, at each
+   * run, and at an open or a send to an `ended` session, which launch with
+   * the key's last run.
    */
   readonly driver?: DriverPart;
 }

@@ -100,8 +100,9 @@ export interface CockpitOptions {
   /**
    * The most sessions live at once, a whole number from 1; no cap when
    * left out. At the cap, a launch first ends the `idle` session idle
-   * longest that has no background task and no terminal attached (its
-   * `reason` `session-cap`), else is refused `session-cap-reached`.
+   * longest that has no background task, no terminal attached and no call
+   * of the app's under way on its key (its `reason` `session-cap`), else
+   * is refused `session-cap-reached`.
    */
   readonly maxSessions?: number;
 }
