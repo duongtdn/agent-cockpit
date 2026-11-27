@@ -93,4 +93,20 @@ describe("a session's lifecycle", () => {
     expect(gone).toBe(false);
     expect(lifecycle.phase).toBe('launching');
   });
+
+  it('tells when the end under way settled: ended, or left live by a kill that failed', async () => {
+    const failed = movedThrough('launching', 'live', 'ending', 'killing');
+    const underWay = failed.endUnderWay;
+    failed.move('live');
+    await underWay;
+
+    const ended = movedThrough('launching', 'live', 'ending');
+    let settled = false;
+    void ended.endUnderWay.then(() => {
+      settled = true;
+    });
+    await ended.go(async () => () => {});
+    expect(settled).toBe(true);
+    await expect(movedThrough('launching', 'live').endUnderWay).resolves.toBeUndefined();
+  });
 });

@@ -245,7 +245,9 @@ export interface Sessions {
    * @returns The background tasks the `idle` session listed, stopped with
    * it; none for a session in another state, or with no live session.
    * Settles once the session ended, its end told, however its going was
-   * seen first.
+   * seen first. Asked of a session the cockpit is already ending, or whose
+   * going from the host began, it waits for that end, its reason kept, and
+   * gives no tasks; it settles too when that end's kill failed.
    * @throws `SessionHostError` when the host cannot kill a session that
    * outlived the bound: the session is live again, its agent heard, its
    * reason what it was, and a later end may kill it.
@@ -472,7 +474,8 @@ class SessionRegistry implements Sessions {
   async end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]> {
     this.#refuseIfClosed(key);
     const entry = this.#entries.get(key);
-    if (entry === undefined || !entry.lifecycle.isLive) return [];
+    if (entry === undefined) return [];
+    if (!entry.lifecycle.isLive) return this.#endUnderWay(entry);
     const { session } = entry;
     const stopped = session.state === 'idle' ? (session.backgroundTasks ?? []) : [];
     const reasonBefore = entry.endedBecause;
@@ -487,6 +490,16 @@ class SessionRegistry implements Sessions {
     this.#refuseIfClosed(key);
     if (!exited) await this.#kill(entry, reasonBefore);
     return stopped;
+  }
+
+  /**
+   * Waits for the end under way of a session asked to end again: the one
+   * that began it gives the tasks it stopped.
+   */
+  async #endUnderWay(entry: Entry): Promise<readonly BackgroundTask[]> {
+    await settlesBeforeAbort(entry.lifecycle.endUnderWay, this.#closing.signal);
+    this.#refuseIfClosed(entry.key);
+    return [];
   }
 
   /**

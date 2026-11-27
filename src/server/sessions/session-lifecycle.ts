@@ -116,6 +116,8 @@ export class SessionLifecycle {
   readonly #ended = new Promise<void>((resolve) => {
     this.#settleEnded = resolve;
   });
+  /** Settles once the end the cockpit began did; none while no end is under way. */
+  #endUnderWay: { readonly promise: Promise<void>; settle(): void } | undefined;
 
   /**
    * @param start - The phase it begins in: `reserved`, for a launch.
@@ -149,7 +151,23 @@ export class SessionLifecycle {
    */
   move(to: Phase): void {
     if (!this.can(to)) throw new LifecycleMoveError(this.#phase, to);
+    const from = this.#phase;
     this.#phase = to;
+    if (from === 'live' && this.isBeingEnded) this.#endUnderWay = settledByHand();
+    if (to === 'ended' || to === 'live') {
+      this.#endUnderWay?.settle();
+      this.#endUnderWay = undefined;
+    }
+  }
+
+  /**
+   * Settles once the end under way did: the session ended, or a kill that
+   * failed left it live. A session going from the host is awaited ended;
+   * one in any other phase has no end under way, and it settles at once.
+   */
+  get endUnderWay(): Promise<void> {
+    if (this.hasLeftTheHost) return this.#ended;
+    return this.#endUnderWay?.promise ?? Promise.resolve();
   }
 
   /**
@@ -223,4 +241,12 @@ export class SessionLifecycle {
       this.#settleEnded();
     }
   }
+}
+
+function settledByHand(): { readonly promise: Promise<void>; settle(): void } {
+  let settle = () => {};
+  const promise = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  return { promise, settle };
 }

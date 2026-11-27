@@ -854,6 +854,38 @@ describe('ending a live session gracefully', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('waits, asked again while the session is being ended, for that end: its reason kept, no tasks given', async () => {
+    await idleSession();
+    const first = settledLater(sessions.end(KEY, 'app'));
+    await settle();
+
+    const again = settledLater(sessions.end(KEY, 'session-cap'));
+    await settle();
+    expect(again.outcome).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    await expect(again.promise).resolves.toEqual([]);
+    await first.promise;
+    expect(signals).toHaveLength(1);
+    expect(host.kills).toEqual([KEY]);
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'app' });
+  });
+
+  it('gives up waiting for an end under way once the kill failed, the session live again', async () => {
+    await idleSession();
+    host.failNextKill(new SessionHostError('host-failed', 'tmux failed.'));
+    const first = sessions.end(KEY, 'app');
+    first.catch(() => {});
+    await settle();
+
+    const again = sessions.end(KEY, 'session-cap');
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+
+    await expect(first).rejects.toThrow('tmux failed.');
+    await expect(again).resolves.toEqual([]);
+    expect(sessions.session(KEY)?.state).toBe('idle');
+  });
+
   it('does nothing for a key with no live session', async () => {
     await expect(sessions.end('nothing-here', 'restarted')).resolves.toEqual([]);
     expect(signals).toEqual([]);

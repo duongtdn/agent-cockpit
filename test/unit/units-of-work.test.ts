@@ -1400,6 +1400,24 @@ describe('the cap on live sessions', () => {
     expect(signals).toEqual([]);
   });
 
+  it('waits for a session the cockpit is already ending to make room, rather than end another', async () => {
+    await open({ maxSessions: 1 });
+    await started('explain', 'a');
+    idle('explain-a');
+    exitOnSignal = false;
+    const ending = pending(sessions.end('explain-a', 'app'));
+    await settle();
+
+    const ran = pending(units.run('explain', { file: 'b' }));
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    await ending;
+    hook('/start-and-take', 'explain-b');
+
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+    expect(sessions.session('explain-a')).toMatchObject({ state: 'ended', reason: 'app' });
+    expect(signals).toEqual(['explain-a SIGTERM']);
+  });
+
   it('makes room for a resume, an open and a send that start a session', async () => {
     await open({ maxSessions: 1 });
     await started('explain', 'a');
