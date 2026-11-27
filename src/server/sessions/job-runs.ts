@@ -14,7 +14,12 @@ export interface JobRun {
   readonly prompt?: string;
   /** The job's driver part, checked; none when it has none. */
   readonly part?: DriverPart;
-  /** The arguments, as the job's schema gave them: what the record keeps. */
+  /**
+   * The arguments as the run was given them, the schema's input: what the
+   * key's history keeps, which an open or a send reads again with every
+   * check. What the schema gives (a number from a text, a server path)
+   * stays out of the record, and out of the pages it is shown to.
+   */
   readonly args: unknown;
   /** The folder the job gives, not made yet. */
   readonly folder: JobFolder;
@@ -110,15 +115,15 @@ export function createJobRuns({ jobs, appFolder, partIssues }: JobRunsOptions): 
   return {
     read(jobId, args) {
       const job = jobOf(jobs, jobId);
-      const launch = launchOfJob(job, args);
+      const { args: parsed, ...launch } = launchOfJob(job, args);
       refuseUnfitPart(job, partIssues(job));
       return {
         key: launch.key,
         ...(launch.prompt === undefined ? {} : { prompt: launch.prompt }),
         async checked() {
-          await checkChoices(job, launch.args);
-          const folder = await folderOfJob(appFolder, job, launch.args);
-          return { jobId, ...launch, folder, fresh: job.fresh === true };
+          await checkChoices(job, parsed);
+          const folder = await folderOfJob(appFolder, job, parsed);
+          return { jobId, ...launch, args, folder, fresh: job.fresh === true };
         },
       };
     },

@@ -355,6 +355,30 @@ describe('a run, by the state of its unit of work', () => {
     expect(idle.record?.history.at(-1)).toMatchObject({ action: 'started', reason: 'fresh' });
   });
 
+  it('reads the arguments the last run was given again: the history keeps them as given, never as the schema gave them', async () => {
+    const page = {
+      id: 'page',
+      title: 'Explain a page',
+      args: z.object({ page: z.string().transform(Number) }),
+      key: ({ page }: { page: number }) => `page-${page}`,
+      prompt: ({ page }: { page: number }) => `Explain page ${page + 1}`,
+    };
+    const made = await newCockpit({ jobs: [...JOBS, page as unknown as Job] });
+    const { cockpit, directory } = made;
+    writeScript(directory, [
+      [{ do: 'reply', text: 'Explained.' }],
+      [{ do: 'reply', text: 'Sent.' }],
+    ]);
+    await cockpit.run('page', { page: '3' });
+    await inState(cockpit, 'page-3', 'idle');
+    await endSession(made, 'page-3');
+
+    expect(await cockpit.send('page-3', 'Go on.')).toEqual({ action: 'resumed', state: 'busy' });
+    expect(sessionOf(cockpit, 'page-3')?.record?.history).toMatchObject([
+      { jobId: 'page', args: { page: '3' } },
+    ]);
+  });
+
   it('starts a new conversation when the agent no longer keeps the ended one: conversation-gone', async () => {
     const made = await newCockpit();
     const { cockpit, directory } = made;

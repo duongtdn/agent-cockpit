@@ -49,9 +49,24 @@ const escaping: Job = {
   directory: () => 'out/deep',
 };
 
+/** A job whose schema transforms what it is given: a page number from a text, a path from a name. */
+const page: Job = {
+  id: 'page',
+  title: 'Explain a page',
+  args: z.object({
+    page: z.string().transform(Number),
+    file: z.string().transform((name) => `/srv/books/${name}`),
+  }),
+  key: (args) => `page-${(args as { page: number }).page}`,
+  prompt: (args) =>
+    `Explain page ${(args as { page: number }).page} of ${(args as { file: string }).file}.`,
+  options: { page: () => [{ value: 3 }] },
+  directory: (args) => `books/p${(args as { page: number }).page}`,
+} as Job;
+
 function runsWith(partIssues: (job: Job) => readonly Issue[] = () => []): JobRuns {
   return createJobRuns({
-    jobs: new Map([explain, typing, escaping].map((job) => [job.id, job])),
+    jobs: new Map([explain, typing, escaping, page].map((job) => [job.id, job])),
     appFolder: app,
     partIssues,
   });
@@ -85,6 +100,22 @@ describe("a run's job, read with every check of a run", () => {
       folder: { path: app, relative: '.' },
       fresh: true,
     });
+  });
+
+  it('keeps the arguments as given, the schema’s input: its output is what the key, prompt, choices and folder read', async () => {
+    const runs = runsWith();
+    const given = { page: '3', file: 'alpha.md' };
+
+    const run = await runs.read('page', given).checked();
+
+    expect(run).toMatchObject({
+      key: 'page-3',
+      prompt: 'Explain page 3 of /srv/books/alpha.md.',
+      args: given,
+      folder: { relative: join('books', 'p3') },
+    });
+    // Read again, as an open or a send reads the last run, the arguments fit as they did.
+    await expect(runs.read('page', run.args).checked()).resolves.toEqual(run);
   });
 
   it('makes no folder', async () => {

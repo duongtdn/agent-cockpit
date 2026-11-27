@@ -72,7 +72,10 @@ export interface HistoryEntry {
   readonly operation: 'run' | 'open';
   /** The job: the run's own, or for an open the last run's, whose settings it launched with. */
   readonly jobId: string;
-  /** The job's arguments, as its schema gave them. */
+  /**
+   * The job's arguments as the run was given them, the schema's input: a
+   * later open or send reads them again with every check of a run.
+   */
   readonly args: unknown;
   /** When it was asked, as an ISO 8601 date and time in UTC. */
   readonly at: string;
