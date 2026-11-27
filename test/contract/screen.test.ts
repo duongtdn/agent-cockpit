@@ -1,0 +1,250 @@
+import { expect, it } from 'vitest';
+import type { PermissionMode } from '../../src/claude-code/index.ts';
+import { readInputBoxView, readScreen } from '../../src/claude-code/screen-reading.ts';
+import type { ScreenReading } from '../../src/server/driver.ts';
+import type { AgentSession } from '../support/agent-session.ts';
+import { heldTurn, toolUse, turn } from '../support/fake-api/index.ts';
+import {
+  BYPASS_ACCEPTED,
+  type ContractCockpit,
+  SAID_KEY,
+  sessionAfter,
+  startContractCockpit,
+} from './cockpit-harness.ts';
+import { startContractAgent } from './harness.ts';
+
+/**
+ * What tells a busy agent from an idle one on its screen, with a person's
+ * draft in the input box or none: the driver reads it where no hook tells
+ * (a compaction's end, a local command's), and must never take a busy
+ * agent for one ready.
+ */
+
+/** The draft a person leaves in the box. */
+const DRAFT = 'a draft';
+
+/** The mode's hint, the footer's first words, as the agent draws it in each mode the driver runs. */
+const MODE_HINTS: Readonly<Record<string, string>> = {
+  default: '⏸ manual mode on',
+  acceptEdits: '⏵⏵ accept edits on (shift+tab to cycle)',
+  plan: '⏸ plan mode on (shift+tab to cycle)',
+  bypassPermissions: '⏵⏵ bypass permissions on (shift+tab to cycle)',
+};
+
+/**
+ * The footer without its hint `← for agents`, which comes and goes with no
+ * bearing on the agent's state (seen during a compaction one run, not the next).
+ */
+const withoutAgentsHint = (footer: string) => footer.replace(/ · ← for agents$/u, '');
+
+const READY: ScreenReading = { shows: 'ready' };
+const NOTHING: ScreenReading = { shows: 'nothing' };
+
+/** What a screen shows of the agent's state: the spinner's row, the box's text, the footer, the driver's reading. */
+interface Seen {
+  readonly spinner: string | undefined;
+  readonly box: string | undefined;
+  readonly footer: string;
+  readonly reading: ScreenReading;
+}
+
+/**
+ * The spinner's row: a sign, words that end in `…`, and what it waits for
+ * in brackets, as the last row of the conversation above the box (the rows
+ * under it, a tip or the effort's, are indented).
+ */
+function spinnerRow(rows: readonly string[], boxTop: number): string | undefined {
+  const last = rows
+    .slice(0, boxTop - 1)
+    .findLast((row) => row.trim() !== '' && !row.startsWith(' '));
+  return last !== undefined && /^\S \S[^…]*…/u.test(last) ? last : undefined;
+}
+
+function seen(screen: string): Seen {
+  const rows = screen.split('\n');
+  const box = readInputBoxView(screen);
+  return {
+    spinner: box === undefined ? undefined : spinnerRow(rows, box.firstRow),
+    box: box?.text.trimEnd(),
+    footer:
+      box === undefined
+        ? ''
+        : withoutAgentsHint(
+            rows
+              .slice(box.lastRow + 2)
+              .map((row) => row.trim())
+              .filter((row) => row !== '')
+              .join('\n'),
+          ),
+    reading: readScreen(screen),
+  };
+}
+
+/**
+ * The screen once it settled: the box holds what is awaited, and two reads
+ * in a row agree on all but the spinner's sign and time (tmux was seen to
+ * show a screen half written).
+ */
+async function settled(
+  eventually: <T>(check: () => T | Promise<T>) => Promise<T>,
+  session: AgentSession,
+  box: string,
+  footer: (footer: string) => boolean,
+): Promise<Seen> {
+  const shape = (view: Seen) => ({ ...view, spinner: view.spinner !== undefined });
+  return eventually(async () => {
+    const first = seen(await session.screen());
+    const second = seen(await session.screen());
+    expect(second.box).toBe(box);
+    expect(footer(second.footer)).toBe(true);
+    expect(shape(second)).toEqual(shape(first));
+    return second;
+  });
+}
+
+/**
+ * Waits for the screen of an idle agent: no spinner's row, the box holding
+ * what is awaited, the footer given, read as ready. The spinner stays a
+ * moment past the hook that ends a turn or a compaction, while its own
+ * hooks run (`Running PostCompact hooks…`).
+ */
+async function idleScreen(
+  eventually: <T>(check: () => T | Promise<T>) => Promise<T>,
+  session: AgentSession,
+  box: string,
+  footer: string,
+): Promise<void> {
+  await eventually(async () =>
+    expect(seen(await session.screen())).toEqual({
+      spinner: undefined,
+      box,
+      footer,
+      reading: READY,
+    }),
+  );
+}
+
+const withHint = (footer: string) => footer.includes('esc to interrupt');
+const any = () => true;
+
+/** The cockpit's waits, as the contract agent's: they fail saying what was awaited. */
+function waits(cockpit: ContractCockpit) {
+  const patience = 15_000;
+  return async <T>(check: () => T | Promise<T>): Promise<T> => {
+    const deadline = Date.now() + patience;
+    for (;;) {
+      try {
+        return await check();
+      } catch (error) {
+        cockpit.api.assertNothingUnexpected();
+        if (Date.now() > deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+  };
+}
+
+for (const mode of ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const) {
+  it(`120 — In ${mode}, a busy agent (a turn, a compaction) draws its spinner's row above the input box, a draft in the box or none; the footer's "esc to interrupt" shows only over an empty box, and over a draft the footer is the mode's hint alone, busy or idle: the driver reads a busy screen as nothing and an idle one as ready, and the cockpit keeps a compaction busy while a draft is in the box`, async () => {
+    const cockpit = await startContractCockpit({
+      driver: { permissionMode: mode as PermissionMode },
+      personsSettings: BYPASS_ACCEPTED,
+    });
+    const hint = MODE_HINTS[mode] as string;
+    const eventually = waits(cockpit);
+    // A turn held until the test lets it go, then the compaction's two requests, the first held.
+    cockpit.api.script(heldTurn(turn('Ready.')), heldTurn(turn('Summary.')), turn('Summary.'));
+
+    await cockpit.say('get ready');
+    await sessionAfter(cockpit, 'busy', 0);
+    const turnHeld = await cockpit.api.heldRequest();
+    const session = cockpit.terminal(SAID_KEY);
+    const busy = await settled(eventually, session, '', withHint);
+    await session.type(DRAFT);
+    const busyOverDraft = await settled(eventually, session, DRAFT, any);
+    const turnEnds = cockpit.timeline.length;
+    turnHeld.release();
+    await sessionAfter(cockpit, 'idle', turnEnds);
+    // Idle over the draft: the footer is the mode's hint alone, as it was while busy.
+    await idleScreen(eventually, session, DRAFT, hint);
+    await session.press('C-u');
+    await idleScreen(
+      eventually,
+      session,
+      '',
+      `${hint}${mode === 'default' ? ' · ? for shortcuts' : ''}`,
+    );
+
+    const compactionBegins = cockpit.timeline.length;
+    await cockpit.submitInTerminal(SAID_KEY, '/compact', 'PreCompact');
+    const compactionHeld = await cockpit.api.heldRequest(2);
+    const compacting = await settled(eventually, session, '', withHint);
+    await session.type(DRAFT);
+    const compactingOverDraft = await settled(eventually, session, DRAFT, any);
+    compactionHeld.release();
+    await eventually(() =>
+      expect(
+        cockpit.timeline.some(
+          (moment, index) =>
+            index >= compactionBegins &&
+            'hook' in moment &&
+            moment.hook.hook_event_name === 'PostCompact',
+        ),
+      ).toBe(true),
+    );
+    await idleScreen(eventually, session, DRAFT, hint);
+    const after = await sessionAfter(cockpit, 'idle', compactionBegins);
+    const statesOfTheCompaction = cockpit.timeline
+      .slice(compactionBegins)
+      .flatMap((moment) => ('session' in moment ? [moment.session.state] : []));
+
+    expect(busy).toMatchObject({ footer: `${hint} · esc to interrupt`, reading: NOTHING });
+    expect(busy.spinner).toMatch(/…/u);
+    expect(busyOverDraft).toMatchObject({ footer: hint, reading: NOTHING });
+    expect(busyOverDraft.spinner).toMatch(/…/u);
+    expect(compacting).toMatchObject({ footer: `${hint} · esc to interrupt`, reading: NOTHING });
+    expect(compacting.spinner).toMatch(/Compacting conversation…/u);
+    expect(compactingOverDraft).toMatchObject({ footer: hint, reading: NOTHING });
+    expect(compactingOverDraft.spinner).toMatch(/Compacting conversation…/u);
+    // Busy from the compaction's start until its PostCompact, though a draft was in the box.
+    expect(statesOfTheCompaction).toEqual(['busy', 'idle']);
+    expect(after.state).toBe('idle');
+  });
+}
+
+it("120 — While a hook of a turn runs (UserPromptSubmit, PreToolUse, PostToolUse, Stop), the spinner's row shows above the input box, a draft in the box or none; over the draft the footer is the mode's hint alone: the driver reads each screen as nothing", async () => {
+  const agent = await startContractAgent();
+  agent.api.script(
+    turn(toolUse('Bash', { command: 'true', description: 'Nothing' })),
+    turn('Done.'),
+  );
+  const events = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop'];
+  for (const event of events) agent.hooks.hold(event);
+  const session = await agent.startNew();
+  await agent.hook('SessionStart');
+  await session.type('go');
+  await session.press('Enter');
+
+  const screens: Record<string, { empty: Seen; overDraft: Seen }> = {};
+  for (const event of events) {
+    const held = await agent.hook(event);
+    const empty = await settled(agent.eventually, session, '', withHint);
+    await session.type(DRAFT);
+    const overDraft = await settled(agent.eventually, session, DRAFT, any);
+    await session.press('C-u');
+    await settled(agent.eventually, session, '', withHint);
+    screens[event] = { empty, overDraft };
+    held.answer({});
+  }
+
+  for (const event of events) {
+    const { empty, overDraft } = screens[event] as { empty: Seen; overDraft: Seen };
+    expect(empty.spinner).toMatch(/…/u);
+    expect(empty).toMatchObject({
+      footer: `${MODE_HINTS.default} · esc to interrupt`,
+      reading: NOTHING,
+    });
+    expect(overDraft.spinner).toMatch(/…/u);
+    expect(overDraft).toMatchObject({ footer: MODE_HINTS.default, reading: NOTHING });
+  }
+});

@@ -314,7 +314,10 @@ export type ScreenReading =
       readonly dialog?: StartupDialog;
     }
   | {
-      /** The agent's input box, ready for a prompt. */
+      /**
+       * The agent's input box, ready for a prompt: the agent idle, whatever a
+       * person typed in the box; never while it works on a turn or a compaction.
+       */
       readonly shows: 'ready';
     }
   | {

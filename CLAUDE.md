@@ -180,7 +180,10 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   115 `fresh` ending an idle or busy session gracefully, 116 a restart on
   other settings, 117 a first prompt over the command line's bound typed
   once the agent started, 118 a send over a draft of several lines, 119 a
-  permission dialog drawn while a send types).
+  permission dialog drawn while a send types), `screen` (120: busy told
+  from idle on screen, a draft in the box or none, in each mode the driver
+  runs: the spinner's row above the box while a turn, a hook of it or a
+  compaction runs; the footer's `esc to interrupt` over an empty box only).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:

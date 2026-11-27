@@ -373,7 +373,9 @@ recorded in the conversation left just before the move still ends the
 turn open then. A compaction begun while `idle` that fails or is
 interrupted fires no hook to end it: the cockpit reads the screen while
 it runs, and the input box back returns the session to the `idle` it
-left. An interruption the agent recorded
+left. The box counts as back with a person's draft in it, and never while
+the agent shows it works (Claude Code's spinner above the box): a launch
+prompt's local command is read the same way. An interruption the agent recorded
 before the next prompt was taken ended the turn before, and leaves the
 new one `busy`.
 

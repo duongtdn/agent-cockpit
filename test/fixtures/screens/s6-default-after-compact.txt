@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-QUpAsk/work
+
+
+❯ get ready
+
+● Ready.
+
+✻ Worked for 4s · done 9:55 AM
+
+❯ say more
+
+● Something.
+
+✻ Churned for 0s · done 9:55 AM
+
+❯ /compact
+  ⎿  Compacted (ctrl+o to see full summary)
+     PreCompact [http://127.0.0.1:44051/hooks] completed successfully: {}
+     PostCompact [http://127.0.0.1:44051/hooks] completed successfully: {}
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                          ctrl+y to paste deleted text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts

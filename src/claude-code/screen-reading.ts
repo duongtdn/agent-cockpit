@@ -27,8 +27,26 @@ const DIALOGS: readonly { readonly dialog: StartupDialog; readonly words: readon
  */
 const PANEL_HINTS: readonly string[] = ['Enter to confirm · Esc to cancel', 'Esc to close'];
 
-/** The footer's hint while the agent works on a turn: the box is drawn, but takes no prompt. */
+/**
+ * The footer's hint while the agent works on a turn or a compaction: drawn
+ * over an empty box only; over a draft the footer is the mode's hint
+ * alone, as when the agent is idle.
+ */
 const WORKING_HINT = 'esc to interrupt';
+
+/**
+ * The spinner's row, which Claude Code draws above the input box while it
+ * works on a turn or a compaction, a draft in the box or none: a sign, a
+ * verb that ends in `…`, then what it waits for in brackets
+ * (`✶ Wrangling… (running Stop hook · 2s)`, `* Compacting conversation…`).
+ * It is the last row of the conversation above the box: the rows between
+ * them are indented (a tip, the effort's level). The conversation's own
+ * rows start with signs of their own (`●` an answer, `❯` a prompt, `!` a
+ * shell command), which may end in `…` too; a turn's last row, once it is
+ * done, has no `…` (`✻ Worked for 4s · done 9:55 AM`). Any other sign
+ * reads as the spinner's: a busy agent is never taken for a ready one.
+ */
+const SPINNER_ROW = /^[^\s●❯!] \S[^…]*…/u;
 
 /**
  * Reads Claude Code's screen while the cockpit waits for a signal no hook
@@ -37,16 +55,16 @@ const WORKING_HINT = 'esc to interrupt';
  *
  * The input box is read first: it is drawn only once every dialog is
  * answered, and the conversation above it may quote any dialog's words.
+ * The box is ready unless the agent works: the spinner's row above it,
+ * or the footer's hint below it, shows that.
  *
  * @param text - The screen, row by row.
  * @returns What it shows.
  */
 export function readScreen(text: string): ScreenReading {
   const rows = text.split('\n');
-  const footer = footerOfInputBox(rows);
-  if (footer !== undefined) {
-    return footer.includes(WORKING_HINT) ? { shows: 'nothing' } : { shows: 'ready' };
-  }
+  const box = readBoxRows(rows);
+  if (box !== undefined) return isWorking(rows, box) ? { shows: 'nothing' } : { shows: 'ready' };
   const words = text.replace(/\s+/g, ' ');
   const known = DIALOGS.find((dialog) => dialog.words.every((word) => words.includes(word)));
   if (known) return { shows: 'dialog', dialog: known.dialog };
@@ -54,13 +72,16 @@ export function readScreen(text: string): ScreenReading {
   return { shows: 'nothing' };
 }
 
-/**
- * The rows below the input box, the footer, joined; `undefined` when the
- * screen shows no input box.
- */
-function footerOfInputBox(rows: readonly string[]): string | undefined {
-  const box = readBoxRows(rows);
-  return box === undefined ? undefined : rows.slice(box.lastRow + 2).join('\n');
+/** Tells whether the agent works on a turn or a compaction: either sign of it shows. */
+function isWorking(rows: readonly string[], box: InputBoxView): boolean {
+  const footer = rows.slice(box.lastRow + 2).join('\n');
+  return footer.includes(WORKING_HINT) || SPINNER_ROW.test(lastRowAbove(rows, box));
+}
+
+/** The last row of the conversation above the input box: the first unindented one above its rule. */
+function lastRowAbove(rows: readonly string[], box: InputBoxView): string {
+  const above = rows.slice(0, box.firstRow - 1);
+  return above.findLast((row) => row.trim() !== '' && !row.startsWith(' ')) ?? '';
 }
 
 /**

@@ -7,7 +7,8 @@ import type { ScreenReading } from '../../src/server/driver.ts';
 /**
  * Screens of Claude Code 2.1.332, as `tmux capture-pane` gave them in a
  * 120×40 pane, trailing blanks removed: each start-up dialog, the ready
- * input box, and local commands given as the launch prompt. Named
+ * input box, local commands given as the launch prompt, and (`s6-`) the
+ * agent busy and idle, a draft in the box or none, in each mode. Named
  * `<case>-<step>`: `-0` after the launch, `-1` after the first keys, and so
  * on; the temporary paths in them differ per capture.
  */
@@ -92,7 +93,39 @@ const EXPECTED: Readonly<Record<string, ScreenReading>> = {
   's5-settings-quiet-only': READY,
   // The agent retrying the API: working, not ready.
   's5-settings-bedrock': NOTHING,
+  // A turn and a compaction in each mode the driver runs, a draft in the box or none: busy
+  // shows the spinner's row above the box, whatever the footer says; idle, none.
+  ...byMode({
+    'busy-empty': NOTHING,
+    'busy-draft': NOTHING,
+    'idle-empty': READY,
+    'idle-draft': READY,
+    'compacting-empty': NOTHING,
+    'compacting-draft': NOTHING,
+    'after-compact': READY,
+  }),
+  // A hook of the turn awaited, a tool running, an answer streaming: busy, a draft or none.
+  ...Object.fromEntries(
+    ['hook-UserPromptSubmit', 'hook-PreToolUse', 'hook-PostToolUse', 'hook-Stop']
+      .concat(['tool-running', 'streaming'])
+      .flatMap((name) => [
+        [`s6-${name}-empty`, NOTHING],
+        [`s6-${name}-draft`, NOTHING],
+      ]),
+  ),
+  // Idle with a background shell: the turn's last row says the shell runs on.
+  's6-idle-background-shell-empty': READY,
+  's6-idle-background-shell-draft': READY,
 };
+
+/** The screens of each case in each mode the driver runs, named `s6-<mode>-<case>`. */
+function byMode(cases: Readonly<Record<string, ScreenReading>>): Record<string, ScreenReading> {
+  return Object.fromEntries(
+    ['default', 'acceptEdits', 'plan', 'bypassPermissions'].flatMap((mode) =>
+      Object.entries(cases).map(([name, reading]) => [`s6-${mode}-${name}`, reading]),
+    ),
+  );
+}
 
 function screen(name: string): string {
   return readFileSync(`${SCREENS}${name}.txt`, 'utf8');
@@ -136,6 +169,9 @@ describe("the Claude Code driver's reading of the screen", () => {
     ['s1-login-nokey-1', LOGIN],
     ['s1-apikey-0', UNNAMED],
     ['s1-ready-noprompt-final', READY],
+    ['s6-default-busy-draft', NOTHING],
+    ['s6-hook-PreToolUse-draft', NOTHING],
+    ['s6-default-idle-draft', READY],
   ])('reads %s the same in a terminal 60 columns wide, its sentences wrapped', (name, reading) => {
     expect(readScreen(narrowed(screen(name), 60))).toEqual(reading);
   });
@@ -163,6 +199,27 @@ describe("the Claude Code driver's reading of the screen", () => {
   it('takes the prompt arrow of a list for no input box', () => {
     const rule = '─'.repeat(120);
     expect(readScreen(`${rule}\n ❯ No, exit\n   Yes\n${rule}`)).toEqual(NOTHING);
+  });
+
+  it("takes no answer of the model's that ends in an ellipsis for the spinner", () => {
+    const thinking = screen('s6-default-idle-draft').replace('● Ready.', '● Let me think…');
+
+    expect(readScreen(thinking)).toEqual(READY);
+  });
+
+  it("takes no prompt of the person's that ends in an ellipsis for the spinner", () => {
+    const interrupted = screen('s1-hooksoff-0').replace(
+      /^● scripted answer$/m,
+      '  ⎿  Interrupted · What should Claude do instead?',
+    );
+
+    expect(readScreen(interrupted.replace('❯ hello from launch', '❯ wait…'))).toEqual(READY);
+  });
+
+  it("reads a busy box as nothing by the footer's hint alone, the spinner's row out of sight", () => {
+    const busy = screen('s6-default-busy-empty').replace(/^\S \S[^…]*….*$/mu, '');
+
+    expect(readScreen(busy)).toEqual(NOTHING);
   });
 
   it('reads a box with text typed in it as ready', () => {

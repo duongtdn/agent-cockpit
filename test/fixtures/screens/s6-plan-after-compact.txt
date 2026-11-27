@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-0TRIBs/work
+
+
+❯ get ready
+
+● Ready.
+
+✻ Cooked for 4s · done 9:55 AM
+
+❯ say more
+
+● Something.
+
+✻ Worked for 0s · done 9:55 AM
+
+❯ /compact
+  ⎿  Compacted (ctrl+o to see full summary)
+     PreCompact [http://127.0.0.1:45481/hooks] completed successfully: {}
+     PostCompact [http://127.0.0.1:45481/hooks] completed successfully: {}
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                          ctrl+y to paste deleted text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ plan mode on (shift+tab to cycle)

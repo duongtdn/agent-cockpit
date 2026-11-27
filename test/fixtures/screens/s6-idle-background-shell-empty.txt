@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-AO1Rt5/work
+
+
+❯ go
+
+  Ran 1 shell command
+
+● Some words written here.
+
+✻ Sautéed for 8s · done 9:57 AM
+
+❯ background
+
+  Ran 1 shell command
+
+● Started.
+
+✻ Cogitated for 0s · done 9:57 AM · 1 shell still running
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                          ctrl+y to paste deleted text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ↓ to manage

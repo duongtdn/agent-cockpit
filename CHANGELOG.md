@@ -230,7 +230,8 @@ Nothing is published yet.
   interruption recorded in the conversation left just before the move
   still ends the turn open then). A compaction begun `idle` that fails or
   is interrupted (no hook ends it) is read on the screen and returns the
-  session to the `idle` it left; an
+  session to the `idle` it left, a person's draft in the box or none,
+  never while the agent shows it works; an
   interruption the agent recorded before the next prompt was taken leaves
   the new turn `busy`.
 - Units of work. A job may carry `options` (option sources, `{ choices,

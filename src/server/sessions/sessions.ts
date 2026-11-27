@@ -763,9 +763,10 @@ class SessionRegistry implements Sessions {
    * Reads the screen while the session compacts from `idle`: the input box
    * back with no hook to say so (a compaction that failed, or that a
    * person interrupted) is its end, and the session returns to the state
-   * it left, as at `PostCompact`. Claude Code draws its busy hint by the
-   * time it tells `PreCompact`, also while a slow hook of the person's
-   * runs: the first box read is the end, however soon it was interrupted.
+   * it left, as at `PostCompact`. Claude Code shows it works (its spinner
+   * above the box, a person's draft in it or none) by the time it tells
+   * `PreCompact`, also while a slow hook of the person's runs: the first
+   * box read ready is the end, however soon it was interrupted.
    */
   #watchTheCompaction(entry: Entry): void {
     const watch = new ScreenWatch({

@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-BRvPBl/work
+
+
+❯ get ready
+
+● Ready.
+
+✻ Worked for 4s · done 9:55 AM
+
+❯ say more
+
+● Something.
+
+✻ Crunched for 0s · done 9:55 AM
+
+❯ /compact
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+✻ Compacting conversation… (1s)
+  ⎿  Tip: Start small, ask Claude for a plan, and check its edits
+                                                                                          ctrl+y to paste deleted text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt
