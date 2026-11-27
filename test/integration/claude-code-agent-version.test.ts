@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { agentVersionReader } from '../../src/claude-code/agent-version.ts';
 import { claudeCode } from '../../src/claude-code/index.ts';
 import { TESTED_RANGE } from '../../src/claude-code/tested-range.ts';
+import { eventually } from '../support/eventually.ts';
 import { NEVER_S, PATIENCE } from '../support/patience.ts';
 
 let folder: string;
@@ -120,9 +121,10 @@ describe("the Claude Code driver's reading of the agent's version", () => {
       failure: { reason: 'claude --version did not answer within 0.2 s', output: 'starting\n' },
     });
     expect(Date.now() - started).toBeLessThan(PATIENCE.condition);
-    // What the agent started was ended with it: nothing is left to leave a mark.
-    const grandchildren = spawnSync('pgrep', ['-f', marker], { encoding: 'utf8' });
-    expect(grandchildren.stdout).toBe('');
+    // What the agent started was ended with it: gone once reaped, long before it would answer.
+    await eventually(() =>
+      expect(spawnSync('pgrep', ['-f', marker], { encoding: 'utf8' }).stdout).toBe(''),
+    );
   });
 
   it('cuts what an agent printed to a few kilobytes', async () => {
