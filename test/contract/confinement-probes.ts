@@ -1,10 +1,11 @@
 import { createServer } from 'node:http';
 import { type AddressInfo, createServer as createTcpServer, type Socket } from 'node:net';
 import { networkInterfaces } from 'node:os';
-import { setTimeout as pause } from 'node:timers/promises';
 import { it, onTestFinished, type RunnerTestCase, type TaskMeta, TestRunner } from 'vitest';
 import type { HookRequest } from '../../src/server/driver.ts';
+import { cameTrue, eventually } from '../support/eventually.ts';
 import { type FakeApi, toolUse, turn } from '../support/fake-api/index.ts';
+import { PATIENCE, POLL } from '../support/patience.ts';
 import { sandboxStatus } from '../support/real-agent/sandbox.ts';
 import { type ContractCockpit, SAID_KEY } from './cockpit-harness.ts';
 import type { Reach, ReachOutcome } from './results.ts';
@@ -214,9 +215,6 @@ export interface Probe {
 const AUTO_MODE_CHECK_GONE = 'Enter to stay in auto mode';
 const COMMAND_APPROVAL = 'Do you want to proceed?';
 const NETWORK_ASK = 'Network request outside of sandbox';
-/** How long a dialog is given to go once answered, before it counts as still there. */
-const ANSWER_PATIENCE_MS = 3000;
-const POLL_MS = 200;
 /** How long a probe's request may wait, in seconds: far longer than a measure waits to answer. */
 const PROBE_TIMEOUT_S = 30;
 
@@ -293,13 +291,13 @@ async function answerUntilTheTurnEnds(
   const start = await waitForHook(cockpit, 'SessionStart');
   const terminal = cockpit.terminal(SAID_KEY, String(start.session_id));
   const asked = new Set<number>();
-  const deadline = Date.now() + 45_000;
+  const deadline = Date.now() + PATIENCE.agentTurnWithDialogs;
   while (Date.now() < deadline) {
     const screen = await terminal.screen();
     const dialog = dialogOn(screen);
     if (dialog === undefined) {
       if (eventsRead(cockpit).includes('Stop')) return asked;
-      await pause(POLL_MS);
+      await cameTrue(() => false, POLL.dialog);
       continue;
     }
     if (dialog === 'network') {
@@ -309,35 +307,81 @@ async function answerUntilTheTurnEnds(
         throw new Error(`A network ask named ${host} while probe ${running} ran:\n${screen}`);
       }
       asked.add(running);
-      // Its third option, "No", by its number: an Esc would answer it too, but one that comes
-      // once the ask is gone (another ask of the same host answered with it) interrupts the turn.
-      await terminal.type('3');
-    } else if (dialog === 'auto-mode-check') {
-      await terminal.press('Enter');
-    } else {
-      await approveTheCommand(terminal);
     }
-    await untilAnswered(terminal, screen);
+    await answer(cockpit, terminal, screen, ANSWERS[dialog]);
   }
   throw new Error(`The turn did not end: the terminal shows\n${await terminal.screen()}`);
+}
+
+/** A person's answer to a dialog, as keys on its terminal. */
+type Answer = (terminal: DialogTerminal) => Promise<void>;
+
+interface DialogTerminal {
+  screen(): Promise<string>;
+  press(...keys: string[]): Promise<void>;
+  type(text: string): Promise<void>;
+}
+
+/** How a person answers each dialog of a measure. */
+const ANSWERS: Readonly<Record<Dialog, Answer>> = {
+  // Its third option, "No", by its number: an Esc would answer it too, but one that comes once
+  // the ask is gone (another ask of the same host answered with it) interrupts the turn.
+  network: (terminal) => terminal.type('3'),
+  'auto-mode-check': (terminal) => terminal.press('Enter'),
+  'command-approval': (terminal) => approveTheCommand(terminal),
+};
+
+/** How many times a dialog is answered that shows nothing of the answer: it drops a key pressed as it shows. */
+const ANSWER_PRESSES = 3;
+
+/**
+ * Answers a dialog, and waits until it is gone: another dialog shows, or
+ * none, or a hook came since (the next dialog may look the same, as a
+ * second ask of the same host does). Not until the screen merely changes:
+ * the keys of the answer change it (a selection moved), and a dialog draws
+ * its selection late. A dialog drops the keys pressed in the moment after
+ * it showed, as a start-up dialog does: the answer is given again only once
+ * its whole patience passed with the dialog still there.
+ *
+ * @throws Error when the dialog stays after the last answer, saying what the terminal shows.
+ */
+async function answer(
+  cockpit: ContractCockpit,
+  terminal: DialogTerminal,
+  screen: string,
+  give: Answer,
+): Promise<void> {
+  const dialog = dialogShown(screen);
+  const hooksBefore = cockpit.hooksRead.length;
+  const gone = async () =>
+    cockpit.hooksRead.length > hooksBefore || dialogShown(await terminal.screen()) !== dialog;
+  for (let answers = 1; answers <= ANSWER_PRESSES; answers++) {
+    await give(terminal);
+    if (await cameTrue(gone, PATIENCE.dialogAnswered, POLL.dialog)) return;
+  }
+  throw new Error(`The dialog stayed after ${ANSWER_PRESSES} answers:\n${await terminal.screen()}`);
 }
 
 /** The approval's options, "No" first and selected: Enter is pressed only once "Yes" is. */
 const YES_SELECTED = /❯ Yes/u;
 
+/** How many times Down is pressed on an approval that shows no move: a dialog drops a key pressed as it shows. */
+const DOWN_PRESSES = 3;
+
 /**
  * Approves a command: down to "Yes", then Enter once "Yes" shows selected. An
- * Enter on "No" would refuse the command and interrupt the turn.
+ * Enter on "No" would refuse the command and interrupt the turn. Down is
+ * pressed only while "Yes" is not selected, again only once a key's whole
+ * patience passed with no move.
  */
-async function approveTheCommand(terminal: {
-  screen(): Promise<string>;
-  press(...keys: string[]): Promise<void>;
-}): Promise<void> {
-  const deadline = Date.now() + ANSWER_PATIENCE_MS;
-  while (!YES_SELECTED.test(await terminal.screen())) {
-    if (Date.now() > deadline) throw new Error('"Yes" never showed selected in the approval.');
+async function approveTheCommand(terminal: DialogTerminal): Promise<void> {
+  const yesSelected = async () => YES_SELECTED.test(await terminal.screen());
+  for (let presses = 0; !(await yesSelected()); presses++) {
+    if (presses === DOWN_PRESSES) {
+      throw new Error(`"Yes" never showed selected in the approval after ${DOWN_PRESSES} Downs.`);
+    }
     await terminal.press('Down');
-    await pause(POLL_MS);
+    await cameTrue(yesSelected, PATIENCE.dialogKey, POLL.dialog);
   }
   await terminal.press('Enter');
 }
@@ -349,23 +393,6 @@ function dialogOn(screen: string): Dialog | undefined {
   if (screen.includes(AUTO_MODE_CHECK_GONE)) return 'auto-mode-check';
   if (screen.includes(COMMAND_APPROVAL)) return 'command-approval';
   return undefined;
-}
-
-/**
- * Waits until the dialog answered is gone. Not until the screen merely
- * changes: the keys of the answer change it (a selection moved), and a
- * dialog draws its selection late, so the same dialog would be answered
- * twice, the second key landing on the dialog after it.
- */
-async function untilAnswered(
-  terminal: { screen(): Promise<string> },
-  answered: string,
-): Promise<void> {
-  const dialog = dialogShown(answered);
-  const deadline = Date.now() + ANSWER_PATIENCE_MS;
-  while (Date.now() < deadline && dialogShown(await terminal.screen()) === dialog) {
-    await pause(POLL_MS);
-  }
 }
 
 /** A dialog's text, below the rule that tops it, whichever of its options is selected. */
@@ -382,10 +409,5 @@ async function waitForHook(
   cockpit: ContractCockpit,
   event: string,
 ): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    if (eventsRead(cockpit).includes(event)) return hookRead(cockpit, event);
-    await pause(POLL_MS);
-  }
-  throw new Error(`The driver read no ${event} hook in 15 s.`);
+  return eventually(() => hookRead(cockpit, event), undefined, PATIENCE.agentStep);
 }

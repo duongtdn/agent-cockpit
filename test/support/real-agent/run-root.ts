@@ -2,7 +2,8 @@ import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, join } from 'node:path';
-import { setTimeout as pause } from 'node:timers/promises';
+import { cameTrue } from '../eventually.ts';
+import { PATIENCE } from '../patience.ts';
 import {
   type AgentFolders,
   agentConfiguration,
@@ -84,10 +85,6 @@ export async function tearDownRun({ endSessions, processIds, root }: RunToEnd): 
   }
 }
 
-/** How long an agent's process may take to exit once its terminal is gone, before it is killed. */
-const EXIT_TIMEOUT_MS = 5000;
-const EXIT_POLL_MS = 20;
-
 function isRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -97,14 +94,7 @@ function isRunning(pid: number): boolean {
   }
 }
 
-/** Waits for a process to exit, and kills one that does not. */
+/** Waits for a process to exit once its terminal is gone, and kills one that does not. */
 async function exited(pid: number): Promise<void> {
-  const deadline = Date.now() + EXIT_TIMEOUT_MS;
-  while (isRunning(pid)) {
-    if (Date.now() > deadline) {
-      process.kill(pid, 'SIGKILL');
-      return;
-    }
-    await pause(EXIT_POLL_MS);
-  }
+  if (!(await cameTrue(() => !isRunning(pid), PATIENCE.exit))) process.kill(pid, 'SIGKILL');
 }

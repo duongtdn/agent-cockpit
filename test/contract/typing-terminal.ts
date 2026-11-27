@@ -1,4 +1,3 @@
-import { setTimeout as pause } from 'node:timers/promises';
 import { readInputBox } from '../../src/claude-code/screen-reading.ts';
 import {
   type HookRequest,
@@ -6,6 +5,8 @@ import {
   type TypingTerminal,
 } from '../../src/server/driver.ts';
 import type { AgentSession } from '../support/agent-session.ts';
+import { cameTrue } from '../support/eventually.ts';
+import { POLL } from '../support/patience.ts';
 
 /** A session's terminal as the driver types into it, with what it did. */
 export interface ContractTypingTerminal extends TypingTerminal {
@@ -25,8 +26,6 @@ export interface TypingTerminalParts {
    */
   readonly lostEnters?: number;
 }
-
-const HOOK_POLL_MS = 25;
 
 /**
  * Gives a session's terminal as the core gives it to the driver: each write
@@ -90,13 +89,6 @@ export function typingTerminal(parts: TypingTerminalParts): ContractTypingTermin
       },
       readScreen: () => session.screenWithCursor(),
     },
-    async promptTaken(prompt, withinMs) {
-      const deadline = Date.now() + withinMs;
-      while (!taken(prompt)) {
-        if (Date.now() >= deadline) return false;
-        await pause(HOOK_POLL_MS);
-      }
-      return true;
-    },
+    promptTaken: (prompt, withinMs) => cameTrue(() => taken(prompt), withinMs, POLL.hooks),
   };
 }

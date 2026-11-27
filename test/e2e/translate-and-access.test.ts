@@ -6,6 +6,7 @@ import { type Browser, chromium, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SESSIONS_PATH, TOKEN_HEADER } from '../../src/shared/wire.ts';
 import { type ExampleApp, LINK_LINE, startExampleApp } from '../support/example-app.ts';
+import { PATIENCE } from '../support/patience.ts';
 
 /**
  * Translate and access end to end, its access half, as a person uses it:
@@ -17,7 +18,7 @@ import { type ExampleApp, LINK_LINE, startExampleApp } from '../support/example-
  */
 
 /** Shorter than the test's timeout, so that a failed wait says what it waited for. */
-const WAIT_MS = 20_000;
+const WAIT_MS = PATIENCE.exampleApp;
 /** The session a run for "Ada" has. */
 const KEY = 'hello-ada';
 

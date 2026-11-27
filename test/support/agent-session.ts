@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { setTimeout as pause } from 'node:timers/promises';
 import type { TerminalScreen } from '../../src/server/driver.ts';
 import type { SessionHost } from '../../src/server/session-host/session-host.ts';
+import { POLL } from './patience.ts';
+import { noteKeys, noteScreen } from './timeline.ts';
 import { findTranscript } from './transcript-files.ts';
 
 /** An entry of a transcript: one line of its file, parsed. Its format is the agent's own. */
@@ -48,8 +50,6 @@ export interface AgentSession {
 
 /** Fast enough for a test, in writes too small to read as a paste. */
 const TYPING = { chunkLength: 100, pauseMs: 5 };
-/** How often a session is looked at, to know when it is gone and what it showed last. */
-const WATCH_POLL_MS = 50;
 
 /** What tells a session of a host from the others, and where its conversation is written. */
 export interface SessionPlace {
@@ -78,16 +78,28 @@ export function sessionOf(
   const screenWithCursor = async () => {
     const { text, cursor } = await host.readScreen(name);
     lastScreen = text;
+    noteScreen(name, text);
     return { text, cursor };
   };
   const screen = async () => (await screenWithCursor()).text;
   return {
     name,
     id,
-    type: (text) => host.sendText(name, text, TYPING),
-    typeInOneWrite: (text) =>
-      host.sendText(name, text, { chunkLength: Math.max(1, Array.from(text).length), pauseMs: 0 }),
-    press: (...keys) => host.sendKeys(name, keys),
+    type: (text) => {
+      noteKeys(name, `text:${JSON.stringify(text)}`);
+      return host.sendText(name, text, TYPING);
+    },
+    typeInOneWrite: (text) => {
+      noteKeys(name, `text in one write:${JSON.stringify(text)}`);
+      return host.sendText(name, text, {
+        chunkLength: Math.max(1, Array.from(text).length),
+        pauseMs: 0,
+      });
+    },
+    press: (...keys) => {
+      noteKeys(name, keys.join(' '));
+      return host.sendKeys(name, keys);
+    },
     screen,
     screenWithCursor,
     transcript: () => readTranscript(configFolder, id),
@@ -113,7 +125,7 @@ async function gone(
   // A host that cannot be asked has no session to show either.
   while (await host.isLive(name).catch(() => false)) {
     await readScreen().catch(() => undefined);
-    await pause(WATCH_POLL_MS);
+    await pause(POLL.session);
   }
 }
 

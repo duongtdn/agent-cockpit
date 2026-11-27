@@ -13,9 +13,9 @@ const REPOSITORY = join(import.meta.dirname, '..', '..');
 
 /**
  * What the repository publishes or keeps for its readers, beside the
- * files of its root: code, tests, examples, documents, workflows.
+ * files of its root: code, tests, examples, documents, workflows, the CI-like check.
  */
-const SCANNED_FOLDERS: readonly string[] = ['src', 'test', 'examples', 'docs', '.github'];
+const SCANNED_FOLDERS: readonly string[] = ['src', 'test', 'examples', 'docs', '.github', 'ci'];
 
 /** What a build, an install or a test run leaves, which is not the repository's own. */
 const LEFT_BY_TOOLS: ReadonlySet<string> = new Set([

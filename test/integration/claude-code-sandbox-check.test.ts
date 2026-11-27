@@ -14,6 +14,7 @@ import { claudeCode } from '../../src/claude-code/index.ts';
 import { sandboxChecker } from '../../src/claude-code/sandbox-check.ts';
 import type { Launch } from '../../src/server/driver.ts';
 import { isCockpitError } from '../../src/shared/cockpit-error.ts';
+import { NEVER_S, PATIENCE } from '../support/patience.ts';
 
 /**
  * The driver's check, before a launch whose app asks for the sandbox, that
@@ -210,7 +211,7 @@ describe.runIf(process.platform === 'linux')("the probe of the agent's sandbox",
   });
 
   it('refuses a launch whose probe does not answer in time', async () => {
-    const PATH = commandsFolder(['bwrap', 'socat'], 'exec sleep 5');
+    const PATH = commandsFolder(['bwrap', 'socat'], `exec sleep ${NEVER_S}`);
     const check = sandboxChecker(200);
 
     const started = Date.now();
@@ -219,7 +220,7 @@ describe.runIf(process.platform === 'linux')("the probe of the agent's sandbox",
       (error: unknown) => error,
     );
 
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(PATIENCE.condition);
     expect(refusal).toMatchObject({
       code: 'sandbox-unavailable',
       cause: expect.stringMatching(/did not answer within 0\.2 s/),

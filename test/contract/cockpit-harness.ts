@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { setTimeout as pause } from 'node:timers/promises';
 import { onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { type ClaudeCodeOptions, claudeCode } from '../../src/claude-code/index.ts';
@@ -16,8 +15,10 @@ import { type Cockpit, createCockpit, type Job } from '../../src/server/index.ts
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
 import type { Session, SessionState } from '../../src/shared/session.ts';
 import { type AgentSession, sessionOf } from '../support/agent-session.ts';
+import { cameTrue, eventually } from '../support/eventually.ts';
 import { type FakeApi, startFakeApi } from '../support/fake-api/index.ts';
 import { startNodeHttpApp } from '../support/node-http-app.ts';
+import { PATIENCE, POLL } from '../support/patience.ts';
 import { agentFoldersOutside, tearDownRun } from '../support/real-agent/run-root.ts';
 import {
   type RealAgentShim,
@@ -25,6 +26,7 @@ import {
   startRealAgentShim,
 } from '../support/real-agent/shim.ts';
 import { runAll } from '../support/run-all.ts';
+import { noteHook, noteState } from '../support/timeline.ts';
 import { assertNoUnexpectedPath, inputBoxText } from './harness.ts';
 
 /**
@@ -180,10 +182,6 @@ export const SAY = {
   prompt: ({ prompt }: z.output<typeof sayArgs>) => prompt,
 } satisfies Job<typeof sayArgs>;
 
-/** Far longer than the agent takes, short enough to fail with the reason. */
-const PATIENCE_MS = 15_000;
-/** How long an Enter on `/exit` is given before it is pressed again, as {@link submitInputBox} gives one. */
-const EXIT_PATIENCE_MS = 3000;
 const ENTER_PRESSES = 3;
 
 /** The run's folders, for a test that builds its options from them. */
@@ -397,12 +395,12 @@ export async function startContractCockpit(
       for (let enters = 1; ; enters++) {
         await session.press('Enter');
         const ended = await following
-          .sessionIn(key, 'ended', EXIT_PATIENCE_MS, from)
+          .sessionIn(key, 'ended', PATIENCE.submit, from)
           .catch(() => undefined);
         if (ended !== undefined) return ended;
         const box = inputBoxText(await session.screen().catch(() => ''));
         if (box === undefined || !box.includes('/exit') || enters === ENTER_PRESSES) {
-          return following.sessionIn(key, 'ended', PATIENCE_MS, from);
+          return following.sessionIn(key, 'ended', PATIENCE.agentStep, from);
         }
       }
     },
@@ -422,21 +420,22 @@ export async function sessionAfter(
   state: SessionState,
   from: number,
 ): Promise<Session> {
-  const deadline = Date.now() + PATIENCE_MS;
-  for (;;) {
-    const found = cockpit.timeline
-      .slice(from)
-      .flatMap((moment) => ('session' in moment ? [moment.session] : []))
-      .find((session) => session.state === state);
-    if (found !== undefined) return found;
-    cockpit.api.assertNothingUnexpected();
-    if (Date.now() > deadline) {
-      throw new Error(
-        `Waited ${PATIENCE_MS} ms for a session to be ${state} after moment ${from}.`,
-      );
-    }
-    await pause(HOOK_POLL_MS);
-  }
+  return eventually(
+    () => {
+      const found = cockpit.timeline
+        .slice(from)
+        .flatMap((moment) => ('session' in moment ? [moment.session] : []))
+        .find((session) => session.state === state);
+      if (found === undefined) {
+        throw new Error(
+          `Waited ${PATIENCE.agentStep} ms for a session to be ${state} after moment ${from}.`,
+        );
+      }
+      return found;
+    },
+    () => cockpit.api.assertNothingUnexpected(),
+    PATIENCE.agentStep,
+  );
 }
 
 /** Gives the server's process the shim's variables, for the test: the driver reads them there. */
@@ -474,6 +473,7 @@ function recorded(driver: Driver, record: DriverRecord): Driver {
     },
     readHook(request) {
       record.hooksRead.push(request);
+      noteHook(request.key, request.body);
       record.timeline.push({ hook: request.body as HookPayload });
       return driver.readHook(request);
     },
@@ -490,10 +490,6 @@ function recorded(driver: Driver, record: DriverRecord): Driver {
     },
   };
 }
-
-/** How long an Enter is given to be confirmed before the box is looked at again, as the driver gives it. */
-const SUBMIT_PATIENCE_MS = 3000;
-const HOOK_POLL_MS = 50;
 
 interface TerminalSubmit {
   readonly session: AgentSession;
@@ -514,13 +510,16 @@ async function submittedInTerminal(submit: TerminalSubmit): Promise<HookPayload>
       .find((payload) => payload.hook_event_name === confirmation);
   for (let enters = 1; ; enters++) {
     await session.press('Enter');
-    const deadline = Date.now() + SUBMIT_PATIENCE_MS;
-    while (Date.now() < deadline) {
-      api.assertNothingUnexpected();
-      const hook = confirmed();
-      if (hook !== undefined) return hook;
-      await pause(HOOK_POLL_MS);
-    }
+    const came = await cameTrue(
+      () => {
+        api.assertNothingUnexpected();
+        return confirmed() !== undefined;
+      },
+      PATIENCE.submit,
+      POLL.hooks,
+    );
+    const hook = confirmed();
+    if (came && hook !== undefined) return hook;
     const box = inputBoxText(await session.screen());
     const stillHeld = box !== undefined && box.replace(/\s+/gu, '') === text.replace(/\s+/gu, '');
     if (!stillHeld || enters === ENTER_PRESSES) {
@@ -551,6 +550,7 @@ function followed(cockpit: Cockpit, api: FakeApi, timeline: Moment[]): Following
       const history = seen.get(session.key) ?? [];
       if (history.at(-1)?.state !== session.state) {
         seen.set(session.key, [...history, session]);
+        noteState(session.key, session.state);
         timeline.push({ session });
       }
     }
@@ -560,7 +560,7 @@ function followed(cockpit: Cockpit, api: FakeApi, timeline: Moment[]): Following
   function sessionIn(
     key: string,
     state: SessionState,
-    patienceMs = PATIENCE_MS,
+    patienceMs: number = PATIENCE.agentStep,
     from = 0,
   ): Promise<Session> {
     const found = () =>

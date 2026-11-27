@@ -9,6 +9,7 @@ import type { Session } from '../../src/shared/session.ts';
 import type { AgentSession } from '../support/agent-session.ts';
 import { eventually } from '../support/eventually.ts';
 import { heldTurn, TEXT_WRITTEN, toolUse, turn } from '../support/fake-api/index.ts';
+import { PATIENCE } from '../support/patience.ts';
 import { findTranscript } from '../support/transcript-files.ts';
 import {
   type ContractCockpit,
@@ -320,7 +321,7 @@ const VIETNAMESE = 'Những điều đẹp đẽ ở quê hương: ầẩẫậ�
 // input box was drawn 34–48 ms later in five runs. Typed at once, the
 // prompt finds no box.
 it('117 — A first prompt longer than the command line takes (over 120,000 bytes of UTF-8) is typed once SessionStart came: the session stays starting until UserPromptSubmit carries it, exact', {
-  timeout: 120_000,
+  timeout: PATIENCE.longContractTest,
 }, async () => {
   const cockpit = await startContractCockpit();
   cockpit.api.script(turn('Read it all.'));
@@ -403,7 +404,7 @@ async function answerYes(session: AgentSession): Promise<number> {
     const gone = await eventually(
       async () => expect(await session.screen()).not.toContain('Do you want'),
       undefined,
-      3000,
+      PATIENCE.dialogAnswered,
     ).then(
       () => true,
       () => false,
@@ -424,7 +425,7 @@ function keysToBringBack(message: string): string[] {
 }
 
 it('119 — A permission dialog drawn while a send types (a turn the agent began by itself) stops it: wrong-state, no key reaches the dialog, and the draft is where the refusal says — back in the box, or brought back by the keys it names', {
-  timeout: 120_000,
+  timeout: PATIENCE.longContractTest,
 }, async () => {
   const cockpit = await startContractCockpit({ driver: { permissions: { allow: ['Bash'] } } });
   const release = join(cockpit.workFolder, 'released');
@@ -459,7 +460,7 @@ it('119 — A permission dialog drawn while a send types (a turn the agent began
         40,
       ),
     undefined,
-    30_000,
+    PATIENCE.longPromptTyped,
   );
   writeFileSync(release, '');
   const refused = await sending;

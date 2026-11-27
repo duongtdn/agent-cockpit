@@ -1,5 +1,6 @@
 import { expect } from 'vitest';
 import type { PermissionMode } from '../../src/claude-code/index.ts';
+import { PATIENCE } from '../support/patience.ts';
 import { BYPASS_ACCEPTED, PERSONS_SANDBOX, startContractCockpit } from './cockpit-harness.ts';
 import {
   itInTheSandbox,
@@ -49,8 +50,6 @@ async function measured(mode: PermissionMode): Promise<ReachOutcome[]> {
   return reaches.map((reach) => reach.outcome);
 }
 
-const MEASURE_TIMEOUT_MS = 90_000;
-
 /**
  * A reach not made: asked about or refused with no ask. What counts a mode
  * as confined is that none is made; which of the two each was is recorded
@@ -64,7 +63,7 @@ for (const mode of ['default', 'acceptEdits'] as const) {
     async () => {
       expect(await measured(mode)).toEqual([NOT_MADE, NOT_MADE, NOT_MADE, NOT_MADE]);
     },
-    MEASURE_TIMEOUT_MS,
+    PATIENCE.measureTest,
   );
 }
 
@@ -73,7 +72,7 @@ itInTheSandbox(
   async () => {
     expect(await measured('dontAsk')).toEqual(['refused', 'refused', 'refused', 'refused']);
   },
-  MEASURE_TIMEOUT_MS,
+  PATIENCE.measureTest,
 );
 
 for (const [mode, plain] of [
@@ -85,7 +84,7 @@ for (const [mode, plain] of [
     async () => {
       expect(await measured(mode)).toEqual([plain, plain, 'reached', 'reached']);
     },
-    MEASURE_TIMEOUT_MS,
+    PATIENCE.measureTest,
   );
 }
 
@@ -99,5 +98,5 @@ itInTheSandbox(
       'reached',
     ]);
   },
-  MEASURE_TIMEOUT_MS,
+  PATIENCE.measureTest,
 );

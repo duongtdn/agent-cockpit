@@ -3,6 +3,7 @@ import { claudeCode } from '../../src/claude-code/index.ts';
 import type { TranscriptEntry } from '../support/agent-session.ts';
 import { eventually } from '../support/eventually.ts';
 import { turn } from '../support/fake-api/index.ts';
+import { PATIENCE } from '../support/patience.ts';
 import { type HookPayload, SAID_KEY, startContractCockpit } from './cockpit-harness.ts';
 import { pressOnDialog } from './dialog-keys.ts';
 import { conversationTexts } from './harness.ts';
@@ -15,10 +16,9 @@ import { conversationTexts } from './harness.ts';
 const driver = claudeCode();
 
 /**
- * How long the agent may take to show its first screen: no hook tells it
- * here. Under a full suite's load it has taken up to 4 s (0.4 s alone).
+ * The agent's first screen is awaited for `PATIENCE.agentStep`: no hook
+ * tells it here. Under a full suite's load it has taken up to 4 s (0.4 s alone).
  */
-const START_PATIENCE_MS = 15_000;
 
 it("86 — With every hook off (disableAllHooks in the person's settings), the agent shows its ordinary ready screen, takes the launch prompt and answers it, and fires no hook, SessionStart included", async () => {
   const cockpit = await startContractCockpit({ personsSettings: { disableAllHooks: true } });
@@ -34,7 +34,7 @@ it("86 — With every hook off (disableAllHooks in the person's settings), the a
       return shown;
     },
     undefined,
-    START_PATIENCE_MS,
+    PATIENCE.agentStep,
   );
   const request = await cockpit.api.conversationRequest(1);
 

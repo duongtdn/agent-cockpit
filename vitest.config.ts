@@ -1,4 +1,12 @@
 import { defineConfig } from 'vitest/config';
+import { PATIENCE } from './test/support/patience.ts';
+
+/**
+ * The contract suite's workers, the same on every machine: each runs the real
+ * agent, and the load they make together, not the machine's core count, must
+ * decide what a test meets. CI's runner gives vitest three by default.
+ */
+const CONTRACT_WORKERS = 3;
 
 export default defineConfig({
   test: {
@@ -11,8 +19,8 @@ export default defineConfig({
           name: 'integration',
           include: ['test/integration/**/*.test.ts'],
           globalSetup: ['test/support/tmux-sockets-global.ts'],
-          setupFiles: ['test/support/tmux-sockets-setup.ts'],
-          testTimeout: 15_000,
+          setupFiles: ['test/support/tmux-sockets-setup.ts', 'test/support/timeline-setup.ts'],
+          testTimeout: PATIENCE.integrationTest,
         },
       },
       {
@@ -23,8 +31,9 @@ export default defineConfig({
           name: 'contract',
           include: ['test/contract/**/*.test.ts'],
           globalSetup: ['test/support/tmux-sockets-global.ts'],
-          setupFiles: ['test/support/tmux-sockets-setup.ts'],
-          testTimeout: 60_000,
+          setupFiles: ['test/support/tmux-sockets-setup.ts', 'test/support/timeline-setup.ts'],
+          testTimeout: PATIENCE.contractTest,
+          maxWorkers: CONTRACT_WORKERS,
         },
       },
       { test: { name: 'pack', include: ['test/pack/**/*.test.ts'] } },
@@ -35,8 +44,8 @@ export default defineConfig({
           name: 'browser',
           include: ['test/browser/**/*.test.ts'],
           globalSetup: ['test/support/tmux-sockets-global.ts'],
-          setupFiles: ['test/support/tmux-sockets-setup.ts'],
-          testTimeout: 30_000,
+          setupFiles: ['test/support/tmux-sockets-setup.ts', 'test/support/timeline-setup.ts'],
+          testTimeout: PATIENCE.browserTest,
         },
       },
       {
@@ -45,8 +54,8 @@ export default defineConfig({
         test: {
           name: 'e2e',
           include: ['test/e2e/**/*.test.ts'],
-          testTimeout: 60_000,
-          hookTimeout: 60_000,
+          testTimeout: PATIENCE.endToEndTest,
+          hookTimeout: PATIENCE.endToEndTest,
         },
       },
     ],

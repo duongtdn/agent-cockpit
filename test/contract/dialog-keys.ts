@@ -1,22 +1,14 @@
-import { setTimeout as pause } from 'node:timers/promises';
 import type { AgentSession } from '../support/agent-session.ts';
+import { cameTrue } from '../support/eventually.ts';
+import { PATIENCE, POLL } from '../support/patience.ts';
 
 /**
  * Keys on the start-up dialogs of the real agent, as a person presses them,
  * for the parity scenarios and the driver's rows alike.
  */
 
-/** How long a key on a start-up dialog is given to be taken before it is pressed again. */
-const DIALOG_KEY_PATIENCE_MS = 1000;
+/** How many times a key is pressed on a start-up dialog that shows nothing of it. */
 const DIALOG_KEY_PRESSES = 3;
-const SCREEN_POLL_MS = 20;
-
-/**
- * How long the selection of a start-up dialog must stay before it is
- * chosen: seen of 2.1.332, a dialog draws itself again about 150 ms after
- * it showed, its selection back on its first option.
- */
-const SELECTION_SETTLES_MS = 500;
 
 /**
  * Gives what a session shows.
@@ -43,11 +35,8 @@ export async function pressOnDialog(
 ): Promise<void> {
   for (let presses = 1; presses <= DIALOG_KEY_PRESSES; presses++) {
     if (await pressedOrGone(session, key, taken)) return;
-    const deadline = Date.now() + DIALOG_KEY_PATIENCE_MS;
-    while (Date.now() < deadline) {
-      if (taken(await screenOrNothing(session))) return;
-      await pause(SCREEN_POLL_MS);
-    }
+    const shown = async () => taken(await screenOrNothing(session));
+    if (await cameTrue(shown, PATIENCE.dialogKey, POLL.screen)) return;
   }
   throw new Error(`The dialog did not take ${key} in ${DIALOG_KEY_PRESSES} presses.`);
 }
@@ -74,14 +63,16 @@ async function pressedOrGone(
   }
 }
 
-/** Tells whether a selection stays on screen for a while, or stops as soon as it is gone. */
+/**
+ * Tells whether a selection stays on screen through the dialog's redraw, or
+ * stops as soon as it is gone: seen of 2.1.332, a dialog draws itself again
+ * about 150 ms after it showed, its selection back on its first option. No
+ * sign tells the redraw came, so the selection is watched for the time it
+ * may take.
+ */
 async function stays(session: AgentSession, selected: RegExp): Promise<boolean> {
-  const until = Date.now() + SELECTION_SETTLES_MS;
-  while (Date.now() < until) {
-    if (!selected.test((await screenOrNothing(session)) ?? '')) return false;
-    await pause(SCREEN_POLL_MS);
-  }
-  return true;
+  const gone = async () => !selected.test((await screenOrNothing(session)) ?? '');
+  return !(await cameTrue(gone, PATIENCE.dialogRedraw, POLL.screen));
 }
 
 /**

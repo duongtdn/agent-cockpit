@@ -23,6 +23,7 @@ import {
   type HookForwarder,
   startHookForwarder,
 } from '../support/fake-agent-driver.ts';
+import { PATIENCE } from '../support/patience.ts';
 
 const appName = `sessions-test-${process.pid}-${Date.now()}`;
 const pacing = { chunkLength: 100, pauseMs: 1 };
@@ -233,6 +234,6 @@ describe("the sessions core, reading Claude Code's start-up screens in tmux", ()
         silent.close();
       }
     },
-    READY_BOUND_MS + 5000,
+    READY_BOUND_MS + PATIENCE.condition,
   );
 });

@@ -5,6 +5,7 @@ import { type Browser, chromium, type Locator, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FOLLOW_SESSIONS_PATH, WIRE_SUBPROTOCOL, wireSubprotocols } from '../../src/shared/wire.ts';
 import { type ExampleApp, startExampleApp } from '../support/example-app.ts';
+import { PATIENCE } from '../support/patience.ts';
 
 /**
  * The jobs console end to end, as a person uses it: the example started as
@@ -23,7 +24,7 @@ const NOTES = 'folder-notes';
 /** Another site's name, which the browser resolves to the loopback address. */
 const OTHER_SITE = 'other-site.test';
 /** Shorter than the test's timeout, so that a failed wait says what it waited for. */
-const WAIT_MS = 20_000;
+const WAIT_MS = PATIENCE.exampleApp;
 
 let app: ExampleApp;
 let browser: Browser;

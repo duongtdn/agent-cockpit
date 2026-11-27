@@ -3,7 +3,9 @@ import type { PermissionMode } from '../../src/claude-code/index.ts';
 import { readInputBoxView, readScreen } from '../../src/claude-code/screen-reading.ts';
 import type { ScreenReading } from '../../src/server/driver.ts';
 import type { AgentSession } from '../support/agent-session.ts';
+import { eventually as untilItHolds } from '../support/eventually.ts';
 import { heldTurn, toolUse, turn } from '../support/fake-api/index.ts';
+import { PATIENCE } from '../support/patience.ts';
 import {
   BYPASS_ACCEPTED,
   type ContractCockpit,
@@ -137,19 +139,8 @@ const compactingSpinner = (spinner: string | undefined) =>
 
 /** The cockpit's waits, as the contract agent's: they fail saying what was awaited. */
 function waits(cockpit: ContractCockpit) {
-  const patience = 15_000;
-  return async <T>(check: () => T | Promise<T>): Promise<T> => {
-    const deadline = Date.now() + patience;
-    for (;;) {
-      try {
-        return await check();
-      } catch (error) {
-        cockpit.api.assertNothingUnexpected();
-        if (Date.now() > deadline) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-  };
+  return <T>(check: () => T | Promise<T>): Promise<T> =>
+    untilItHolds(check, () => cockpit.api.assertNothingUnexpected(), PATIENCE.agentStep);
 }
 
 for (const mode of ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const) {

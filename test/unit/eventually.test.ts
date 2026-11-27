@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { eventually } from '../support/eventually.ts';
+import { cameTrue, eventually } from '../support/eventually.ts';
 
 describe('waiting for what no event announces', () => {
   it('gives what the check returns once it passes', async () => {
@@ -45,5 +45,43 @@ describe('waiting for what no event announces', () => {
       }),
     ).rejects.toThrow('no use');
     expect(tried).toBe(false);
+  });
+});
+
+describe('waiting for what may not come', () => {
+  it('tells that it came, once it holds', async () => {
+    let looks = 0;
+
+    const came = await cameTrue(() => {
+      looks += 1;
+      return looks === 3;
+    }, 1_000);
+
+    expect(came).toBe(true);
+    expect(looks).toBe(3);
+  });
+
+  it('tells that it did not come once the time ran out, having looked once more at the end', async () => {
+    let looks = 0;
+
+    const came = await cameTrue(
+      () => {
+        looks += 1;
+        return false;
+      },
+      30,
+      10,
+    );
+
+    expect(came).toBe(false);
+    expect(looks).toBeGreaterThanOrEqual(2);
+  });
+
+  it('ends with the error of a look that throws', async () => {
+    await expect(
+      cameTrue(() => {
+        throw new Error('the session is gone');
+      }, 1_000),
+    ).rejects.toThrow('the session is gone');
   });
 });

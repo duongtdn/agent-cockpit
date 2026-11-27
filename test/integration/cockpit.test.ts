@@ -972,14 +972,18 @@ describe('creating and closing the cockpit', () => {
     const asked = new Promise<void>((resolve) => {
       choicesAsked = resolve;
     });
+    let answer = () => {};
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
     const inFolder = {
       ...explain,
       id: 'in-folder',
-      // Slow to answer: the run is under way, checking its choices, as the close begins.
+      // Answers once the close began: the run is under way, checking its choices, meanwhile.
       options: {
         file: async () => {
           choicesAsked();
-          await new Promise((resolve) => setTimeout(resolve, 200));
+          await answered;
           return [{ value: 'a.txt' }];
         },
       },
@@ -994,6 +998,7 @@ describe('creating and closing the cockpit', () => {
 
     const closing = cockpit.close();
     const refused = cockpit.run('in-folder', { file: 'a.txt' });
+    answer();
 
     await expect(refused).rejects.toThrow(SessionsClosedError);
     await expect(underWay).rejects.toThrow(SessionsClosedError);

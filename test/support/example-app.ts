@@ -5,11 +5,9 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { PATIENCE } from './patience.ts';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
-
-/** How long an example may take to print its link, or to stop, before the test fails saying what it printed. */
-const PATIENCE_MS = 20_000;
 
 /** The line where an example prints the link to open, the link its one group. */
 export const LINK_LINE = /^Open (\S+)$/;
@@ -95,7 +93,7 @@ export async function startExampleApp(name: string, args: readonly string[]): Pr
       const timer = setTimeout(() => {
         done();
         reject(new Error(`The example printed no line matching ${pattern} in time:\n${output}`));
-      }, PATIENCE_MS);
+      }, PATIENCE.exampleApp);
       const onLine = (line: string) => {
         const match = pattern.exec(line);
         if (match === null) return;
@@ -222,7 +220,7 @@ async function withinPatience(
       void killAndClean(child, output()).finally(() =>
         reject(new Error(`The example ${failure} in time:\n${output()}`)),
       );
-    }, PATIENCE_MS);
+    }, PATIENCE.exampleApp);
   });
   try {
     return await Promise.race([exited, late]);

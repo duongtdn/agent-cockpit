@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 import type { PermissionMode } from '../../src/claude-code/index.ts';
 import type { LaunchCommand } from '../../src/server/driver.ts';
 import { toolUse, turn } from '../support/fake-api/index.ts';
+import { PATIENCE } from '../support/patience.ts';
 import {
   BYPASS_ACCEPTED,
   type ContractCockpit,
@@ -142,7 +143,7 @@ itInTheSandbox(
       }
     }
   },
-  120_000,
+  PATIENCE.longContractTest,
 );
 
 itInTheSandbox(

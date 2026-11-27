@@ -1,14 +1,14 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { setTimeout as pause } from 'node:timers/promises';
 import { expect, it } from 'vitest';
 import type { ClaudeCodeOptions } from '../../src/claude-code/index.ts';
 import { readInputBoxView } from '../../src/claude-code/screen-reading.ts';
 import { typePrompt } from '../../src/claude-code/typing.ts';
 import type { TypingOutcome } from '../../src/server/driver.ts';
 import type { AgentSession } from '../support/agent-session.ts';
-import { eventually } from '../support/eventually.ts';
+import { cameTrue, eventually } from '../support/eventually.ts';
 import { type Turn, toolUse, turn } from '../support/fake-api/index.ts';
+import { PATIENCE, POLL } from '../support/patience.ts';
 import {
   type ContractCockpit,
   type ContractCockpitOptions,
@@ -61,13 +61,18 @@ async function typeDraft(session: AgentSession, draft: string): Promise<void> {
   });
 }
 
-/** Presses keys one at a time, as a person does, and gives the agent the time to draw what they did. */
+/**
+ * Presses keys one at a time, as a person does, each once the agent drew
+ * what the one before did: the cursor moved, or the box scrolled under it.
+ */
 async function pressEach(session: AgentSession, key: string, times: number): Promise<void> {
   for (let pressed = 0; pressed < times; pressed++) {
+    const before = JSON.stringify(await session.screenWithCursor());
     await session.press(key);
-    await pause(30);
+    await eventually(async () =>
+      expect(JSON.stringify(await session.screenWithCursor())).not.toBe(before),
+    );
   }
-  await pause(300);
 }
 
 /** What the driver's typing gave. */
@@ -108,16 +113,12 @@ function promptsSince(cockpit: ContractCockpit, from: number): unknown[] {
 async function submitBox(cockpit: ContractCockpit, session: AgentSession): Promise<unknown> {
   const from = cockpit.hooksRead.length;
   const timeline = cockpit.timeline.length;
+  const submitted = () => promptsSince(cockpit, from).length > 0;
   for (let enters = 1; enters <= 3; enters++) {
     await session.press('Enter');
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const [prompt] = promptsSince(cockpit, from);
-      if (prompt !== undefined) {
-        await sessionAfter(cockpit, 'idle', timeline);
-        return prompt;
-      }
-      await pause(25);
+    if (await cameTrue(submitted, PATIENCE.submit, POLL.hooks)) {
+      await sessionAfter(cockpit, 'idle', timeline);
+      return promptsSince(cockpit, from)[0];
     }
   }
   throw new Error(`The box was not submitted: it shows ${await session.screen()}`);
@@ -181,8 +182,9 @@ it('104 — An empty box after a kill of the person stays empty after a prompt, 
   expect(sent.outcome).toBe('taken');
   expect(sent.prompts).toEqual(['trailing whitespace']);
   expect(sent.writes.some((write) => write.startsWith('Down'))).toBe(false);
-  await pause(300);
-  expect((await boxOf(session))?.text).toBe('');
+  // A key typed now is drawn after every key the driver sent: the box then shows what they left.
+  await session.type('z');
+  await eventually(async () => expect((await boxOf(session))?.text).toBe('z'));
 });
 
 it('105 — An entry recalled from the history (History n/m) is not typed over: nothing is written', async () => {
@@ -241,7 +243,8 @@ it('108 — The person’s vim mode is off in the driver’s sessions (editorMod
 
   await typeDraft(session, 'two\nlines');
   await session.press('Escape');
-  await pause(300);
+  // Drawn once the agent read the Escape alone: a key sent sooner could join it as Alt+key.
+  await eventually(async () => expect(await session.screen()).toContain('esc again to clear'));
   const sent = await typed(cockpit, session, 'harmless words only');
   const draft = await submitBox(cockpit, session);
 
@@ -274,7 +277,7 @@ const MULTI_BYTE =
   'Việt: ầẩẫậắằẳẵặ 日本語と中文の混在テキスト、한국어도조금。测试多字节字符的输入是否完全一致。😀🎉👍🏽👨‍👩‍👧𝔘𝔫𝔦𝔠𝔬𝔡𝔢';
 
 it('110 — 100,000 characters of multi-byte text (over 300 KB of UTF-8) are typed exact', {
-  timeout: 120_000,
+  timeout: PATIENCE.longContractTest,
 }, async () => {
   const { cockpit, session } = await idleSession();
   const units = Array.from(MULTI_BYTE);

@@ -7,6 +7,7 @@ import {
   type ReceivedHook,
   startHookReceiver,
 } from '../support/hooks/hook-receiver.ts';
+import { PATIENCE } from '../support/patience.ts';
 import {
   type AgentSession,
   type LaunchOptions,
@@ -114,9 +115,6 @@ export interface ContractAgentOptions {
   readonly runner?: Pick<RealAgentRunnerOptions, 'leftOutOfRecipe' | 'variables'>;
 }
 
-/** Far longer than the agent takes (a start is under a second), short enough to fail with the reason. */
-const PATIENCE_MS = 15_000;
-
 /**
  * The scripted model may run any shell command without an ask: a
  * permission dialog is no part of these behaviors, and the commands are the
@@ -149,7 +147,7 @@ export async function startContractAgent(
   const {
     whenFinished = onTestFinished,
     meta = runningTestMeta(),
-    patienceMs = PATIENCE_MS,
+    patienceMs = PATIENCE.agentStep,
     permissions = NO_ASK_FOR_SHELL_COMMANDS,
   } = options;
   // Closed last started first: the sessions end while their hooks still have somewhere to go.
@@ -211,7 +209,11 @@ export interface DrivenAgentParts {
 export function drivenAgent(parts: DrivenAgentParts): DrivenAgent {
   const { hooks, launcher, meta } = parts;
   const sessions = watchedSessions();
-  const waits = failFastWaits({ ...parts, sessions, patienceMs: parts.patienceMs ?? PATIENCE_MS });
+  const waits = failFastWaits({
+    ...parts,
+    sessions,
+    patienceMs: parts.patienceMs ?? PATIENCE.agentStep,
+  });
   const launched = async (launching: Promise<AgentSession>) => sessions.watch(await launching);
 
   return {
@@ -433,12 +435,6 @@ export function inputBoxText(screen: string): string | undefined {
     .replace(/^❯\s/u, '');
 }
 
-/**
- * How long an Enter is given to submit before the box is looked at again: a
- * few seconds, as the driver gives it, far more than a taken Enter needs.
- */
-const SUBMIT_PATIENCE_MS = 3000;
-
 /** How many times Enter is pressed on a prompt that stays in the box, as the driver does. */
 const ENTER_PRESSES = 3;
 
@@ -504,7 +500,7 @@ export async function submitInputBox(
       agent,
       `a ${confirmation} after Enter ${enters}`,
       submitted,
-      SUBMIT_PATIENCE_MS,
+      PATIENCE.submit,
     );
     if (hook !== undefined) return noted(agent, { hook, enters });
     const box = inputBoxText(await session.screen());
@@ -516,7 +512,7 @@ export async function submitInputBox(
     }
     if (enters === ENTER_PRESSES) {
       throw new Error(
-        `The input box still holds ${JSON.stringify(box)} after ${ENTER_PRESSES} Enters, ${SUBMIT_PATIENCE_MS} ms apart, and no ${confirmation} came.`,
+        `The input box still holds ${JSON.stringify(box)} after ${ENTER_PRESSES} Enters, ${PATIENCE.submit} ms apart, and no ${confirmation} came.`,
       );
     }
   }

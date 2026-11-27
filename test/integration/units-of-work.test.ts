@@ -20,6 +20,7 @@ import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import { writeScript } from '../support/fake-agent/script.ts';
 import { holdTasks, releaseTasks } from '../support/fake-agent/tasks.ts';
 import { startNodeHttpApp } from '../support/node-http-app.ts';
+import { PATIENCE } from '../support/patience.ts';
 import { agentConfiguration, FAKE_API_KEY } from '../support/real-agent/environment.ts';
 import { findTranscript } from '../support/transcript-files.ts';
 import { call, post } from '../support/wire-client.ts';
@@ -687,7 +688,7 @@ function promptBeingTyped(host: SessionHost, key: string, rows: number): Promise
       expect(rows <= 1 ? text.includes('w0 w1') : scrolled >= rows).toBe(true);
     },
     undefined,
-    10_000,
+    PATIENCE.longPromptTyped,
   );
 }
 
