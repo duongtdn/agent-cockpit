@@ -223,7 +223,8 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
       return launchSession(launch, checked);
     },
     readHook: createHookReader(),
-    follow: (conversation, report) => followTranscript(lookupOf(conversation), report).stop,
+    follow: (conversation, report) =>
+      followTranscript({ ...lookupOf(conversation), isNew: conversation.isNew }, report).stop,
     canResume: (conversation) => keepsConversation(lookupOf(conversation)),
   };
 }

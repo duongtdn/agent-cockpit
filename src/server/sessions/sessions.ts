@@ -421,6 +421,11 @@ interface Entry {
   readonly environment: Readonly<Record<string, string>>;
   /** The conversation the agent works in: the one launched, until the agent names another. */
   conversationId: string;
+  /**
+   * Whether that conversation is known to be new — a launch that resumes
+   * none, or one the agent moved to — and is followed from its start.
+   */
+  conversationIsNew: boolean;
   /** Whether the session has a first prompt: on the command line, or typed once the agent is ready. */
   readonly launchedWithPrompt: boolean;
   /** A first prompt too long for the command line, to type once the agent is ready; gone once begun. */
@@ -744,13 +749,15 @@ class SessionRegistry implements Sessions {
   /**
    * Follows the conversation the agent moved to, when it is another (Claude
    * Code's `/clear` starts one under a new id): what the driver tells
-   * outside the hooks is read from it, and the session's end asks whether
-   * it can resume.
+   * outside the hooks is read from it, from its start (the agent may write
+   * into it before the following begins), and the session's end asks
+   * whether it can resume.
    */
   #moveTo(entry: Entry, conversationId: string): void {
     const left = entry.conversationId;
     if (conversationId === left) return;
     entry.conversationId = conversationId;
+    entry.conversationIsNew = true;
     for (const listener of this.#conversationListeners) listener(entry.key, conversationId, left);
     // Not followed yet, during the launch: the following starts on the new one.
     if (entry.stopFollowing === undefined) return;
@@ -762,7 +769,8 @@ class SessionRegistry implements Sessions {
   }
 
   #follow(entry: Entry): void {
-    entry.stopFollowing = this.#options.driver.follow(conversationOf(entry), (events) =>
+    const followed = { ...conversationOf(entry), isNew: entry.conversationIsNew };
+    entry.stopFollowing = this.#options.driver.follow(followed, (events) =>
       this.#told(entry, events),
     );
   }
@@ -812,7 +820,7 @@ class SessionRegistry implements Sessions {
 
   /** Takes the key at once, so that a second launch of it is refused before any wait. */
   #reserve(
-    { key, directory, conversationId }: SessionLaunch,
+    { key, directory, conversationId, resume }: SessionLaunch,
     prompt: string | undefined,
     replaces: Entry | undefined,
   ): Entry {
@@ -822,6 +830,7 @@ class SessionRegistry implements Sessions {
       directory,
       environment: this.#options.environment(),
       conversationId,
+      conversationIsNew: resume !== true,
       launchedWithPrompt: prompt !== undefined,
       ...(typed ? { promptToType: prompt } : {}),
       awaitsTypedPrompt: typed,
@@ -976,7 +985,8 @@ class SessionRegistry implements Sessions {
   /**
    * Reads the screen for a panel the launch prompt opened, until a hook or
    * the transcript tells (any ends the watch): the panel makes the session
-   * wait in the terminal, and its close, the driver's sign, makes it `idle`.
+   * wait in the terminal, and the close of one the driver names, read by
+   * its sign, makes it `idle`.
    */
   #watchForPanel(entry: Entry): void {
     const { driver } = this.#options;

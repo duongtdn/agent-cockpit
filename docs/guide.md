@@ -443,6 +443,9 @@ driver has no name for, or a panel a launch prompt opened (`/help`,
 `/cost`, `/status`, `/config`, `/model`, or one the driver has no name
 for, shown 5 seconds after the agent started). The
 person answers it in the mounted terminal, and the session goes on. A
+named panel's close makes the session `idle`; one the driver has no name
+for leaves it `waiting` until the agent's next hook or transcript entry,
+never guessed `idle` from the input box alone. A
 person who leaves a start-up dialog ("No", or Esc) ends the session
 `declined`, with its `dialog`: the app tells them what the next launch will
 meet again.

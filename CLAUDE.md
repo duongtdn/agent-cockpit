@@ -158,7 +158,9 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   subagent and its `<task-notification>` turn, 62 and 73 its hooks'
   `agent_id`), `compaction` (16, 94 an interrupted `/compact`, 123 one
   that fails: `StopFailure` with the compaction's own `agent_id`, 124 one
-  interrupted: the `<local-command-caveat>` entry alone), `dialogs` (37, 69 the folder's trust; 68
+  interrupted: the `<local-command-caveat>` entry alone, 125 `/context`
+  then `/compact` at once: only the Esc's caveat, recorded after the
+  compaction began, ends it), `dialogs` (37, 69 the folder's trust; 68
   the trust dialog's answers; 70 the onboarding; 85 the warning of
   `bypassPermissions`; 88 the API key's question, a dialog of no name),
   `turn-failures` (64, `StopFailure`), `options` (72 `--setting-sources`,

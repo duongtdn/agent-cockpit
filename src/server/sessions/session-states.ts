@@ -12,7 +12,8 @@ export interface SessionCourse {
   /**
    * The `idle` session a compaction began on: the session is `busy` until
    * the compaction ends, then returns to it, its `since` kept — the person
-   * did nothing meanwhile.
+   * did nothing meanwhile. The `busy` session's own `since` is when the
+   * compaction began.
    */
   readonly compactingFrom?: IdleSession;
   /**
@@ -67,7 +68,11 @@ export function courseAfter(
     case 'compaction-ended':
       return compactingFrom === undefined ? course : withSession(course, compactingFrom);
     case 'command-done':
-      if (compactingFrom !== undefined) return withSession(course, compactingFrom);
+      if (compactingFrom !== undefined) {
+        return interruptsTheCompaction(course, event)
+          ? withSession(course, compactingFrom)
+          : course;
+      }
       return launchedWithPrompt && awaitsLaunchCommand(session)
         ? withSession(course, { key: session.key, state: 'idle', since: now })
         : course;
@@ -115,16 +120,37 @@ function inTurn(course: SessionCourse, now: string): SessionCourse {
  * Whether an interruption was recorded before the last prompt was taken:
  * it ended the turn before, which the transcript tells later than the
  * hooks tell the next prompt.
- *
- * The agent's time and the cockpit's are read from one clock: the agent
- * runs on the server's own host, under its tmux. An interruption recorded
- * in the very millisecond the prompt was taken is no proof of an earlier
- * turn, and ends the current one: a turn left `busy` with nothing more to
- * tell would stay so.
  */
 function endsAnEarlierTurn(course: SessionCourse, recordedAt: string | undefined): boolean {
-  if (recordedAt === undefined || course.promptTakenAt === undefined) return false;
-  return Date.parse(recordedAt) < Date.parse(course.promptTakenAt);
+  return course.promptTakenAt !== undefined && recordedBefore(recordedAt, course.promptTakenAt);
+}
+
+/**
+ * Whether a command's end the transcript recorded interrupts the compaction
+ * begun while `idle`: only its caveat, all that an interrupted compaction
+ * writes, and only one not recorded before the compaction began (an earlier
+ * command's, written late). A command's result never does: a compaction
+ * that is done or failed ends at its hooks.
+ */
+function interruptsTheCompaction(
+  course: SessionCourse,
+  event: Extract<DriverEvent, { type: 'command-done' }>,
+): boolean {
+  return event.entry === 'caveat' && !recordedBefore(event.at, course.session.since);
+}
+
+/**
+ * Whether what the agent recorded is proved earlier than a moment the
+ * cockpit took from a hook.
+ *
+ * The agent's time and the cockpit's are read from one clock: the agent
+ * runs on the server's own host, under its tmux. An entry recorded in the
+ * very millisecond, or that says no time, is no proof of being earlier,
+ * and is taken as later: a session left `busy` with nothing more to tell
+ * would stay so.
+ */
+function recordedBefore(recordedAt: string | undefined, moment: string): boolean {
+  return recordedAt !== undefined && Date.parse(recordedAt) < Date.parse(moment);
 }
 
 function busySince(session: Session, now: string): Session {

@@ -30,7 +30,7 @@ export interface LaunchPromptWatchOptions {
   readonly signs: Pick<ScreenStateSigns, 'launchPanelClosed'>;
   /** Called at each reading of a panel or a dialog: the session waits for a person in the terminal. */
   readonly onPanel: (shown: DialogShown) => void;
-  /** Called once a panel seen is closed: the watch has stopped, and the agent waits for a prompt. */
+  /** Called once a named panel seen is closed: the watch has stopped, and the agent waits for a prompt. */
   readonly onPanelClosed: () => void;
 }
 
@@ -39,17 +39,20 @@ export interface LaunchPromptWatchOptions {
  * took, until stopped (the session's next hook, or what its transcript
  * records, tells the rest). A local command that opens a panel writes
  * nothing while the panel shows, nor once it is closed: the panel makes the
- * session wait in the terminal, and its close, read by the driver's sign, is
- * the command's end. A screen the driver does not know, shown past
- * {@link PROMPT_BOUND_MS}, is taken for a panel it has no words for: a
- * person must look. The input box alone is no sign of anything: the agent
- * draws it before it takes the prompt.
+ * session wait in the terminal, and the close of a panel the driver names,
+ * read by its sign, is the command's end. A screen the driver does not
+ * know, shown past {@link PROMPT_BOUND_MS}, is taken for a panel it has no
+ * words for, and a dialog with no name is one too: a person must look, and
+ * the box seen again ends neither (a start stalled before the prompt was
+ * taken shows the box too); only the next hook or entry does. The input box
+ * alone is no sign of anything: the agent draws it before it takes the
+ * prompt.
  */
 export class LaunchPromptWatch {
   readonly #options: LaunchPromptWatchOptions;
   readonly #screen: ScreenWatch<string>;
   #startedAt = 0;
-  #panelSeen = false;
+  #namedPanelSeen = false;
   #unknownReads = 0;
 
   /** @param options - See {@link LaunchPromptWatchOptions}. */
@@ -70,18 +73,17 @@ export class LaunchPromptWatch {
   }
 
   #take(text: string): void {
-    if (this.#panelSeen && this.#options.signs.launchPanelClosed(text)) {
+    if (this.#namedPanelSeen && this.#options.signs.launchPanelClosed(text)) {
       this.stop();
       this.#options.onPanelClosed();
       return;
     }
     const reading = this.#options.readScreen(text);
     this.#unknownReads = reading.shows === 'unknown' ? this.#unknownReads + 1 : 0;
+    if (reading.shows === 'panel') this.#namedPanelSeen = true;
     if (reading.shows === 'dialog' || reading.shows === 'panel') {
-      this.#panelSeen = true;
       this.#options.onPanel(dialogShown(reading));
     } else if (this.#showsAnUnknownPanel()) {
-      this.#panelSeen = true;
       this.#options.onPanel({});
     }
   }

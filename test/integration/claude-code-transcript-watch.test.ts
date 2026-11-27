@@ -35,15 +35,16 @@ afterEach(() => {
   rmSync(configFolder, { recursive: true, force: true });
 });
 
-function followInto(into: DriverEvent[]): TranscriptWatch {
+function followInto(into: DriverEvent[], isNew = false): TranscriptWatch {
   return followTranscript(
-    { configFolder, conversationId: CONVERSATION, directory: DIRECTORY },
+    { configFolder, conversationId: CONVERSATION, directory: DIRECTORY, isNew },
     (events) => into.push(...events),
   );
 }
 
-async function follow(): Promise<void> {
-  watch = followInto(reported);
+/** Follows the conversation: one the agent kept, or, `new`, one known to be new. */
+async function follow(conversation: 'kept' | 'new' = 'kept'): Promise<void> {
+  watch = followInto(reported, conversation === 'new');
   await watch.begun;
 }
 
@@ -85,6 +86,42 @@ describe("the Claude Code driver's watch of a transcript", () => {
 
     await readUpToNow();
     expect(reported).toEqual([]);
+  });
+
+  it("reports what a conversation known to be new held before the watch began: a `/clear` launch's entries, written before the following began", async () => {
+    const caveat = {
+      type: 'user',
+      timestamp: RECORDED_AT,
+      message: { role: 'user', content: '<local-command-caveat>Run here.</local-command-caveat>' },
+    };
+    const output = {
+      type: 'system',
+      subtype: 'local_command',
+      timestamp: RECORDED_AT,
+      content: '<local-command-stdout></local-command-stdout>',
+    };
+    write(
+      caveat,
+      { type: 'user', message: { role: 'user', content: '<command-name>/clear</command-name>' } },
+      output,
+    );
+
+    await follow('new');
+
+    await eventually(() =>
+      expect(reported).toEqual([
+        { type: 'command-done', entry: 'caveat', at: RECORDED_AT },
+        { type: 'command-done', entry: 'result', at: RECORDED_AT },
+      ]),
+    );
+  });
+
+  it('reads a conversation known to be new from its start once it appears', async () => {
+    await follow('new');
+
+    write(PROMPT, MARKER);
+
+    await eventually(() => expect(reported).toEqual([INTERRUPTED]));
   });
 
   it('reports nothing once stopped', async () => {

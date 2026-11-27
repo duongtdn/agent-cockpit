@@ -224,19 +224,25 @@ Nothing is published yet.
   panel it opens (`/help`, `/cost`, `/status`, `/config`, `/model`) is
   read on the screen: `waiting` (`kind: 'terminal'`) while it shows,
   `idle` once it closed; a screen the driver does not know, shown 5
-  seconds after the first hook, is `waiting` the same way. The input box
-  alone, or the box while the agent works, leaves the session `starting`,
-  never guessed `idle` or `busy`.
+  seconds after the first hook, or a dialog of no name, is `waiting` the
+  same way, and stays so when the input box shows again, until the
+  agent's next hook or entry: only a named panel's close is `idle`. The
+  input box alone, or the box while the agent works, leaves the session
+  `starting`, never guessed `idle` or `busy`.
 - A session follows the conversation the agent moves to: Claude Code's
   `/clear` starts one under a new id, and what the cockpit reads outside
-  the hooks, and an ended session's `canResume`, follow it (an
+  the hooks, and an ended session's `canResume`, follow it; a
+  conversation known to be new (launched, not resumed, or moved to) is
+  read from its start, what the agent wrote before the cockpit followed
+  it included (an
   interruption recorded in the conversation left just before the move
   still ends the turn open then). A compaction begun `idle` that fails
   (Claude Code's `StopFailure` of the compaction's own agent, told from a
   background task's by the tasks the session's hooks named) or is
-  interrupted (no hook: the agent writes the command's end alone into its
-  conversation) returns the session to the `idle` it left; no screen is
-  read for it. An interruption the agent recorded before the next prompt
+  interrupted (no hook: the agent writes the command's caveat alone into
+  its conversation, and only a caveat recorded once the compaction began
+  ends it, never an earlier command's entries written late) returns the
+  session to the `idle` it left; no screen is read for it. An interruption the agent recorded before the next prompt
   was taken leaves the new turn `busy`.
 - Units of work. A job may carry `options` (option sources, `{ choices,
   suggestions: true }` for one that only suggests), `directory(args)` and

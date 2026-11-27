@@ -2,6 +2,7 @@ import type {
   Conversation,
   Driver,
   DriverEvent,
+  FollowedConversation,
   HookRequest,
   InputBox,
   Launch,
@@ -355,7 +356,7 @@ export interface StubDriver extends Driver {
 
 /** A conversation a stub driver follows: the test reports for it. */
 export interface Following {
-  readonly conversation: Conversation;
+  readonly conversation: FollowedConversation;
   /** Reports events of the agent's, as the driver would from outside its hooks. */
   readonly report: (events: readonly DriverEvent[]) => void;
   /** Whether the core stopped following it. */

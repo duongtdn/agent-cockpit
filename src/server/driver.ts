@@ -267,10 +267,24 @@ export type DriverEvent =
        * The agent recorded the end of a command of its own, run with no turn
        * and no hook (Claude Code's local commands: `/clear`, `/context`,
        * `/compact`, an unknown one): it took the input and waits for the
-       * next. A launch prompt that was such a command is done (`idle`); a
-       * compaction begun while `idle` is over, whatever ended it.
+       * next. A launch prompt that was such a command is done (`idle`),
+       * whichever entry tells it; a compaction begun while `idle` is over
+       * only at a caveat recorded once it began.
        */
       readonly type: 'command-done';
+      /**
+       * The entry that told it: `caveat`, the note a command's record opens
+       * with and all that an interrupted command writes (Claude Code's
+       * `<local-command-caveat>`); `result`, the command's output, its
+       * error, or the entry of a command the agent does not know.
+       */
+      readonly entry: 'caveat' | 'result';
+      /**
+       * When the agent recorded it, an ISO 8601 time, when it says. Written
+       * up to a few hundred milliseconds late, an earlier command's caveat
+       * recorded before a compaction began does not end it.
+       */
+      readonly at?: string;
     }
   | {
       /** The tasks running in the background, the whole list, at the end of a turn. */
@@ -312,6 +326,18 @@ export interface Conversation {
    * it, and differ from the server's own.
    */
   readonly environment: Readonly<Record<string, string>>;
+}
+
+/** A conversation the core follows, and whether it is known to be new. */
+export interface FollowedConversation extends Conversation {
+  /**
+   * Whether the conversation is known to be new: a launch that resumes
+   * none, or one the agent moved to (Claude Code's `/clear`). What it holds
+   * is then all of this session's, and is read from its start, however
+   * early the agent wrote it; an earlier conversation, resumed, is read
+   * from where it stands, its past not told again.
+   */
+  readonly isNew: boolean;
 }
 
 /**
@@ -372,9 +398,11 @@ export type ScreenReading =
  */
 export interface ScreenStateSigns {
   /**
-   * Tells that a panel a launch prompt opened has closed: the input box back,
-   * with no sign above it that the agent works. The agent then waits for a
-   * prompt (`idle`): a panel's close fires no hook and writes no entry.
+   * Tells that a panel a launch prompt opened, one the driver named, has
+   * closed: the input box back, with no sign above it that the agent works.
+   * The agent then waits for a prompt (`idle`): a panel's close fires no
+   * hook and writes no entry. A screen or a dialog of no name is never
+   * read so: the core waits for the next hook or entry.
    *
    * @param text - The screen, row by row, read once a panel was seen.
    * @returns `true` once the panel is gone and the agent waits.
@@ -643,13 +671,18 @@ export interface Driver {
   readHook(request: HookRequest): HookOutcome;
   /**
    * Follows what the agent of a live session tells outside its hooks, such
-   * as an interruption only its transcript records, from now on.
+   * as an interruption only its transcript records: from now on, or from
+   * the conversation's start when it is known to be new.
    *
-   * @param conversation - The session's conversation, as it was launched.
+   * @param conversation - The session's conversation, as it was launched or
+   * moved to, and whether it is new.
    * @param report - Receives what it tells, as a hook's events are read.
    * @returns A function that stops following: nothing is reported after it.
    */
-  follow(conversation: Conversation, report: (events: readonly DriverEvent[]) => void): () => void;
+  follow(
+    conversation: FollowedConversation,
+    report: (events: readonly DriverEvent[]) => void,
+  ): () => void;
   /**
    * Tells whether the agent still keeps a conversation, so that an ended
    * session can say whether it may resume.

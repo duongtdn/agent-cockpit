@@ -258,7 +258,8 @@ describe('a compaction', () => {
 });
 
 describe('the end of a command of the agent’s own that the transcript recorded', () => {
-  const done: DriverEvent = { type: 'command-done' };
+  const done: DriverEvent = { type: 'command-done', entry: 'result' };
+  const caveat: DriverEvent = { type: 'command-done', entry: 'caveat' };
   const panel: Session = {
     key: KEY,
     state: 'waiting',
@@ -266,8 +267,11 @@ describe('the end of a command of the agent’s own that the transcript recorded
     pending: [{ kind: 'terminal' }],
   };
 
-  it('ends a launch prompt that was such a command: `idle`', () => {
-    expect(sessionAfterOne(starting, done)).toEqual({ key: KEY, state: 'idle', since: NOW });
+  it.each([
+    ['its result', done],
+    ['its caveat', caveat],
+  ])('ends a launch prompt that was such a command, told by %s: `idle`', (_, event) => {
+    expect(sessionAfterOne(starting, event)).toEqual({ key: KEY, state: 'idle', since: NOW });
   });
 
   it('ends a launch prompt whose panel waits in the terminal: a choice on it ends the command', () => {
@@ -286,16 +290,64 @@ describe('the end of a command of the agent’s own that the transcript recorded
     expect(sessionAfterOne(session, done)).toBe(session);
   });
 
-  it('ends a compaction begun while idle, whatever ended it: back to that idle session', () => {
-    const course = afterEvents({ session: idleWithTasks }, [{ type: 'compaction-began' }, done]);
-
-    expect(course).toEqual({ session: idleWithTasks });
-  });
-
   it('changes nothing of a compaction inside a turn', () => {
-    expect(afterEvents({ session: busy }, [{ type: 'compaction-began' }, done])).toEqual({
+    expect(afterEvents({ session: busy }, [{ type: 'compaction-began' }, caveat])).toEqual({
       session: busy,
     });
+  });
+});
+
+describe('a compaction begun while idle, ended by the transcript alone', () => {
+  const BEGAN = NOW;
+  const EARLIER = '2026-11-26T10:04:59.650Z';
+  const LATER = '2026-11-26T10:05:01.000Z';
+
+  /** The course once a compaction began while idle, at {@link BEGAN}. */
+  function compacting(): SessionCourse {
+    return courseAfter({ session: idleWithTasks }, { type: 'compaction-began' }, true, BEGAN);
+  }
+
+  /** The course after an event told later than the compaction began. */
+  function told(course: SessionCourse, event: DriverEvent): SessionCourse {
+    return courseAfter(course, event, true, LATER);
+  }
+
+  it('is interrupted by a caveat recorded after it began: back to the idle session it left', () => {
+    expect(told(compacting(), { type: 'command-done', entry: 'caveat', at: LATER })).toEqual({
+      session: idleWithTasks,
+    });
+  });
+
+  it('is interrupted by a caveat recorded in the very millisecond it began', () => {
+    expect(told(compacting(), { type: 'command-done', entry: 'caveat', at: BEGAN })).toEqual({
+      session: idleWithTasks,
+    });
+  });
+
+  it('is interrupted by a caveat that says not when it was recorded', () => {
+    expect(told(compacting(), { type: 'command-done', entry: 'caveat' })).toEqual({
+      session: idleWithTasks,
+    });
+  });
+
+  it('goes on past a caveat recorded before it began: an earlier command’s, written late', () => {
+    const course = compacting();
+
+    expect(told(course, { type: 'command-done', entry: 'caveat', at: EARLIER })).toBe(course);
+  });
+
+  it.each([
+    ['before it began', EARLIER],
+    ['after it began', LATER],
+    ['at no time it says', undefined],
+  ])('goes on past a command’s result recorded %s: only the caveat ends it', (_, at) => {
+    const course = compacting();
+    const result: DriverEvent =
+      at === undefined
+        ? { type: 'command-done', entry: 'result' }
+        : { type: 'command-done', entry: 'result', at };
+
+    expect(told(course, result)).toBe(course);
   });
 });
 

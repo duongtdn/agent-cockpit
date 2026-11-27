@@ -115,22 +115,45 @@ function transcript(name: string): Buffer {
 }
 
 describe('the end of a command of the agent’s own, in a transcript', () => {
-  const done = { type: 'command-done' };
-
   it.each([
     // The command's output; `/context` writes no caveat.
-    ['launch-context', [done]],
+    ['launch-context', ['result']],
     // The caveat, then the output.
-    ['launch-clear', [done, done]],
-    ['launch-compact', [done, done]],
+    ['launch-clear', ['caveat', 'result']],
+    ['launch-compact', ['caveat', 'result']],
     // The unknown command's own entry.
-    ['launch-nosuchcommand', [done]],
-    ['compact-completes', [done, done]],
-    ['compact-fails', [done, done]],
+    ['launch-nosuchcommand', ['result']],
+    ['compact-completes', ['caveat', 'result']],
+    ['compact-fails', ['caveat', 'result']],
     // The caveat alone: no command name, no output.
-    ['compact-interrupted', [done]],
-  ])('is read in %s', (name, events) => {
-    expect(eventsIn(transcript(name)).events).toEqual(events);
+    ['compact-interrupted', ['caveat']],
+  ])('is read in %s, each entry told as the caveat or the result', (name, entries) => {
+    const { events } = eventsIn(transcript(name));
+
+    expect(events.map((event) => event.type)).toEqual(entries.map(() => 'command-done'));
+    expect(events.map((event) => event.type === 'command-done' && event.entry)).toEqual(entries);
+  });
+
+  it('tells when the agent recorded each entry, as the entry says', () => {
+    const { events } = eventsIn(transcript('compact-interrupted'));
+
+    expect(events).toEqual([
+      { type: 'command-done', entry: 'caveat', at: '2026-11-27T03:48:38.003Z' },
+    ]);
+  });
+
+  it('tells no time for an entry that says none, or none it can read', () => {
+    const caveat = (timestamp: unknown) => ({
+      type: 'user',
+      timestamp,
+      message: { role: 'user', content: '<local-command-caveat>Run here.</local-command-caveat>' },
+    });
+    const written = [caveat(undefined), caveat('not a time')].map((entry) => JSON.stringify(entry));
+
+    expect(eventsIn(Buffer.from(`${written.join('\n')}\n`)).events).toEqual([
+      { type: 'command-done', entry: 'caveat' },
+      { type: 'command-done', entry: 'caveat' },
+    ]);
   });
 
   it.each([

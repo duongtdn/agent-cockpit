@@ -21,16 +21,19 @@ const INTERRUPTION_MARKERS: ReadonlySet<unknown> = new Set([
 ]);
 
 /**
- * How Claude Code begins an entry it writes once a local command (one run
- * with no turn and no hook: `/clear`, `/context`, `/compact`) has run: its
- * output, its error, or the caveat written with them. An interrupted
- * `/compact` writes the caveat alone.
+ * How Claude Code begins the entries it writes once a local command (one
+ * run with no turn and no hook: `/clear`, `/context`, `/compact`) has run:
+ * the caveat that opens its record (an interrupted `/compact` writes it
+ * alone), then its output or its error.
  */
-const COMMAND_END_TAGS: readonly string[] = [
-  '<local-command-stdout>',
-  '<local-command-stderr>',
-  '<local-command-caveat>',
+const COMMAND_END_TAGS: readonly { readonly tag: string; readonly entry: CommandEntry }[] = [
+  { tag: '<local-command-caveat>', entry: 'caveat' },
+  { tag: '<local-command-stdout>', entry: 'result' },
+  { tag: '<local-command-stderr>', entry: 'result' },
 ];
+
+/** Which of a local command's entries an entry is. */
+type CommandEntry = Extract<DriverEvent, { type: 'command-done' }>['entry'];
 
 /** How Claude Code begins the entry it writes for a command it does not know. */
 const UNKNOWN_COMMAND = 'Unknown command: ';
@@ -48,22 +51,33 @@ export interface TranscriptWatch {
   stop(): void;
 }
 
+/** A conversation's transcript to follow, and whether the conversation is known to be new. */
+export interface FollowedTranscript extends TranscriptLookup {
+  /**
+   * Whether the conversation is known to be new: its transcript, all of it
+   * the session's, is read from its start, however early the agent wrote
+   * it (a `/clear` writes the command's end within a poll of its hook).
+   */
+  readonly isNew: boolean;
+}
+
 /**
  * Follows a conversation's transcript and reports what is written into it
- * from now on that no hook tells: each interruption, with when the agent
- * recorded it, and each end of a local command. What the transcript
- * held before is not reported, so that a resumed conversation's earlier
- * entries are not told again. The transcript may not exist yet: a new
- * conversation writes it with its first prompt, and it is looked for as
- * {@link transcriptSearch} does until found. A transcript that shrank was
- * written anew, and is read again from its start.
+ * that no hook tells: each interruption and each entry of a local
+ * command's end, with when the agent recorded it. A conversation known to
+ * be new is read from its start; another's earlier entries are not
+ * reported, so that a resumed conversation's past is not told again. The
+ * transcript may not exist yet: a new conversation writes it with its first
+ * entry, and it is looked for as {@link transcriptSearch} does until found.
+ * A transcript that shrank was written anew, and is read again from its
+ * start.
  *
- * @param transcript - The conversation, and where to look for it.
+ * @param transcript - The conversation, where to look for it, and whether it is new.
  * @param report - Receives the events of each round that found any.
  * @returns The watch.
  */
 export function followTranscript(
-  transcript: TranscriptLookup,
+  transcript: FollowedTranscript,
   report: (events: readonly DriverEvent[]) => void,
 ): TranscriptWatch {
   let stopped = false;
@@ -75,6 +89,7 @@ export function followTranscript(
   const find = transcriptSearch(transcript);
 
   async function begin(): Promise<void> {
+    if (transcript.isNew) return;
     path = await find();
     if (path !== undefined) offset = (await stat(path)).size;
   }
@@ -148,18 +163,19 @@ export function eventsIn(unread: Buffer): { events: DriverEvent[]; rest: Buffer 
 }
 
 function eventsOfEntry(entry: unknown): DriverEvent[] {
-  if (isInterruption(entry)) return [interruption(entry)];
-  if (isCommandEnd(entry)) return [{ type: 'command-done' }];
+  if (isInterruption(entry)) return [{ type: 'interrupted', ...recordedAt(entry) }];
+  const commandEntry = commandEntryOf(entry);
+  if (commandEntry !== undefined) {
+    return [{ type: 'command-done', entry: commandEntry, ...recordedAt(entry) }];
+  }
   return [];
 }
 
-/** The interruption an entry marks, with when the agent recorded it when the entry says. */
-function interruption(entry: unknown): DriverEvent {
+/** When the agent recorded an entry, when the entry says: an `at` to spread into its event. */
+function recordedAt(entry: unknown): { at?: string } {
   const { timestamp } = entry as { readonly timestamp?: unknown };
   const at = typeof timestamp === 'string' ? Date.parse(timestamp) : Number.NaN;
-  return Number.isNaN(at)
-    ? { type: 'interrupted' }
-    : { type: 'interrupted', at: new Date(at).toISOString() };
+  return Number.isNaN(at) ? {} : { at: new Date(at).toISOString() };
 }
 
 function parsed(line: string): unknown {
@@ -190,28 +206,32 @@ export function isInterruption(entry: unknown): boolean {
 }
 
 /**
- * Tells an entry Claude Code writes once a local command has run: a `user`
- * or `system` entry of its own (a person's prompt carries `promptSource`)
- * whose text begins with the output's, the error's or the caveat's tag, or
- * the entry of an unknown command.
+ * Tells which of the entries Claude Code writes once a local command has
+ * run this one is: a `user` or `system` entry of its own (a person's
+ * prompt carries `promptSource`) whose text begins with the caveat's, the
+ * output's or the error's tag, or the entry of an unknown command (its
+ * result).
  *
  * @param entry - An entry of a transcript, parsed.
- * @returns `true` when it records a local command's end.
+ * @returns Which, or `undefined` for an entry that records no local command's end.
  */
-function isCommandEnd(entry: unknown): boolean {
-  if (!isRecord(entry) || entry.promptSource !== undefined) return false;
+function commandEntryOf(entry: unknown): CommandEntry | undefined {
+  if (!isRecord(entry) || entry.promptSource !== undefined) return undefined;
   if (entry.type === 'system' && typeof entry.content === 'string') {
     const { content } = entry;
-    if (entry.subtype === 'informational') return content.startsWith(UNKNOWN_COMMAND);
-    return entry.subtype === 'local_command' && beginsWithCommandEndTag(content);
+    if (entry.subtype === 'informational') {
+      return content.startsWith(UNKNOWN_COMMAND) ? 'result' : undefined;
+    }
+    return entry.subtype === 'local_command' ? commandEntryTagged(content) : undefined;
   }
-  if (entry.type !== 'user' || !isRecord(entry.message)) return false;
+  if (entry.type !== 'user' || !isRecord(entry.message)) return undefined;
   const { content } = entry.message;
-  return typeof content === 'string' && beginsWithCommandEndTag(content);
+  return typeof content === 'string' ? commandEntryTagged(content) : undefined;
 }
 
-function beginsWithCommandEndTag(text: string): boolean {
-  return COMMAND_END_TAGS.some((tag) => text.startsWith(tag));
+/** Which command entry a text's opening tag makes it; `undefined` when it opens with none. */
+function commandEntryTagged(text: string): CommandEntry | undefined {
+  return COMMAND_END_TAGS.find(({ tag }) => text.startsWith(tag))?.entry;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

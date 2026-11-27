@@ -193,7 +193,7 @@ describe('the Claude Code driver, with the fake agent in tmux', () => {
       'Touch a.txt, then think',
     );
     const told: DriverEvent[] = [];
-    const stop = driver.follow(launch, (events) => told.push(...events));
+    const stop = driver.follow({ ...launch, isNew: true }, (events) => told.push(...events));
     try {
       await eventually(() => expect(listener.events).toHaveLength(5));
 

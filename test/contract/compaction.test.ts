@@ -9,6 +9,7 @@ import {
   sessionAfter,
   startContractCockpit,
 } from './cockpit-harness.ts';
+import { inputBoxText } from './harness.ts';
 
 /** The footer's hint while the agent works, which the driver reads the screen by. */
 const BUSY_HINT = 'esc to interrupt';
@@ -159,6 +160,68 @@ it("124 — Esc while /compact runs fires no PostCompact and no StopFailure; the
   expect(await held.ended).toBe('client-gone');
   expect(hooksSince(cockpit, from).map((hook) => hook.hook_event_name)).toEqual(['PreCompact']);
   expect(entries).toEqual(['<local-command-caveat>']);
+  // The compaction kept the idle session it found, with its idle time.
+  expect(after).toEqual(before);
+});
+
+it("125 — /context, then /compact submitted at once: /context records its output, with no caveat, whenever it lands, and the session stays busy while the compaction runs; the Esc's <local-command-caveat>, recorded after the compaction began, is what returns the session to the idle session it left", async () => {
+  const cockpit = await startContractCockpit();
+  // A turn to compact, then the compaction's first request, held until the Esc.
+  cockpit.api.script(turn('Something to compact.'), heldTurn());
+
+  await cockpit.say('say one line');
+  const before = await cockpit.sessionIn(SAID_KEY, 'idle');
+  const session = cockpit.terminal(SAID_KEY);
+  const entriesBefore = session.transcript().length;
+  const fromContext = cockpit.timeline.length;
+  await session.type('/context');
+  await session.press('Enter');
+  // Taken once the box lets it go: /compact typed now is a command of its own.
+  await eventually(async () =>
+    expect(inputBoxText(await session.screen()) ?? '/context').not.toContain('/context'),
+  );
+  const from = cockpit.timeline.length;
+  await cockpit.submitInTerminal(SAID_KEY, '/compact', 'PreCompact');
+  const held = await cockpit.api.heldRequest();
+  const compacting = await sessionAfter(cockpit, 'busy', from);
+  // The driver has read /context's output, whenever it was written.
+  await eventually(() =>
+    expect(
+      cockpit.timeline
+        .slice(fromContext)
+        .some(
+          (moment) =>
+            'told' in moment &&
+            moment.told.some((event) => event.type === 'command-done' && event.entry === 'result'),
+        ),
+    ).toBe(true),
+  );
+  await eventually(async () => expect(await session.screen()).toContain(BUSY_HINT));
+  const escAt = cockpit.timeline.length;
+  await session.press('Escape');
+  const after = await sessionAfter(cockpit, 'idle', escAt);
+  const caveat = await eventually(() => {
+    const written = session
+      .transcript()
+      .slice(entriesBefore)
+      .filter((entry) => entryText(entry)?.startsWith('<local-command-caveat>'));
+    expect(written).toHaveLength(1);
+    return written[0];
+  });
+  const statesBeforeTheEsc = cockpit.timeline
+    .slice(from, escAt)
+    .flatMap((moment) => ('session' in moment ? [moment.session.state] : []));
+
+  expect(await held.ended).toBe('client-gone');
+  expect(commandEntries(cockpit, entriesBefore)).toEqual([
+    '<command-name>',
+    '<local-command-stdout>',
+    '<local-command-caveat>',
+  ]);
+  expect(statesBeforeTheEsc).toEqual(['busy']);
+  expect(Date.parse(String(caveat?.timestamp))).toBeGreaterThanOrEqual(
+    Date.parse(compacting.since),
+  );
   // The compaction kept the idle session it found, with its idle time.
   expect(after).toEqual(before);
 });
