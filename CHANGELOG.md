@@ -18,7 +18,7 @@ Nothing is published yet.
   (`invalid-options`, any other option refused) and the machine
   (`unsupported-machine`), takes the app's lock (`cockpit-locked`), opens
   the state folder, the app's token and the agent-facing listener. The
-  cockpit runs a job on a key with no session (`run`), lists and follows
+  cockpit runs a job (`run`; the units of work below), lists and follows
   the sessions, gives the page's link with the token in its fragment
   (`link`), serves the browser on the mounted handler (`handle`,
   `upgrade`: running a job, listing and following the sessions, and each
@@ -248,13 +248,24 @@ Nothing is published yet.
   types into `idle`, resumes `ended` with the settings of the key's last
   run, `unknown-key` with no record. `open(key, { fresh? })` resumes
   `ended` with no prompt, `nothing-to-open` on a live session or no
-  record. An open or a send re-checks the last run's job as defined now
-  (`unknown-job` when it is gone) and its recorded arguments. A value not
+  record. An open or a send to an `ended` session re-checks the last run's
+  job as defined now (`unknown-job` when it is gone) with its recorded
+  arguments, its driver part included (`invalid-options`, an open mode
+  refused beyond loopback without `acceptOpenNetwork`). A value not
   among its field's choices is refused `not-a-choice`; a folder outside
   the app's `folder-outside-app`, created when missing, the agent launched
   in its real path; another folder than the one the key's record keeps
-  `folder-changed`; a prompt over 100,000 characters `prompt-too-long`.
-  Calls on one key run one at a time. `jobs()` describes the jobs (their
+  `folder-changed` (but for a start of a new conversation, which records
+  the job's folder anew); a prompt over 100,000 characters
+  `prompt-too-long`. A job with no prompt restarts an `idle` session
+  launched with other settings (`resumed`, `settings-changed`). A session
+  is ended for a fresh start or a restart by SIGTERM (a kill after 5
+  seconds), its turn not interrupted first. A first prompt over 120,000
+  UTF-8 bytes, too long for the agent's command line, is typed once the
+  agent started and drew its input box: the session stays `starting` until
+  the agent takes it; not taken, it is `idle`, the call rejects as a send
+  does, and the unit of work is recorded. Calls on one key run one at a
+  time. `jobs()` describes the jobs (their
   schema as JSON Schema, which fields have choices, whether there is a
   prompt; never a key, prompt, folder or driver part); `options(jobId,
   field, argsSoFar?)` reads a field's choices. The handler serves `POST
@@ -262,13 +273,15 @@ Nothing is published yet.
   `fresh`.
 - Records per key in the state folder (`records/<key>.json`, 0600),
   loaded at `createCockpit`: each listed session carries its `record` (its
-  conversation, the earlier ones, the history of its runs and opens); a
+  conversation, the earlier ones, the history of its runs and opens, a run
+  typed into a live session among them as `sent`; a send is not kept); a
   recorded key with no live session is listed `ended` (`lost` when it was
   recorded before the server started). A record that is not the cockpit's
   own (a link, another user's, torn) is refused `invalid-options`.
 - `createCockpit({ maxSessions })`: a cap on live sessions, off by
   default. At the cap a launch ends the `idle` session idle longest with
-  no background task and no terminal attached (`ended`, `session-cap`),
+  no background task, no terminal attached and no call of its key under
+  way (`ended`, `session-cap`),
   else is refused `session-cap-reached` (`cap`, `live`).
 - A prompt is typed keeping the person's draft: stashed in the input
   box's kill ring, put back after. A send stopped by anything but the
@@ -277,10 +290,15 @@ Nothing is published yet.
   the box still shows and the agent has used no tool (one may ask, its
   dialog drawn over the box a moment later); otherwise nothing more is
   typed (a key could answer the dialog) and the error's message says the draft is in the kill ring
-  and which keys bring it back.
+  and which keys bring it back. A box showing an entry recalled from the
+  prompt history (`History n/m`) is not typed over: the send fails
+  `wrong-state`, nothing typed. Control characters but the tab and the
+  line break are left out of a typed prompt.
 - Every Claude Code session's settings set the input box's editor to the
   standard one (`editorMode: "normal"`): the person's vim mode is off in the
   cockpit's sessions, where the cockpit types prompts.
+- `CockpitClient` gains `send`, `open`, `jobs` and `options`, and `run`'s
+  `fresh`, each made again once when a renewal of the token overlapped it.
 - `TerminalStatus` gains `held`: while the cockpit types a prompt into a
   session, the page's terminals attached to it keep sending what the
   person types, and the server keeps it, then passes it to the session

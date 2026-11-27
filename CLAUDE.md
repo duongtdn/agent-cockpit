@@ -9,8 +9,10 @@ the first. Everything here is US English.
 
 ```
 src/
-  server/       the entry `.`: core, handler and router, sessions, asks,
-                the channel's MCP server, activity, the session host (tmux)
+  server/       the entry `.`: core, handler and router, sessions and
+                the units of work, their records, the jobs' checks,
+                asks, the channel's MCP server, activity, the session
+                host (tmux)
   fastify/      `./fastify`: the Fastify adapter, wiring only
   claude-code/  `./claude-code`: the Claude Code driver
   channel/      `./channel`: the channel declaration; imports neither side
@@ -253,7 +255,9 @@ breaks at its end and of U+2063 at its ends; a tab typed is dropped. A
 permission dialog is drawn 400 ms after its `PermissionRequest` (the keys
 typed meanwhile reach the box) and takes the box's place: text on it does
 nothing, Enter answers Yes. `--resume` of a conversation with no transcript
-(gone, or never prompted) fires `SessionEnd` (`other`) and exits with 1.
+(gone, or never prompted) fires `SessionEnd` (`other`) and exits with 1
+(refused where a start-up dialog would show first); a SIGTERM, as the
+cockpit ends a session, fires `SessionEnd` (`other`) and exits with 143.
 It refuses Enter in shell mode, Down past the box while a background task
 runs (Claude Code moves to the task), Up into a history it did not make
 alone (a resume, another conversation of the project, after a command, a

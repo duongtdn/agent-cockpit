@@ -3,12 +3,13 @@
 The concepts an app meets when it uses `@duongtdn/agent-cockpit`. For the
 exact names and types, read the [API reference](api.md).
 
-**Status:** the first path is built: a cockpit mounted in the app's server,
-a job run on a key with no session, the sessions followed live, a
-session's terminal in the page, access (the app's own API routes,
-opening beyond loopback, and renewing the token), and the Claude Code
-driver: its options, a job's driver part, the sandbox and the agent's
-version. The sections after "Getting started" are
+**Status:** built so far: a cockpit mounted in the app's server, the units
+of work (a job run in every state of its key's session, sending, opening,
+starting over, their records, the cap on live sessions, a launcher form
+from the jobs' descriptions and choices), the sessions followed live, a
+session's terminal in the page, access (the app's own API routes, opening
+beyond loopback, and renewing the token), and the Claude Code driver: its
+options, a job's driver part, the sandbox and the agent's version. The sections after "Getting started" are
 written as the parts they describe are built; until then they only say what
 they will cover. [examples/jobs-console](../examples/jobs-console/DEMO.md) is
 a whole app that does what this guide shows;
@@ -247,13 +248,83 @@ included, as `examples/translate-and-access` does.
 
 ## Jobs
 
-What an app declares: a named piece of work for the agent. Built so far: a
-job's `id`, `title` and `description`; its arguments, a zod 4 schema every
-run is checked against (`invalid-arguments`); its `key`, which names the
-unit of work from the arguments (`[a-z0-9-]+`); and its `prompt`, built from
-the arguments, or none for a job the person types into; and its driver
-part. The agent runs in the app's folder. Option sources and a job's own
-folder come later, and are refused until then.
+What an app declares: a named piece of work for the agent. A job has an
+`id`, a `title` and a `description`; its arguments, a zod 4 object schema
+every run is checked against (`invalid-arguments`), each field's `label`
+and `hint` given as its metadata (`.meta({ label, hint })`); its `key`,
+which names the unit of work from the arguments (`[a-z0-9-]+`); its
+`prompt`, built from the arguments, or none for a job the person types
+into; and, each optional:
+
+- `options`: a field's choices from the app's data, by field. A source is
+  a function of the arguments filled so far (sync or async), so one
+  field's choices may depend on another's; it returns `{ value, label? }`
+  choices. A run's value must be one of them (`not-a-choice`), unless the
+  source is given as `{ choices, suggestions: true }`: then they are only
+  suggestions, and any value fits.
+- `directory(args)`: the folder the agent works in, relative to the app's
+  folder and inside it (`folder-outside-app` otherwise, every link
+  followed), made when missing. Without it, the app's folder. A unit of
+  work keeps the folder of its first start: a later run whose job gives
+  another is refused (`folder-changed`), unless it starts a new
+  conversation.
+- `fresh: true`: a run that finds the key's session `ended` starts a new
+  conversation rather than resuming it.
+- `driver`: the job's driver part, below.
+
+```js
+const cockpit = await createCockpit({
+  // …
+  jobs: [
+    {
+      id: 'explain',
+      title: 'Explain a file',
+      args: z.object({
+        folder: z.string().meta({ label: 'Folder' }),
+        file: z.string().meta({ label: 'File', hint: 'One of the folder’s files.' }),
+      }),
+      options: {
+        folder: () => listFolders(), // [{ value: 'src' }, { value: 'notes', label: 'Notes' }]
+        file: ({ folder }) => listFiles(folder), // depends on the folder chosen
+      },
+      key: ({ folder, file }) => `file-${slug(`${folder}/${file}`)}`,
+      prompt: ({ folder, file }) => `Explain the file ${folder}/${file}.`,
+    },
+    {
+      id: 'work',
+      title: 'Work in a folder',
+      args: z.object({ folder: z.string().meta({ label: 'Folder' }) }),
+      options: { folder: { choices: () => listFolders(), suggestions: true } },
+      key: ({ folder }) => `folder-${slug(folder)}`,
+      directory: ({ folder }) => folder, // no prompt: the person types in the terminal
+    },
+  ],
+});
+```
+
+A page draws its launcher from the jobs, never from a copy of their
+schemas: `client.jobs()` gives each job's id, title, description, its
+schema as JSON Schema (the input it takes, each field's `label` and `hint`
+on the field), `options` naming each field with a source (`'choices'` or
+`'suggestions'`) and `hasPrompt`; never its key, prompt, folder, `fresh` or
+driver part, which stay on the server. `client.options(jobId, field,
+argsSoFar)` reads a field's choices, given what the form holds so far (the
+source sees it checked against the schema made partial); a page reads a
+field's choices again when a field it depends on changes.
+
+```js
+const [job] = await client.jobs();
+for (const [name, field] of Object.entries(job.schema.properties)) {
+  addField(name, field.label ?? name, field.hint, job.options[name]); // a select for 'choices', a datalist for 'suggestions'
+}
+const folders = await client.options('explain', 'folder', {});
+const files = await client.options('explain', 'file', { folder: 'src' });
+const result = await client.run('explain', { folder: 'src', file: 'greet.js' });
+```
+
+`createCockpit` checks each job (`invalid-options`): its `args` an object
+schema JSON Schema can describe, each source for one of its fields,
+`directory` a function, `fresh` `true`.
 
 A job's driver part changes, for its own sessions, what the driver's
 options set for every session. For Claude Code, `claudeCode.job(…)` builds
@@ -288,7 +359,24 @@ driver accepts it (`acceptOpenNetwork`).
 ## Units of work
 
 What a job's run works on, named by a key, and how one conversation stays
-with it.
+with it. Runs whose arguments give one key share a unit of work, whichever
+job they are of: drafting a chapter and revising it, explaining a file and
+reviewing it. The agent keeps its context across them.
+
+The cockpit keeps a record per key in its state folder, until the app
+removes it: the conversation a resume takes up, the earlier ones (left by a
+fresh start, a conversation the agent no longer kept, or the agent's own
+move, such as Claude Code's `/clear`), its folder, the settings its session
+was launched with, and the history of its runs and opens — each with its
+job, arguments, time, what it did (`started`, `resumed`, `sent`), why, and
+the conversation it acted in. A send is not in the history. Every listed
+session carries its `record`. A restarted server lists every recorded key,
+`ended` (`lost`) when no session of it lives, ready to be resumed.
+
+`createCockpit({ maxSessions })` caps the live sessions: at the cap a
+launch ends the `idle` session idle longest that has no background task, no
+terminal attached and no call of its key under way (`ended`,
+`session-cap`), else is refused `session-cap-reached`. Off by default.
 
 ## Sessions and their five states
 
@@ -322,15 +410,37 @@ meet again.
 ## Run, send and open
 
 Starting or resuming a session with a job, sending it a prompt, and opening
-it with none. A job's key names a unit of work: its conversation, the
-earlier ones, and the history of its runs and opens, kept in the state
-folder and listed with its session. A run acts by the state of its key's
-session: it starts one, resumes an ended one with the prompt, types the
-prompt into an `idle` one (restarting it, conversation kept, when the run's
-settings differ), and is refused while the session is starting, busy or
-waiting. A send continues a unit of work with a prompt; an open resumes it
-to type in the terminal; `fresh` starts a new conversation. Calls on one
-key run one at a time. A launch resolves once the session leaves
+it with none.
+
+- **Run** (`run(jobId, args, { fresh? })`) acts by the state of its key's
+  session: with no record it starts the agent with the prompt; on `ended`
+  it resumes the conversation with the prompt (or starts a new one for a
+  `fresh` job, or when the agent no longer keeps it, `conversation-gone`:
+  the page tells the person the agent does not remember); on `idle` it
+  types the prompt (`sent`), restarting the session first, conversation
+  kept, when the run's settings differ from those it was launched with
+  (another job of the key, or the job changed: `settings-changed`); while
+  the session is `starting`, `busy` or `waiting` it is refused
+  (`wrong-state`). A job without a prompt has nothing to send to a live
+  session (`nothing-to-send`).
+- **Send** (`send(key, prompt)`) continues a unit of work with a prompt of
+  the app's or the person's: typed into an `idle` session, its settings
+  kept; an `ended` one is resumed with the prompt and the settings of the
+  key's last run. A send never begins a unit of work (`unknown-key`).
+- **Open** (`open(key, { fresh? })`) resumes an `ended` unit of work with
+  no prompt, for the person to type in the terminal: no turn spent. A live
+  session, or a key with no record, has nothing to open
+  (`nothing-to-open`). Mounting a terminal never opens a session.
+- **Fresh** (`{ fresh: true }` on a run or an open) starts over: a new
+  conversation for the key, with the job's prompt or with none. A live
+  session is ended first (the result lists the background tasks it
+  stopped); the earlier conversation stays in the record.
+
+An open or a send to an `ended` session takes the key's last run again —
+its job as the app defines it now, with the recorded arguments — and makes
+every check of a run again: a job gone is `unknown-job`. Calls on one key
+run one at a time, each on the state the one before left; nothing waits
+for a session to become `idle`. A launch resolves once the session leaves
 `starting`: `busy`; `idle` for a job without a prompt, or one the agent
 takes without a turn (a local command such as `/clear`); `waiting` at a
 start-up dialog; `ended` when the agent was gone first. A launch is refused
@@ -339,13 +449,18 @@ the driver was tested on (`agent-too-old`), or cannot be sandboxed as the
 app asked (`sandbox-unavailable`), and ended with `unobservable` when the
 agent neither reports nor shows a dialog in time.
 
-A prompt typed into a session keeps what the person left in its input box:
-the draft is put back after, and the page's terminal holds the person's keys
+A prompt is at most 100,000 characters (`prompt-too-long`). A prompt typed
+into a session keeps what the person left in its input box: the half-typed
+draft is put back after, and the page's terminal holds the person's keys
 meanwhile. Should anything but the box show up while it types (a turn the
-agent began by itself, a dialog), the send stops; the draft is put back
-while the box still shows, else the error says where it is. A page draws a
-launcher from `jobs()` and fills each field with a source from
-`options(…)`. The [API reference](api.md#units-of-work) has the tables.
+agent began by itself, a dialog), the send stops (`wrong-state`); the draft
+is put back while the box still shows, else the error's message says where
+it is and which keys bring it back. A person browsing the prompt history in
+the box (Up recalled a past prompt) is not typed over: the send is refused
+(`wrong-state`), nothing typed. A first prompt too long for the agent's
+command line is typed the same way once the agent has started: the session
+stays `starting` until the agent takes it. The [API
+reference](api.md#units-of-work) has the tables.
 
 ## Interrupt, end and remove
 
@@ -386,10 +501,10 @@ session has ended there is nothing to attach to: the status is `ended`.
 `refused` with its `cause`, `unreachable`); refused by the app's `terminal`
 switch (`terminal-off`), it stays `closed` and stops trying.
 
-While the cockpit types a prompt into a session (a send), every page
-terminal attached to it is `held`: what the person types is kept by the
-server, not typed into the app's prompt, and reaches the session once the
-send is over, however it ended — in the order typed, each key as it was
+While the cockpit types a prompt into a session (a send, a run into an
+`idle` session, a long first prompt), every page terminal attached to it is
+`held`: what the person types is kept by the server, not typed into the
+app's prompt, and reaches the session once the send is over, however it ended — in the order typed, each key as it was
 sent, so that the agent reads typing, not a paste; the status is then
 `open` again. A long prompt takes a while to type (about 25 seconds for
 100,000 characters), so a page shows the status. Resizing still applies.

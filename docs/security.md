@@ -420,7 +420,10 @@ driver, or a job, in `acceptEdits`, `plan`, `auto` or `bypassPermissions`
 (`invalid-options`, its issue on `driver`; its reason says whether the
 mode's network or its writes are open, or both), unless the app accepts it:
 `claudeCode({ permissionMode: 'acceptEdits', acceptOpenNetwork: true })`.
-`default` and `dontAsk` need no acceptance.
+`default` and `dontAsk` need no acceptance. A job's part is checked again
+at each launch, as it is launched — a run, an open, a send to an `ended`
+session, which take the job of the key's last run as the app defines it
+now — and refused the same way (`invalid-options`).
 
 ### The rules an app writes: deny and ask
 
@@ -438,7 +441,9 @@ never as "not in the allow list": the person's own allow rules merge in.
 ## The state folder's trust
 
 The state folder holds the app's token, the sessions' tokens and settings,
-the lock's id and the agent-facing port. It is the cockpit's own, and is
+the units of work's records (each key's conversations, folder, launch
+settings and history of runs and opens, with their arguments), the lock's
+id and the agent-facing port. It is the cockpit's own, and is
 kept private, so that no other user can read the token or plant one they
 know, nor write a session's settings whose hooks would run commands as the
 person.
@@ -449,8 +454,10 @@ person.
   is refused (`invalid-options`). One that is missing is created readable
   by the user alone.
 - Nothing in it is followed: each file the cockpit reads there (the token,
-  the lock's id, the agent-facing port) must be a regular file of the
-  user's, or the start is refused the same way. A token's file others had
+  the lock's id, the agent-facing port, the records and their folder) must
+  be a regular file (a folder) of the user's, or the start is refused the
+  same way; so is a record that is not one the cockpit writes (torn, of
+  another key, of another version). A token's file others had
   rights on is replaced by a new token, since the old one may have been
   read; the other files are narrowed to the user.
 - The folders above the state folder are checked too, as OpenSSH's

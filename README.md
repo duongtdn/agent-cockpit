@@ -9,16 +9,20 @@ wants one, a live terminal mounted in its page. It ships no web UI of its own.
 It works through drivers; Claude Code is the first.
 
 **Status:** a first path works, end to end: an app creates and mounts a
-cockpit, runs a job on a key with no session, follows the sessions live, and
-mounts a session's terminal in its page. Access is built: the cockpit serves
+cockpit, draws a launcher form from its jobs' descriptions and choices,
+runs, sends to, opens and starts over its units of work (each key's
+conversation resumed in every state, its record kept across restarts, the
+person's half-typed draft kept when a prompt is typed), follows the
+sessions live, and mounts a session's terminal in its page. Access is built: the cockpit serves
 the loopback by default, with a token from the app's link, and the app may
 open it beyond the machine with its own `authorize`; every session's
 settings keep the agent from the cockpit's files, the app's port and the
 files the cockpit can name that would start code at its next launch. The Claude Code driver is complete: its options
 (mode, rules, model, plugin, sources of settings, the sandbox), a job's
 own driver part, the agent's version checked before each launch, start-up
-dialogs, failed turns, background tasks and compaction. Most operations
-are still to come (resume, send, asks, the channel, activity).
+dialogs, failed turns, background tasks and compaction. Operations still
+to come: interrupt, end and remove, the idle timeout, asks, the channel,
+activity.
 Nothing is published to npm so far.
 
 This project is not affiliated with or endorsed by Anthropic. "Claude Code"
