@@ -6,13 +6,13 @@ import { type DialogShown, dialogShown } from './start-up-watch.js';
  * How long after its first hook an agent has to draw its input box before
  * a first prompt is typed regardless (and refused, with no box to take
  * it). Claude Code sends `SessionStart` while its screen is still blank
- * and draws the box 34–48 ms later; the slowest start seen on a loaded
- * machine was five times the usual one. Five seconds leaves a hundred
- * times the gap, and is paid only by a start that never draws the box.
- * The wait starts again when a dialog leaves the screen, since a person
- * may answer it at any time.
+ * and draws the box about 0.1 s later; the slowest seen was 2.2 s, three
+ * agents starting at once on two CPUs that other work also loaded. This
+ * leaves about seven times that, and is paid only by a start that never
+ * draws the box. The wait starts again when a dialog leaves the screen,
+ * since a person may answer it at any time.
  */
-export const INPUT_BOX_BOUND_MS = 5_000;
+export const INPUT_BOX_BOUND_MS = 15_000;
 
 /** What an input-box wait works with. */
 export interface InputBoxWaitOptions {

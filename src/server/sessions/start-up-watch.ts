@@ -4,13 +4,17 @@ import { ScreenWatch } from './screen-watch.js';
 
 /**
  * How long a launched agent may show neither a hook, nor a dialog, nor its
- * input box before the cockpit ends it as one it cannot observe: a
- * session whose state no hook tells is never left running. Claude Code draws one or the other within 0.45 s of its
- * launch, and the slowest start seen on a loaded machine took 2.2 s: this
- * leaves more than four times that. The wait starts again when a dialog
- * leaves the screen, since a person may answer it at any time.
+ * input box before the cockpit ends it as one it cannot observe: a session
+ * whose state no hook tells is never left running. Claude Code sends its
+ * first hook within 0.4 s of its launch on an idle machine; the slowest
+ * seen took 5.2 s, three agents starting at once on two CPUs that other
+ * work also loaded, and each agent starting beside it added about 0.7 s.
+ * This leaves about six times the slowest: a bound too short ends a
+ * healthy agent, one too long only keeps a silent one a little longer.
+ * The wait starts again when a dialog leaves the screen, since a person
+ * may answer it at any time.
  */
-export const START_DEADLINE_MS = 10_000;
+export const START_DEADLINE_MS = 30_000;
 
 /**
  * How long after its input box first shows a launched agent has to send

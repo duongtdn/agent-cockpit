@@ -348,7 +348,7 @@ Until its first hook, the cockpit reads the agent's screen (every 250 ms):
   The person who leaves a dialog ("No", or Esc) ends the session
   `declined`, with its `dialog` when the driver knew it; the next launch
   meets the same dialog.
-- With no dialog on screen, the agent has 10 seconds from its launch, or
+- With no dialog on screen, the agent has 30 seconds from its launch, or
   from the moment a dialog left the screen, to send its first hook, and 5
   seconds once its input box shows (an agent whose hooks are all turned off
   shows the box and nothing else). Otherwise the session is ended and the
@@ -480,7 +480,7 @@ its issue at `prompt`, and one over 100,000 characters (code points)
 `prompt-too-long` (`length`, `max`), before anything, by a run and a send
 alike. A launch passes its prompt on the agent's command line; one
 too long for it (for Claude Code, over 120,000 UTF-8 bytes) is typed once
-the agent reported its start and drew its input box (waited for 5
+the agent reported its start and drew its input box (waited for 15
 seconds at most, a start-up dialog's time not counted). The page's
 terminals' keys are held (`held`) from the agent's start (its
 `SessionStart`) until the prompt is typed. A start-up dialog in place of

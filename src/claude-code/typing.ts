@@ -20,8 +20,13 @@ export const WRITE_LENGTH = 200;
 /** The pause between two writes of the prompt, in milliseconds. */
 export const WRITE_GAP_MS = 50;
 
-/** How long an Enter is given to submit before the box is looked at again. */
-const SUBMIT_PATIENCE_MS = 3000;
+/**
+ * How long an Enter is given to submit before the box is looked at again.
+ * The slowest seen from an Enter to its `UserPromptSubmit` was 1.86 s, six
+ * agents starting at once on two loaded CPUs: this leaves about three
+ * times that, so that an Enter the agent takes slowly gets no second one.
+ */
+const SUBMIT_PATIENCE_MS = 6000;
 
 /** How long a prompt that left the box is given for its hook to come. */
 const LATE_SUBMIT_MS = 10_000;

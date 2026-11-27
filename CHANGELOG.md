@@ -216,7 +216,7 @@ Nothing is published yet.
   custom API key, has no `dialog`), `starting` again once the person
   answers it in the terminal, and a session left at one ends `declined`
   with its `dialog`. With no dialog on screen, an agent that sends no hook
-  within 10 seconds of its launch (or of a dialog leaving the screen), or
+  within 30 seconds of its launch (or of a dialog leaving the screen), or
   within 5 seconds of showing its input box (every hook turned off), is
   ended and refused with `unobservable`.
 - A launch prompt the agent takes without a turn (a local command such as
