@@ -112,12 +112,10 @@ export type TellEnd = () => void;
 /** The lifecycle of one session: its phase, moved only as the table allows. */
 export class SessionLifecycle {
   #phase: Phase;
-  #settleEnded: () => void = () => {};
-  readonly #ended = new Promise<void>((resolve) => {
-    this.#settleEnded = resolve;
-  });
+  /** Settles once the session ended and its end was told. */
+  readonly #ended = settledByHand();
   /** Settles once the end the cockpit began did; none while no end is under way. */
-  #endUnderWay: { readonly promise: Promise<void>; settle(): void } | undefined;
+  #endUnderWay: SettledByHand | undefined;
 
   /**
    * @param start - The phase it begins in: `reserved`, for a launch.
@@ -166,7 +164,7 @@ export class SessionLifecycle {
    * one in any other phase has no end under way, and it settles at once.
    */
   get endUnderWay(): Promise<void> {
-    if (this.hasLeftTheHost) return this.#ended;
+    if (this.hasLeftTheHost) return this.#ended.promise;
     return this.#endUnderWay?.promise ?? Promise.resolve();
   }
 
@@ -181,12 +179,12 @@ export class SessionLifecycle {
    */
   go(going: () => Promise<TellEnd>): Promise<void> {
     if (this.can('going')) void this.#go(going);
-    return this.hasLeftTheHost ? this.#ended : Promise.resolve();
+    return this.hasLeftTheHost ? this.#ended.promise : Promise.resolve();
   }
 
   /** Fulfilled once the session ended and its end was told; never, for one that does not end. */
   get ended(): Promise<void> {
-    return this.#ended;
+    return this.#ended.promise;
   }
 
   /** Whether the agent was started on the host and is not known gone. */
@@ -238,12 +236,18 @@ export class SessionLifecycle {
     } finally {
       // A going that failed still ends the session: no caller waits forever.
       if (this.can('ended')) this.move('ended');
-      this.#settleEnded();
+      this.#ended.settle();
     }
   }
 }
 
-function settledByHand(): { readonly promise: Promise<void>; settle(): void } {
+/** A promise settled by hand. */
+interface SettledByHand {
+  readonly promise: Promise<void>;
+  settle(): void;
+}
+
+function settledByHand(): SettledByHand {
   let settle = () => {};
   const promise = new Promise<void>((resolve) => {
     settle = resolve;
