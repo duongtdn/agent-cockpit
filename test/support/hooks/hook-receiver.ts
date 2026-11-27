@@ -7,6 +7,7 @@ import {
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { noteHook } from '../timeline.ts';
+import { recordHookPayload } from './payload-recording.ts';
 
 /** A hook a session sent, as a test's receiver got it. */
 export interface ReceivedHook {
@@ -116,6 +117,7 @@ export async function startHookReceiver(): Promise<HookReceiver> {
   function deliver(hook: ReceivedHook): void {
     received.push(hook);
     noteHook(String(hook.payload.session_id ?? hook.via), hook.payload);
+    recordHookPayload(hook.payload);
     const waiter = waiting.get(hook.event)?.shift();
     if (waiter) waiter(hook);
     else untaken.set(hook.event, [...(untaken.get(hook.event) ?? []), hook]);

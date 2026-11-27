@@ -32,7 +32,11 @@ export default defineConfig({
         test: {
           name: 'contract',
           include: ['test/contract/**/*.test.ts'],
-          globalSetup: ['test/support/tmux-sockets-global.ts'],
+          globalSetup: [
+            'test/support/tmux-sockets-global.ts',
+            // With RECORD_HOOK_PAYLOADS=1, the run records the agent's hook payloads.
+            'test/support/hooks/payload-recording-global.ts',
+          ],
           setupFiles: ['test/support/tmux-sockets-setup.ts', 'test/support/timeline-setup.ts'],
           testTimeout: PATIENCE.contractTest,
           // A test's teardown waits for its processes to exit, under bounds of the same table.

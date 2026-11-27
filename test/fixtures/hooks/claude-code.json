@@ -1,0 +1,737 @@
+{
+  "version": "2.1.332",
+  "payloads": {
+    "MessageDisplay": [
+      {
+        "shape": "plain",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "0f5a43bd-1097-4953-ac82-29f5685c3b01",
+          "hook_event_name": "MessageDisplay",
+          "turn_id": "18c43516-88ea-46fe-8889-2804ed377aee",
+          "message_id": "2b2c51e1-daad-45cf-aae8-72b8437f7d65",
+          "index": 0,
+          "final": true,
+          "delta": "Done."
+        }
+      }
+    ],
+    "PostCompact": [
+      {
+        "shape": "trigger=manual",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c5ccdfbe-be43-47b2-b114-2124741c828f",
+          "hook_event_name": "PostCompact",
+          "trigger": "manual",
+          "compact_summary": "The summary."
+        }
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "shape": "plain",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "0f5a43bd-1097-4953-ac82-29f5685c3b01",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolBatch",
+          "tool_calls": [
+            {
+              "tool_name": "Bash",
+              "tool_input": {
+                "command": "true",
+                "description": "Nothing"
+              },
+              "tool_use_id": "toolu_fake_1_0",
+              "tool_response": "(Bash completed with no output)"
+            }
+          ]
+        }
+      }
+    ],
+    "PostToolUse": [
+      {
+        "shape": "tool_name=Agent",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c18a5e71-c67d-4c53-b053-2c0c0f4ca972",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolUse",
+          "tool_name": "Agent",
+          "tool_input": {
+            "description": "Count files",
+            "prompt": "Count the files.",
+            "subagent_type": "general-purpose"
+          },
+          "tool_response": {
+            "isAsync": true,
+            "status": "async_launched",
+            "agentId": "a537b069a0e78376b",
+            "description": "Count files",
+            "resolvedModel": "claude-opus-5-5",
+            "prompt": "Count the files.",
+            "outputFile": "{{root}}/tmp/claude-1000/-tmp-{{root_name}}-work/{{session_id}}/tasks/a537b069a0e78376b.output",
+            "canReadOutputFile": true,
+            "canContinueAgent": true
+          },
+          "tool_use_id": "toolu_fake_1_0",
+          "duration_ms": 40
+        }
+      },
+      {
+        "shape": "tool_name=Bash",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "0f5a43bd-1097-4953-ac82-29f5685c3b01",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolUse",
+          "tool_name": "Bash",
+          "tool_input": {
+            "command": "true",
+            "description": "Nothing"
+          },
+          "tool_response": {
+            "stdout": "",
+            "stderr": "",
+            "interrupted": false,
+            "isImage": false,
+            "noOutputExpected": false
+          },
+          "tool_use_id": "toolu_fake_1_0",
+          "duration_ms": 27
+        }
+      },
+      {
+        "shape": "tool_name=Bash +agent_id +agent_type",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c18a5e71-c67d-4c53-b053-2c0c0f4ca972",
+          "permission_mode": "default",
+          "agent_id": "a537b069a0e78376b",
+          "agent_type": "general-purpose",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolUse",
+          "tool_name": "Bash",
+          "tool_input": {
+            "command": "touch inner.txt"
+          },
+          "tool_response": {
+            "stdout": "",
+            "stderr": "",
+            "interrupted": false,
+            "isImage": false,
+            "noOutputExpected": true
+          },
+          "tool_use_id": "toolu_fake_2_0",
+          "duration_ms": 193
+        }
+      },
+      {
+        "shape": "tool_name=Edit",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "4e3a1305-679e-4fb9-9b32-7a0bc0ad1eb8",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolUse",
+          "tool_name": "Edit",
+          "tool_input": {
+            "file_path": "{{cwd}}/a.txt",
+            "old_string": "alpha",
+            "new_string": "beta",
+            "replace_all": false
+          },
+          "tool_response": {
+            "filePath": "{{cwd}}/a.txt",
+            "oldString": "alpha",
+            "newString": "beta",
+            "originalFile": "alpha\n",
+            "structuredPatch": [
+              {
+                "oldStart": 1,
+                "oldLines": 1,
+                "newStart": 1,
+                "newLines": 1,
+                "lines": ["-alpha", "+beta"]
+              }
+            ],
+            "userModified": false,
+            "replaceAll": false
+          },
+          "tool_use_id": "toolu_fake_4_0",
+          "duration_ms": 21
+        }
+      },
+      {
+        "shape": "tool_name=Read",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "4e3a1305-679e-4fb9-9b32-7a0bc0ad1eb8",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolUse",
+          "tool_name": "Read",
+          "tool_input": {
+            "file_path": "{{cwd}}/a.txt"
+          },
+          "tool_response": {
+            "type": "text",
+            "file": {
+              "filePath": "{{cwd}}/a.txt",
+              "content": "alpha\n",
+              "numLines": 2,
+              "startLine": 1,
+              "totalLines": 2
+            }
+          },
+          "tool_use_id": "toolu_fake_3_0",
+          "duration_ms": 14
+        }
+      },
+      {
+        "shape": "tool_name=Write",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "4e3a1305-679e-4fb9-9b32-7a0bc0ad1eb8",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolUse",
+          "tool_name": "Write",
+          "tool_input": {
+            "file_path": "{{cwd}}/a.txt",
+            "content": "alpha\n"
+          },
+          "tool_response": {
+            "type": "create",
+            "filePath": "{{cwd}}/a.txt",
+            "content": "alpha\n",
+            "structuredPatch": [],
+            "originalFile": null,
+            "userModified": false
+          },
+          "tool_use_id": "toolu_fake_2_0",
+          "duration_ms": 31
+        }
+      }
+    ],
+    "PreCompact": [
+      {
+        "shape": "trigger=manual",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c5ccdfbe-be43-47b2-b114-2124741c828f",
+          "hook_event_name": "PreCompact",
+          "trigger": "manual",
+          "custom_instructions": null
+        }
+      }
+    ],
+    "PreToolUse": [
+      {
+        "shape": "tool_name=Agent",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c18a5e71-c67d-4c53-b053-2c0c0f4ca972",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PreToolUse",
+          "tool_name": "Agent",
+          "tool_input": {
+            "description": "Count files",
+            "prompt": "Count the files.",
+            "subagent_type": "general-purpose"
+          },
+          "tool_use_id": "toolu_fake_1_0"
+        }
+      },
+      {
+        "shape": "tool_name=Bash",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "0f5a43bd-1097-4953-ac82-29f5685c3b01",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PreToolUse",
+          "tool_name": "Bash",
+          "tool_input": {
+            "command": "true",
+            "description": "Nothing"
+          },
+          "tool_use_id": "toolu_fake_1_0"
+        }
+      },
+      {
+        "shape": "tool_name=Bash +agent_id +agent_type",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c18a5e71-c67d-4c53-b053-2c0c0f4ca972",
+          "permission_mode": "default",
+          "agent_id": "a537b069a0e78376b",
+          "agent_type": "general-purpose",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PreToolUse",
+          "tool_name": "Bash",
+          "tool_input": {
+            "command": "touch inner.txt"
+          },
+          "tool_use_id": "toolu_fake_2_0"
+        }
+      },
+      {
+        "shape": "tool_name=Edit",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "4e3a1305-679e-4fb9-9b32-7a0bc0ad1eb8",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PreToolUse",
+          "tool_name": "Edit",
+          "tool_input": {
+            "file_path": "{{cwd}}/a.txt",
+            "old_string": "alpha",
+            "new_string": "beta",
+            "replace_all": false
+          },
+          "tool_use_id": "toolu_fake_4_0"
+        }
+      },
+      {
+        "shape": "tool_name=Read",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "4e3a1305-679e-4fb9-9b32-7a0bc0ad1eb8",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PreToolUse",
+          "tool_name": "Read",
+          "tool_input": {
+            "file_path": "{{cwd}}/a.txt"
+          },
+          "tool_use_id": "toolu_fake_3_0"
+        }
+      },
+      {
+        "shape": "tool_name=WebFetch",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "3c43eed2-7c0a-4408-bceb-99cebdc0bba7",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PreToolUse",
+          "tool_name": "WebFetch",
+          "tool_input": {
+            "url": "http://127.0.0.1:42651/page",
+            "prompt": "Say what the page holds."
+          },
+          "tool_use_id": "toolu_fake_1_0"
+        }
+      },
+      {
+        "shape": "tool_name=Write",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "4e3a1305-679e-4fb9-9b32-7a0bc0ad1eb8",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PreToolUse",
+          "tool_name": "Write",
+          "tool_input": {
+            "file_path": "{{cwd}}/a.txt",
+            "content": "alpha\n"
+          },
+          "tool_use_id": "toolu_fake_2_0"
+        }
+      }
+    ],
+    "SessionEnd": [
+      {
+        "shape": "reason=clear +prompt_id",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "831fd9cd-1fbb-4c99-b30f-0c2e555c3db7",
+          "hook_event_name": "SessionEnd",
+          "reason": "clear"
+        }
+      },
+      {
+        "shape": "reason=other",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        }
+      },
+      {
+        "shape": "reason=other +prompt_id",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "0f5a43bd-1097-4953-ac82-29f5685c3b01",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        }
+      },
+      {
+        "shape": "reason=prompt_input_exit +prompt_id",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "0af61b1a-110d-4178-9227-760e194c7747",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        }
+      }
+    ],
+    "SessionStart": [
+      {
+        "shape": "source=clear",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "hook_event_name": "SessionStart",
+          "source": "clear"
+        }
+      },
+      {
+        "shape": "source=compact +model +prompt_id",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c5ccdfbe-be43-47b2-b114-2124741c828f",
+          "hook_event_name": "SessionStart",
+          "source": "compact",
+          "model": "claude-opus-5-5"
+        }
+      },
+      {
+        "shape": "source=resume +context_tokens +estimated_cache_write_usd +prompt_cache_likely_expired +seconds_since_last_response",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "hook_event_name": "SessionStart",
+          "source": "resume",
+          "seconds_since_last_response": 1,
+          "context_tokens": 15,
+          "prompt_cache_likely_expired": false,
+          "estimated_cache_write_usd": 0
+        }
+      },
+      {
+        "shape": "source=startup +model",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "hook_event_name": "SessionStart",
+          "source": "startup",
+          "model": "claude-haiku-5-5"
+        }
+      }
+    ],
+    "Stop": [
+      {
+        "shape": "+effort",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "12daef64-b22d-42a9-8002-1e18a18ba155",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "Stop",
+          "stop_hook_active": false,
+          "last_assistant_message": "Done.",
+          "background_tasks": [],
+          "session_crons": []
+        }
+      },
+      {
+        "shape": "background_tasks=shell +effort",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "86d65c96-1b19-4356-a69a-2816818410e5",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "Stop",
+          "stop_hook_active": false,
+          "last_assistant_message": "Waiting in the background.",
+          "background_tasks": [
+            {
+              "id": "b3cr09tp1",
+              "type": "shell",
+              "status": "running",
+              "description": "Wait for the release",
+              "command": "until [ -e released ]; do sleep 0.1; done"
+            }
+          ],
+          "session_crons": []
+        }
+      },
+      {
+        "shape": "background_tasks=subagent +effort",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c18a5e71-c67d-4c53-b053-2c0c0f4ca972",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "Stop",
+          "stop_hook_active": false,
+          "last_assistant_message": "Started.",
+          "background_tasks": [
+            {
+              "id": "a537b069a0e78376b",
+              "type": "subagent",
+              "status": "running",
+              "description": "Count files",
+              "agent_type": "general-purpose"
+            }
+          ],
+          "session_crons": []
+        }
+      },
+      {
+        "shape": "plain",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "dc9348a4-ce16-42f7-a1c4-d1dde53ca7ca",
+          "permission_mode": "default",
+          "hook_event_name": "Stop",
+          "stop_hook_active": false,
+          "last_assistant_message": "Plugged in.",
+          "background_tasks": [],
+          "session_crons": []
+        }
+      }
+    ],
+    "StopFailure": [
+      {
+        "shape": "error=authentication_failed",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "03c476c2-41d9-4201-9132-4c4d297779ff",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "StopFailure",
+          "error": "authentication_failed",
+          "last_assistant_message": "Please run /login · API Error: 403 Scripted permission_error of the fake API"
+        }
+      },
+      {
+        "shape": "error=rate_limit",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "7bb7cafe-4688-4feb-8261-f8a74f5720f8",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "StopFailure",
+          "error": "rate_limit",
+          "last_assistant_message": "API Error: Request rejected (429) · Scripted rate_limit_error of the fake API"
+        }
+      },
+      {
+        "shape": "error=server_error",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "97270e9d-b6bb-4d2f-86ab-5004920df4eb",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "StopFailure",
+          "error": "server_error",
+          "last_assistant_message": "API Error: 529 Scripted overloaded_error of the fake API. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:39283)."
+        }
+      },
+      {
+        "shape": "error=server_error +agent_id",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "7f683289-3491-48c3-9382-04917d98cc8a",
+          "agent_id": "ab20cddf5dfaf9c6b",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "StopFailure",
+          "error": "server_error",
+          "last_assistant_message": "API Error: 500 Scripted api_error of the fake API. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:36673)."
+        }
+      }
+    ],
+    "SubagentStart": [
+      {
+        "shape": "plain",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c18a5e71-c67d-4c53-b053-2c0c0f4ca972",
+          "agent_id": "a537b069a0e78376b",
+          "agent_type": "general-purpose",
+          "hook_event_name": "SubagentStart"
+        }
+      }
+    ],
+    "SubagentStop": [
+      {
+        "shape": "background_tasks=subagent",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c18a5e71-c67d-4c53-b053-2c0c0f4ca972",
+          "permission_mode": "default",
+          "agent_id": "a537b069a0e78376b",
+          "agent_type": "general-purpose",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "SubagentStop",
+          "stop_hook_active": false,
+          "agent_transcript_path": "{{root}}/config/projects/-tmp-{{root_name}}-work/{{session_id}}/subagents/agent-a537b069a0e78376b.jsonl",
+          "last_assistant_message": "Counted.",
+          "background_tasks": [
+            {
+              "id": "a537b069a0e78376b",
+              "type": "subagent",
+              "status": "running",
+              "description": "Count files",
+              "agent_type": "general-purpose"
+            }
+          ],
+          "session_crons": []
+        }
+      },
+      {
+        "shape": "plain",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "c5ccdfbe-be43-47b2-b114-2124741c828f",
+          "permission_mode": "default",
+          "agent_id": "af72ae6e57b7e5e3c",
+          "agent_type": "",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "SubagentStop",
+          "stop_hook_active": false,
+          "agent_transcript_path": "{{root}}/config/projects/-tmp-{{root_name}}-work/{{session_id}}/subagents/agent-af72ae6e57b7e5e3c.jsonl",
+          "last_assistant_message": "The summary.",
+          "background_tasks": [],
+          "session_crons": []
+        }
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "shape": "plain",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "12daef64-b22d-42a9-8002-1e18a18ba155",
+          "permission_mode": "default",
+          "hook_event_name": "UserPromptSubmit",
+          "prompt": "run the command"
+        }
+      }
+    ]
+  }
+}

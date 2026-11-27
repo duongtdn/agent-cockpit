@@ -17,6 +17,7 @@ import type { Session, SessionState } from '../../src/shared/session.ts';
 import { type AgentSession, sessionOf } from '../support/agent-session.ts';
 import { cameTrue, eventually } from '../support/eventually.ts';
 import { type FakeApi, startFakeApi } from '../support/fake-api/index.ts';
+import { recordHookPayload } from '../support/hooks/payload-recording.ts';
 import { startNodeHttpApp } from '../support/node-http-app.ts';
 import { PATIENCE, POLL } from '../support/patience.ts';
 import { agentFoldersOutside, tearDownRun } from '../support/real-agent/run-root.ts';
@@ -474,6 +475,7 @@ function recorded(driver: Driver, record: DriverRecord): Driver {
     readHook(request) {
       record.hooksRead.push(request);
       noteHook(request.key, request.body);
+      recordHookPayload(request.body);
       record.timeline.push({ hook: request.body as HookPayload });
       return driver.readHook(request);
     },
