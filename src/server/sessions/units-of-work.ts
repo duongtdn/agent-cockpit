@@ -606,30 +606,63 @@ class Units implements UnitsOfWork {
     for (;;) {
       const live = this.#sessions.liveKeys().filter((each) => each !== key);
       if (live.length < cap) return;
-      const idlest = await this.#idlest(live);
-      if (idlest === undefined) {
+      if (!(await this.#endIdlest(live))) {
         throw new CockpitError(
           'session-cap-reached',
           `${live.length} sessions live, the most the app allows, and none can be ended to make room.`,
           { cap, live },
         );
       }
-      await this.#sessions.end(idlest, 'session-cap');
     }
   }
 
-  async #idlest(keys: readonly string[]): Promise<string | undefined> {
+  /**
+   * Ends the endable session idle longest, its key's turn taken while it is
+   * checked again and its end begun, without waiting for the turn: the
+   * operation that holds it may be waiting for the admission this runs in.
+   * A key taken meanwhile, or no longer endable, gives way to the next.
+   *
+   * @returns Whether a session was ended.
+   */
+  async #endIdlest(keys: readonly string[]): Promise<boolean> {
+    for (const key of await this.#endableByIdleness(keys)) {
+      const ending = this.#queue.tryRun(key, () => this.#beginEndIfEndable(key));
+      const end = ending === undefined ? undefined : await ending;
+      if (end === undefined) continue;
+      await end.ended;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Begins the cap's end of a session still endable. Its end is handed back
+   * unawaited, so that the key's turn is freed once the end is begun: an
+   * operation on the key then finds it being ended, and is refused.
+   */
+  async #beginEndIfEndable(key: string): Promise<{ ended: Promise<unknown> } | undefined> {
+    if (!(await this.#isEndable(key))) return undefined;
+    return { ended: this.#sessions.end(key, 'session-cap') };
+  }
+
+  /** The keys whose session the cap may end, its operations' keys left out, idle longest first. */
+  async #endableByIdleness(keys: readonly string[]): Promise<string[]> {
     const endable: Session[] = [];
     for (const key of keys) {
+      if (this.#queue.isBusy(key) || !(await this.#isEndable(key))) continue;
       const session = this.#sessions.session(key);
-      if (session?.state !== 'idle' || session.backgroundTasks !== undefined) continue;
-      if (this.#queue.isBusy(key)) continue;
-      // A count the host cannot give is a terminal that may be attached.
-      const attached = await this.#sessions.terminalsAttached(key).catch(() => 1);
-      if (attached === 0) endable.push(session);
+      if (session !== undefined) endable.push(session);
     }
     endable.sort((a, b) => Date.parse(a.since) - Date.parse(b.since));
-    return endable[0]?.key;
+    return endable.map((session) => session.key);
+  }
+
+  /** Whether the cap may end the key's session: `idle`, with no background task and no terminal attached. */
+  async #isEndable(key: string): Promise<boolean> {
+    if (!isIdleWithNoTask(this.#sessions.session(key))) return false;
+    // A count the host cannot give is a terminal that may be attached.
+    const attached = await this.#sessions.terminalsAttached(key).catch(() => 1);
+    return attached === 0 && isIdleWithNoTask(this.#sessions.session(key));
   }
 
   /**
@@ -723,6 +756,10 @@ class Units implements UnitsOfWork {
     const sessions = this.list();
     for (const follower of this.#followers) follower(sessions);
   }
+}
+
+function isIdleWithNoTask(session: Session | undefined): boolean {
+  return session?.state === 'idle' && session.backgroundTasks === undefined;
 }
 
 function closedRefusal(key: string): SessionsClosedError {

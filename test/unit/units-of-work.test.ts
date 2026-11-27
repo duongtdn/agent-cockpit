@@ -1381,6 +1381,25 @@ describe('the cap on live sessions', () => {
     await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
   });
 
+  it('ends no session a send began typing into while room was being made: the send is taken, the start refused `session-cap-reached`', async () => {
+    await open({ maxSessions: 1 });
+    await started('explain', 'a');
+    idle('explain-a');
+    const counted = host.holdNextCount();
+
+    const ran = pending(units.run('explain', { file: 'b' }));
+    await settle();
+    const sent = pending(units.send('explain-a', 'Hello'));
+    await settle();
+    counted.open();
+    await settle();
+    hook(`${PROMPT_PATH}Hello`, 'explain-a');
+
+    await expect(sent).resolves.toEqual({ action: 'sent', state: 'busy' });
+    await expect(ran).rejects.toMatchObject({ code: 'session-cap-reached', live: ['explain-a'] });
+    expect(signals).toEqual([]);
+  });
+
   it('makes room for a resume, an open and a send that start a session', async () => {
     await open({ maxSessions: 1 });
     await started('explain', 'a');

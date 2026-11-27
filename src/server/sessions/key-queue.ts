@@ -41,21 +41,46 @@ export class KeyQueue {
    */
   run<T>(key: string, operation: (freeTurn: FreeTurn) => Promise<T>): Promise<T> {
     const before = this.#last.get(key) ?? Promise.resolve();
-    let endTurn = () => {};
-    const turn = new Promise<void>((resolve) => {
-      endTurn = resolve;
-    });
-    const freeTurn: FreeTurn = () => {
-      endTurn();
-      if (this.#last.get(key) === turn) this.#last.delete(key);
-    };
-    this.#last.set(key, turn);
+    const freeTurn = this.#takeTurn(key);
     const result = settlesBeforeAbort(before, this.#closing).then((came) => {
       if (!came || this.#closing.aborted) throw this.#refusal(key);
       return operation(freeTurn);
     });
     result.then(freeTurn, freeTurn);
     return result;
+  }
+
+  /**
+   * Runs an operation on a key only if no operation runs or waits on it
+   * now, taking its turn at once: what must never wait for a key, since
+   * the operation that holds it may be waiting for its caller.
+   *
+   * @param key - The key.
+   * @param operation - The operation.
+   * @returns What the operation gives; `undefined` when the key was busy,
+   * and nothing ran; once the queue is closed, its refusal.
+   */
+  tryRun<T>(key: string, operation: () => Promise<T>): Promise<T> | undefined {
+    if (this.isBusy(key)) return undefined;
+    if (this.#closing.aborted) return Promise.reject(this.#refusal(key));
+    const freeTurn = this.#takeTurn(key);
+    // Begun at once, and a throw before its first await still frees the turn.
+    const result = new Promise<T>((resolve) => resolve(operation()));
+    result.then(freeTurn, freeTurn);
+    return result;
+  }
+
+  /** Makes the key's next turn the caller's, from now: the function returned frees it. */
+  #takeTurn(key: string): FreeTurn {
+    let endTurn = () => {};
+    const turn = new Promise<void>((resolve) => {
+      endTurn = resolve;
+    });
+    this.#last.set(key, turn);
+    return () => {
+      endTurn();
+      if (this.#last.get(key) === turn) this.#last.delete(key);
+    };
   }
 
   /**

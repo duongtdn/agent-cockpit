@@ -90,4 +90,51 @@ describe('the queue of the operations on a key', () => {
     expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
     expect(queue.isBusy('k')).toBe(false);
   });
+
+  it('runs an operation it is asked to try only when the key is free, taking the key at once', async () => {
+    const queue = queueClosedBy(new AbortController());
+    const order: string[] = [];
+    const first = deferred();
+
+    const tried = queue.tryRun('k', async () => {
+      order.push('tried began');
+      await first.promise;
+      order.push('tried ended');
+    });
+    expect(order).toEqual(['tried began']);
+    expect(queue.isBusy('k')).toBe(true);
+    const next = queue.run('k', async () => void order.push('next'));
+    expect(queue.tryRun('k', async () => void order.push('second try'))).toBeUndefined();
+
+    first.resolve();
+    await Promise.all([tried, next]);
+    expect(order).toEqual(['tried began', 'tried ended', 'next']);
+    expect(queue.isBusy('k')).toBe(false);
+  });
+
+  it('frees the key an operation it tried took, whatever its outcome', async () => {
+    const queue = queueClosedBy(new AbortController());
+
+    await expect(
+      queue.tryRun('k', async () => {
+        throw new Error('failed');
+      }),
+    ).rejects.toThrow('failed');
+
+    expect(queue.isBusy('k')).toBe(false);
+  });
+
+  it('refuses to try an operation once closed: it never runs', async () => {
+    const controller = new AbortController();
+    const queue = queueClosedBy(controller);
+    controller.abort();
+    let ran = false;
+
+    await expect(
+      queue.tryRun('k', async () => {
+        ran = true;
+      }),
+    ).rejects.toEqual(new Refused('k'));
+    expect(ran).toBe(false);
+  });
 });
