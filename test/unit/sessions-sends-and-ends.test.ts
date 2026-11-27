@@ -96,6 +96,29 @@ function sending(prompt = 'Explain the tests.'): Promise<Session> {
   return sent;
 }
 
+/** A promise whose outcome the test can look at before it awaits it. */
+function settledLater<T>(promise: Promise<T> | undefined): {
+  promise: Promise<T>;
+  readonly outcome: 'fulfilled' | 'rejected' | undefined;
+} {
+  if (promise === undefined) throw new Error('No promise to follow.');
+  let outcome: 'fulfilled' | 'rejected' | undefined;
+  promise.then(
+    () => {
+      outcome = 'fulfilled';
+    },
+    () => {
+      outcome = 'rejected';
+    },
+  );
+  return {
+    promise,
+    get outcome() {
+      return outcome;
+    },
+  };
+}
+
 /** The writes into the key's session, without its name. */
 function writes(): string[] {
   return host.writes.map((write) => write.slice(KEY.length + 1));
@@ -440,29 +463,27 @@ describe('a first prompt too long for the command line', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('keeps the session `waiting` while a dialog shows in place of the box, the launch pending, then types once the box shows, `starting` again', async () => {
+  it('settles the launch `waiting` while a dialog shows in place of the box, then types once the box shows, `starting` again: the first prompt settles once the agent took it', async () => {
     const launched = sessions.launch({
       key: KEY,
       directory: DIRECTORY,
       conversationId: CONVERSATION,
       prompt: 'A long prompt.',
     });
-    let settled: Session | undefined;
-    void launched.then((session) => {
-      settled = session;
-    });
     await settle();
     hook('/ready');
     host.show(KEY, stubScreen('dialog'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
 
-    await vi.advanceTimersByTimeAsync(3 * INPUT_BOX_BOUND_MS);
-    expect(writes()).toEqual([]);
-    expect(sessions.session(KEY)).toMatchObject({
+    await expect(launched).resolves.toMatchObject({
       state: 'waiting',
       pending: [{ kind: 'terminal' }],
     });
-    expect(settled).toBeUndefined();
+    const firstPrompt = settledLater(sessions.firstPrompt(KEY));
+    await vi.advanceTimersByTimeAsync(3 * INPUT_BOX_BOUND_MS);
+    expect(writes()).toEqual([]);
+    expect(sessions.session(KEY)?.state).toBe('waiting');
+    expect(firstPrompt.outcome).toBeUndefined();
 
     host.show(KEY, stubScreen('ready'));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
@@ -470,53 +491,114 @@ describe('a first prompt too long for the command line', () => {
     expect(sessions.session(KEY)?.state).toBe('starting');
     hook(`${PROMPT_PATH}A long prompt.`);
 
-    await expect(launched).resolves.toMatchObject({ state: 'busy' });
+    await expect(firstPrompt.promise).resolves.toMatchObject({ state: 'busy' });
   });
 
-  it('is typed once the person answered a start-up dialog, the launch pending until the agent took it', async () => {
+  it('is typed once the person answered a start-up dialog: the launch settles `waiting`, the first prompt once the agent took it', async () => {
     const launched = sessions.launch({
       key: KEY,
       directory: DIRECTORY,
       conversationId: CONVERSATION,
       prompt: 'A long prompt.',
     });
-    let settled: Session | undefined;
-    void launched.then((session) => {
-      settled = session;
-    });
     await settle();
     host.show(KEY, stubScreen('trust-folder'));
     await vi.advanceTimersByTimeAsync(300);
-    expect(sessions.session(KEY)?.state).toBe('waiting');
-    expect(settled).toBeUndefined();
+    await expect(launched).resolves.toMatchObject({
+      state: 'waiting',
+      pending: [{ kind: 'terminal', dialog: 'trust-folder' }],
+    });
+    const firstPrompt = settledLater(sessions.firstPrompt(KEY));
+    expect(firstPrompt.outcome).toBeUndefined();
 
     host.show(KEY, stubScreen('ready'));
     hook('/ready');
     await settle();
     hook(`${PROMPT_PATH}A long prompt.`);
 
-    await expect(launched).resolves.toMatchObject({ state: 'busy' });
+    await expect(firstPrompt.promise).resolves.toMatchObject({ state: 'busy' });
     expect(writes()).toContain('text:A long prompt.');
   });
 
-  it('fails the launch when the prompt typed after a start-up dialog was not taken: `prompt-not-taken`, the session `idle`', async () => {
+  it('fails the first prompt typed after a start-up dialog when it was not taken: `prompt-not-taken`, the session `idle`', async () => {
     const launched = sessions.launch({
       key: KEY,
       directory: DIRECTORY,
       conversationId: CONVERSATION,
       prompt: 'A long prompt.',
     });
-    launched.catch(() => {});
     await settle();
     host.show(KEY, stubScreen('trust-folder'));
     await vi.advanceTimersByTimeAsync(300);
+    await expect(launched).resolves.toMatchObject({ state: 'waiting' });
+    const firstPrompt = settledLater(sessions.firstPrompt(KEY));
 
     host.show(KEY, stubScreen('ready'));
     hook('/ready');
     await vi.advanceTimersByTimeAsync(TYPING_PATIENCE_MS);
 
-    await expect(launched).rejects.toMatchObject({ code: 'prompt-not-taken', state: 'idle' });
+    await expect(firstPrompt.promise).rejects.toMatchObject({
+      code: 'prompt-not-taken',
+      state: 'idle',
+    });
     expect(sessions.session(KEY)?.state).toBe('idle');
+  });
+
+  it('settles the first prompt `ended` when the session ends while a start-up dialog waits, nothing typed', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    await settle();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(300);
+    await launched;
+
+    const ended = sessions.end(KEY, 'restarted');
+    await settle();
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+    await ended;
+
+    await expect(sessions.firstPrompt(KEY)).resolves.toMatchObject({
+      state: 'ended',
+      reason: 'restarted',
+    });
+    expect(writes()).toEqual([]);
+  });
+
+  it('rejects the first prompt still to be typed once the core is closed', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    await settle();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(300);
+    await launched;
+
+    sessions.close();
+
+    await expect(sessions.firstPrompt(KEY)).rejects.toThrow(SessionsClosedError);
+  });
+
+  it('has no first prompt to tell of when the prompt went on the command line', async () => {
+    driver.promptFitsLaunch = () => true;
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A short prompt.',
+    });
+    await settle();
+    hook('/start-and-take');
+    await launched;
+
+    expect(sessions.firstPrompt(KEY)).toBeUndefined();
   });
 
   it("holds the page's terminals' keys from the agent's start, through the wait for the box and the typing", async () => {
@@ -540,7 +622,7 @@ describe('a first prompt too long for the command line', () => {
   });
 
   it("lets the page's terminals' keys through while a dialog in place of the box waits for the person, held again once the box shows", async () => {
-    const launched = sessions.launch({
+    void sessions.launch({
       key: KEY,
       directory: DIRECTORY,
       conversationId: CONVERSATION,
@@ -557,7 +639,7 @@ describe('a first prompt too long for the command line', () => {
     expect(pageTerminal).toEqual(['held', 'released', 'held']);
     hook(`${PROMPT_PATH}A long prompt.`);
 
-    await expect(launched).resolves.toMatchObject({ state: 'busy' });
+    await expect(sessions.firstPrompt(KEY)).resolves.toMatchObject({ state: 'busy' });
     expect(pageTerminal).toEqual(['held', 'released', 'held', 'released']);
   });
 

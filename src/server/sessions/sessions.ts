@@ -199,8 +199,9 @@ export interface Sessions {
    * `idle` (no prompt, or one the agent took without a turn), `waiting` (a
    * dialog in the terminal, which a person must answer), or `ended` (the
    * agent was gone before it reported: `declined` when it left a dialog).
-   * A first prompt typed after the start settles the launch only once the
-   * agent took it, a dialog shown meanwhile included: `busy`, or `ended`.
+   * A first prompt typed after the start settles the launch once the agent
+   * took it (`busy`), or at `waiting` when a dialog showed first, never
+   * waiting for a person: {@link firstPrompt} then tells what became of it.
    * @throws `TypeError` for a key that is no session key.
    * @throws `CockpitError` `wrong-state` when the key has a live session;
    * `unobservable` when the agent reported nothing and showed no dialog by
@@ -234,6 +235,20 @@ export interface Sessions {
    * the person's draft put back. What the host fails with.
    */
   send(key: string, prompt: string): Promise<Session>;
+  /**
+   * What became of the first prompt of a key's session typed after the
+   * start, whose launch may have settled `waiting` before it was typed.
+   *
+   * @param key - The session's key.
+   * @returns A promise that settles once the agent took it (`busy`), or the
+   * session ended first (`ended`), or that rejects as the launch would
+   * have; `undefined` when the key's session has no prompt typed after
+   * the start.
+   * @throws (the promise) `CockpitError` `prompt-not-taken`, `wrong-state`
+   * as {@link launch} lists; `SessionsClosedError` once the core is closed
+   * before it settled.
+   */
+  firstPrompt(key: string): Promise<Session> | undefined;
   /**
    * Ends a live session gracefully: its agent is sent the driver's signal
    * and given the driver's bound to exit, keeping its conversation, then
@@ -421,11 +436,13 @@ interface Entry {
   promptToType?: string;
   /**
    * Whether the launch waits for its first prompt to be typed: it settles
-   * once the agent took it, or the typing failed, or the session ended —
-   * not at `waiting`, after which the typing may still fail.
+   * once the agent took it, or the typing failed, or the session ended, or
+   * at `waiting`, after which {@link firstPrompt} tells the rest.
    */
   awaitsTypedPrompt: boolean;
   readonly departure: Departure;
+  /** What became of a first prompt typed after the start: settled once taken, failed, or the session ended. */
+  readonly firstPrompt?: Departure;
   /** Settled once the session ended, or the core closed: what a graceful end waits for. */
   readonly ending: Settled;
   /** The terminal a prompt is being typed through, which hears the session's hooks. */
@@ -545,6 +562,10 @@ class SessionRegistry implements Sessions {
     return stopped;
   }
 
+  firstPrompt(key: string): Promise<Session> | undefined {
+    return this.#entries.get(key)?.firstPrompt?.promise;
+  }
+
   session(key: string): Session | undefined {
     const entry = this.#entries.get(key);
     if (entry?.phase !== 'reserved') return entry?.session;
@@ -638,15 +659,15 @@ class SessionRegistry implements Sessions {
       entry.awaitsTypedPrompt = false;
     }
     if (failure === undefined) {
-      entry.departure.resolve(entry.session);
+      settleFirstPrompt(entry, entry.session);
       return;
     }
     if (!takesInput(entry) || entry.session.state !== 'starting') {
-      entry.departure.reject(failure(entry.session));
+      failFirstPrompt(entry, failure(entry.session));
       return;
     }
     const idle: Session = { key: entry.key, state: 'idle', since: now() };
-    entry.departure.reject(failure(idle));
+    failFirstPrompt(entry, failure(idle));
     this.#update(entry, idle);
   }
 
@@ -833,7 +854,7 @@ class SessionRegistry implements Sessions {
       stopReadingTheScreen(entry);
       this.#stopWatchingTheCompaction(entry);
       stopFollowingEveryConversation(entry);
-      entry.departure.reject(new SessionsClosedError(entry.key));
+      failFirstPrompt(entry, new SessionsClosedError(entry.key));
     }
   }
 
@@ -853,6 +874,7 @@ class SessionRegistry implements Sessions {
       ...(typed ? { promptToType: prompt } : {}),
       awaitsTypedPrompt: typed,
       departure: departure(),
+      ...(typed ? { firstPrompt: departure() } : {}),
       ending: settled(),
       session: { key, state: 'starting', since: now() },
       phase: 'reserved',
@@ -1121,6 +1143,7 @@ class SessionRegistry implements Sessions {
     if (session === entry.session) return;
     entry.session = session;
     if (leftTheStart(entry, session)) entry.departure.resolve(session);
+    if (entry.awaitsTypedPrompt && session.state === 'ended') settleFirstPrompt(entry, session);
     this.#notify();
   }
 
@@ -1147,12 +1170,24 @@ function endOf(entry: Entry): Pick<EndedSession, 'reason' | 'dialog'> {
 
 /**
  * Whether the launch settles on the session as it is now: once it left
- * `starting`, or, for a first prompt typed after the start, only once it
- * ended — the typing settles it otherwise.
+ * `starting`, or, for a first prompt typed after the start, once it waits
+ * for a person or ended — the typing settles it otherwise.
  */
 function leftTheStart(entry: Entry, session: Session): boolean {
-  if (entry.awaitsTypedPrompt) return session.state === 'ended';
+  if (entry.awaitsTypedPrompt) return session.state === 'waiting' || session.state === 'ended';
   return session.state !== 'starting';
+}
+
+/** Settles a first prompt typed after the start, and its launch if it had not settled. */
+function settleFirstPrompt(entry: Entry, session: Session): void {
+  entry.firstPrompt?.resolve(session);
+  entry.departure.resolve(session);
+}
+
+/** Fails a first prompt typed after the start, and its launch if it had not settled. */
+function failFirstPrompt(entry: Entry, error: unknown): void {
+  entry.firstPrompt?.reject(error);
+  entry.departure.reject(error);
 }
 
 /** A hold of the page's terminals' keys of a session, let go and taken again. */

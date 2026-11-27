@@ -12,7 +12,7 @@ import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/uni
 import type { UnitRecord } from '../../src/server/state/records.ts';
 import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
 import { CockpitError } from '../../src/shared/cockpit-error.ts';
-import type { Session } from '../../src/shared/session.ts';
+import type { RunResult, Session } from '../../src/shared/session.ts';
 import {
   CONVERSATION_PATH,
   createFakeHost,
@@ -350,6 +350,113 @@ describe('a run on a key with no record', () => {
 
     await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
     expect(recordOf()?.history).toMatchObject([{ action: 'started' }]);
+  });
+
+  /** Runs the `long` job, typed after the start, to a start-up dialog: the run parked. */
+  async function parkedBehindADialog(): Promise<{ ran: Promise<RunResult> }> {
+    driver.promptFitsLaunch = () => false;
+    longPrompt = 'A long prompt.';
+    const ran = pending(units.run('long', { file: 'a' }));
+    await settle();
+    host.show(KEY, stubScreen('trust-folder'));
+    await vi.advanceTimersByTimeAsync(300);
+    return { ran };
+  }
+
+  it('records the session of a run parked behind a start-up dialog at once, its run once the agent took the prompt', async () => {
+    const { ran } = await parkedBehindADialog();
+
+    expect(recordOf()).toMatchObject({
+      conversationId: driver.launches[0]?.conversationId,
+      history: [],
+    });
+    host.show(KEY, stubScreen('ready'));
+    hook('/ready');
+    await settle();
+    hook(`${PROMPT_PATH}A long prompt.`);
+
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+    expect(recordOf()?.history).toMatchObject([
+      { operation: 'run', jobId: 'long', action: 'started' },
+    ]);
+  });
+
+  it('frees the key while its run is parked behind a start-up dialog: a run, a send refused `wrong-state` with the dialog, an open has nothing to open', async () => {
+    const { ran } = await parkedBehindADialog();
+    const pendingDialog = [{ kind: 'terminal', dialog: 'trust-folder' }];
+
+    await expect(units.run('explain', { file: 'a' })).rejects.toMatchObject({
+      code: 'wrong-state',
+      state: 'waiting',
+      pending: pendingDialog,
+    });
+    await expect(units.send(KEY, 'Go on.')).rejects.toMatchObject({
+      code: 'wrong-state',
+      state: 'waiting',
+      pending: pendingDialog,
+    });
+    await expect(units.open(KEY)).resolves.toEqual({ action: 'nothing-to-open', state: 'waiting' });
+    await expect(units.run('type', { file: 'a' })).resolves.toEqual({
+      action: 'nothing-to-send',
+      state: 'waiting',
+    });
+    expect(driver.launches).toHaveLength(1);
+
+    host.show(KEY, stubScreen('ready'));
+    hook('/ready');
+    await settle();
+    hook(`${PROMPT_PATH}A long prompt.`);
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+  });
+
+  it('ends the session of a parked run on a `fresh` run: the parked run settles `ended`, its history before the fresh one', async () => {
+    const { ran } = await parkedBehindADialog();
+    const parked = driver.launches[0]?.conversationId;
+    vi.setSystemTime(T0.getTime() + 60_000);
+    driver.promptFitsLaunch = () => true;
+    host.show(KEY, stubScreen('ready'));
+
+    const fresh = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+    await settle();
+    await listHost();
+    hook('/start-and-take');
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'ended' });
+    await expect(fresh).resolves.toEqual({
+      action: 'started',
+      reason: 'fresh-on-request',
+      state: 'busy',
+    });
+    await settle();
+
+    const renewed = driver.launches[1]?.conversationId;
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+    expect(recordOf()).toMatchObject({
+      conversationId: renewed,
+      earlierConversations: [parked],
+      history: [
+        { jobId: 'long', action: 'started', conversationId: parked },
+        {
+          jobId: 'explain',
+          action: 'started',
+          reason: 'fresh-on-request',
+          conversationId: renewed,
+        },
+      ],
+    });
+  });
+
+  it('fails a parked run whose prompt was not taken once the dialog was answered: its session recorded, not the run', async () => {
+    const { ran } = await parkedBehindADialog();
+
+    host.show(KEY, stubScreen('ready'));
+    hook('/ready');
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(ran).rejects.toMatchObject({ code: 'prompt-not-taken', state: 'idle' });
+    expect(recordOf()).toMatchObject({
+      conversationId: driver.launches[0]?.conversationId,
+      history: [],
+    });
   });
 });
 

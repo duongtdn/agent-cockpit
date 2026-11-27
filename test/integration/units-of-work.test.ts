@@ -87,10 +87,19 @@ const pick = {
   prompt: ({ file }: { file: string }) => `Read ${file}`,
 };
 
+/** A job whose prompt is the text given: one over the command line's bound is typed after the start. */
+const ask = {
+  id: 'ask',
+  title: 'Ask anything',
+  args: z.object({ name: z.string().min(1), text: z.string().min(1) }),
+  key: ({ name }: { name: string }) => `ask-${slug(name)}`,
+  prompt: ({ text }: { text: string }) => text,
+};
+
 /** A prompt typed into an `idle` session: the state is the turn's, which may have ended already. */
 const SENT = { action: 'sent', state: expect.stringMatching(/^(busy|idle)$/) };
 
-const JOBS = [explain, review, explainAfresh, work, pick] as unknown as readonly Job[];
+const JOBS = [explain, review, explainAfresh, work, pick, ask] as unknown as readonly Job[];
 
 let root: string;
 let shims: string;
@@ -296,7 +305,8 @@ describe('a run, by the state of its unit of work', () => {
     });
   });
 
-  it('refuses a `waiting` session: wrong-state, with what it waits for', async () => {
+  /** Makes the agent's configuration trust no folder of the app's: its start shows the trust dialog. */
+  function trustNoFolder(): void {
     const untrusting = join(root, `config-untrusting-${made + 1}`);
     mkdirSync(untrusting);
     writeFileSync(
@@ -305,6 +315,35 @@ describe('a run, by the state of its unit of work', () => {
     );
     vi.stubEnv('CLAUDE_CONFIG_DIR', untrusting);
     vi.stubEnv('ANTHROPIC_API_KEY', FAKE_API_KEY);
+  }
+
+  it('frees the key of a run whose long first prompt waits behind a start-up dialog: the calls that follow act on `waiting`, a fresh run ends it', async () => {
+    trustNoFolder();
+    const { cockpit } = await newCockpit();
+    const parked = cockpit.run('ask', { name: 'a', text: 'ệ'.repeat(50_000) });
+    parked.catch(() => {});
+    await inState(cockpit, 'ask-a', 'waiting');
+
+    expect(await refusalOf(cockpit.send('ask-a', 'Go on.'))).toMatchObject({
+      code: 'wrong-state',
+      state: 'waiting',
+      pending: [{ kind: 'terminal', dialog: 'trust-folder' }],
+    });
+    expect(await cockpit.open('ask-a')).toEqual({ action: 'nothing-to-open', state: 'waiting' });
+    expect(await cockpit.run('ask', { name: 'a', text: 'Short.' }, { fresh: true })).toEqual({
+      action: 'started',
+      reason: 'fresh-on-request',
+      state: 'waiting',
+    });
+    await expect(parked).resolves.toEqual({ action: 'started', state: 'ended' });
+    expect(sessionOf(cockpit, 'ask-a')?.record?.history).toMatchObject([
+      { jobId: 'ask', action: 'started' },
+      { jobId: 'ask', action: 'started', reason: 'fresh-on-request' },
+    ]);
+  });
+
+  it('refuses a `waiting` session: wrong-state, with what it waits for', async () => {
+    trustNoFolder();
     const { cockpit, directory } = await newCockpit();
     writeScript(directory, [[{ do: 'reply', text: 'Explained.' }]]);
     expect(await cockpit.run('explain', { file: 'a' })).toMatchObject({ state: 'waiting' });

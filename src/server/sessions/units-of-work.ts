@@ -29,7 +29,7 @@ import { checkRecordedFolder, type JobFolder } from '../job-folders.js';
 import { refuseUnfitPrompt } from '../prompt-length.js';
 import type { RecordStore, UnitRecord } from '../state/records.js';
 import type { JobRun, JobRuns } from './job-runs.js';
-import { KeyQueue } from './key-queue.js';
+import { type FreeTurn, KeyQueue } from './key-queue.js';
 import { type Sessions, SessionsClosedError, wrongState } from './sessions.js';
 
 /** What the units of work work with. */
@@ -207,6 +207,11 @@ interface Plan {
   readonly endFirst?: EndReason;
   /** What the key's history keeps of the operation; none for a send. */
   readonly history?: Operation;
+  /**
+   * Frees the key's turn: a launch whose first prompt waits behind a
+   * start-up dialog leaves the key to the calls that follow.
+   */
+  readonly freeTurn: FreeTurn;
 }
 
 /** A run or an open, as the key's history keeps it before it is known what it did. */
@@ -263,19 +268,21 @@ class Units implements UnitsOfWork {
     // Read at once, so that the run takes its place among its key's operations as it is asked.
     const reading = this.#jobs.read(jobId, args);
     if (reading.prompt !== undefined) refuseUnfitPrompt(reading.prompt);
-    return this.#queue.run(reading.key, async () =>
-      this.#run(await reading.checked(), options.fresh === true, at),
+    return this.#queue.run(reading.key, async (freeTurn) =>
+      this.#run(await reading.checked(), options.fresh === true, at, freeTurn),
     );
   }
 
   async send(key: string, prompt: string): Promise<SendResult> {
     refuseUnfitPrompt(prompt);
-    return this.#queue.run(key, () => this.#send(key, prompt));
+    return this.#queue.run(key, (freeTurn) => this.#send(key, prompt, freeTurn));
   }
 
   async open(key: string, options: OpenOptions = {}): Promise<OpenResult> {
     const at = now();
-    return this.#queue.run(key, () => this.#open(key, options.fresh === true, at));
+    return this.#queue.run(key, (freeTurn) =>
+      this.#open(key, options.fresh === true, at, freeTurn),
+    );
   }
 
   list(): Session[] {
@@ -300,7 +307,7 @@ class Units implements UnitsOfWork {
     this.#followers.clear();
   }
 
-  async #run(run: JobRun, fresh: boolean, at: string): Promise<RunResult> {
+  async #run(run: JobRun, fresh: boolean, at: string, freeTurn: FreeTurn): Promise<RunResult> {
     const { key } = run;
     const record = this.#records.get(key);
     const session = this.#liveSession(key);
@@ -313,6 +320,7 @@ class Units implements UnitsOfWork {
         take,
         ...(endFirst === undefined ? {} : { endFirst }),
         history,
+        freeTurn,
       });
     if (fresh && session?.state === 'starting') throw wrongState(session);
     if (fresh || record === undefined) {
@@ -340,7 +348,7 @@ class Units implements UnitsOfWork {
     return { action: 'sent', state: typed.state };
   }
 
-  async #send(key: string, prompt: string): Promise<SendResult> {
+  async #send(key: string, prompt: string, freeTurn: FreeTurn): Promise<SendResult> {
     const record = this.#records.get(key);
     if (record === undefined) {
       throw new CockpitError('unknown-key', `No unit of work has the key ${JSON.stringify(key)}.`, {
@@ -355,13 +363,19 @@ class Units implements UnitsOfWork {
     }
     const run = await this.#lastRun(record);
     checkRecordedFolder(record.directory, run.folder);
-    const { take, state } = await this.#launch({ key, run, prompt, take: { kind: 'resume' } });
+    const { take, state } = await this.#launch({
+      key,
+      run,
+      prompt,
+      take: { kind: 'resume' },
+      freeTurn,
+    });
     return take.kind === 'resume'
       ? { action: 'resumed', state }
       : { action: 'started', reason: 'conversation-gone', state };
   }
 
-  async #open(key: string, fresh: boolean, at: string): Promise<OpenResult> {
+  async #open(key: string, fresh: boolean, at: string, freeTurn: FreeTurn): Promise<OpenResult> {
     const record = this.#records.get(key);
     if (record === undefined) return { action: 'nothing-to-open' };
     const session = this.#liveSession(key);
@@ -376,6 +390,7 @@ class Units implements UnitsOfWork {
       take: fresh ? { kind: 'new', reason: 'fresh-on-request' } : { kind: 'resume' },
       ...(session === undefined ? {} : { endFirst: 'restarted' }),
       history: { operation: 'open', jobId: run.jobId, args: run.args, at },
+      freeTurn,
     });
     const { take, state } = launched;
     if (take.kind === 'resume') return { action: 'resumed', state };
@@ -405,7 +420,8 @@ class Units implements UnitsOfWork {
    * Launches a unit of work's session as the plan says, then records it. A
    * resumed conversation the agent turns out not to keep — it exits at
    * once, with nothing kept — is started anew, `conversation-gone`: one
-   * launch for the record.
+   * launch for the record. A launch whose first prompt waits behind a
+   * start-up dialog is parked.
    */
   async #launch(plan: Plan): Promise<Launched> {
     const folder = await this.#jobs.makeFolder(plan.run.folder);
@@ -420,8 +436,50 @@ class Units implements UnitsOfWork {
       admitted = { ...(await this.#admit(anew, folder)), stoppedTasks };
       session = await this.#launched(anew, folder, admitted);
     }
+    const firstPrompt =
+      session.state === 'waiting' ? this.#sessions.firstPrompt(plan.key) : undefined;
+    if (firstPrompt !== undefined) return this.#parked(plan, folder, admitted, firstPrompt);
     await this.#record(plan, folder, admitted);
     return { take: admitted.take, state: session.state, stoppedTasks: admitted.stoppedTasks };
+  }
+
+  /**
+   * Waits, with the key's turn freed, for a first prompt typed after the
+   * start whose launch waits behind a start-up dialog: the session is
+   * recorded at once, as the other calls on the key act on it meanwhile,
+   * and the operation once the agent took the prompt or the session ended
+   * — not when the typing fails. Nothing answers the dialog but a person,
+   * so the operation settles only then.
+   */
+  async #parked(
+    plan: Plan,
+    folder: JobFolder,
+    admitted: Admitted,
+    firstPrompt: Promise<Session>,
+  ): Promise<Launched> {
+    await this.#record(withoutOperation(plan), folder, admitted);
+    plan.freeTurn();
+    const session = await firstPrompt;
+    const { history } = plan;
+    if (history !== undefined) {
+      const entry = historyEntryOf(history, admitted.take, admitted.conversationId);
+      await this.#queue.run(plan.key, () => this.#recordOperation(plan.key, entry));
+    }
+    return { take: admitted.take, state: session.state, stoppedTasks: admitted.stoppedTasks };
+  }
+
+  /**
+   * Records an operation that settled after its key's turn was freed, in
+   * the key's history in the order the operations were asked.
+   */
+  async #recordOperation(key: string, entry: HistoryEntry): Promise<void> {
+    const record = this.#records.get(key);
+    if (record === undefined) return;
+    const history = [...record.history];
+    const later = history.findIndex((each) => each.at > entry.at);
+    history.splice(later === -1 ? history.length : later, 0, entry);
+    await this.#records.put({ ...record, history });
+    this.#notify();
   }
 
   /**
@@ -544,14 +602,7 @@ class Units implements UnitsOfWork {
     // The agent moved to another conversation (a `/clear`) before the launch settled.
     if (current !== conversationId) earlier.push(conversationId);
     const history = [...(before?.history ?? [])];
-    if (plan.history !== undefined) {
-      history.push({
-        ...plan.history,
-        action: take.kind === 'new' ? 'started' : 'resumed',
-        ...(take.reason === undefined ? {} : { reason: take.reason }),
-        conversationId: current,
-      });
-    }
+    if (plan.history !== undefined) history.push(historyEntryOf(plan.history, take, current));
     await this.#records.put({
       key: plan.key,
       conversationId: current,
@@ -629,6 +680,16 @@ class Units implements UnitsOfWork {
 
 function closedRefusal(key: string): SessionsClosedError {
   return new SessionsClosedError(key);
+}
+
+/** What the key's history keeps of an operation that launched its session. */
+function historyEntryOf(operation: Operation, take: Take, conversationId: string): HistoryEntry {
+  return {
+    ...operation,
+    action: take.kind === 'new' ? 'started' : 'resumed',
+    ...(take.reason === undefined ? {} : { reason: take.reason }),
+    conversationId,
+  };
 }
 
 /** A plan whose operation the key's history does not keep. */
