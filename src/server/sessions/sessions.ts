@@ -40,6 +40,7 @@ import type {
 import { SessionHostError } from '../session-host/session-host-error.js';
 import type { TerminalHold } from '../terminal-hold.js';
 import { settlesBeforeAbort } from './abort-race.js';
+import { Followers } from './followers.js';
 import { InputBoxWait } from './input-box-wait.js';
 import { LaunchPromptWatch } from './launch-prompt-watch.js';
 import { LivenessWatch } from './liveness-watch.js';
@@ -328,7 +329,8 @@ export interface Sessions {
   list(): Session[];
   /**
    * Follows the sessions: the listener gets the list now, then the whole
-   * list again at every change.
+   * list again at every change. A listener that throws stops neither the
+   * others nor the change: what it threw goes to `console.error`.
    *
    * @param listener - Called with the list.
    * @returns A function that stops the following.
@@ -451,7 +453,7 @@ interface Entry {
 class SessionRegistry implements Sessions {
   readonly #options: SessionsOptions;
   readonly #entries = new Map<string, Entry>();
-  readonly #followers = new Set<(sessions: readonly Session[]) => void>();
+  readonly #followers = new Followers();
   readonly #conversationListeners = new Set<ConversationListener>();
   readonly #watch: LivenessWatch;
   /** Aborted by the close: what every operation under way checks before it goes on. */
@@ -787,11 +789,7 @@ class SessionRegistry implements Sessions {
   }
 
   follow(listener: (sessions: readonly Session[]) => void): () => void {
-    // A wrapper of its own, so that one listener given twice is two followers.
-    const follower = (sessions: readonly Session[]) => listener(sessions);
-    this.#followers.add(follower);
-    follower(this.list());
-    return () => void this.#followers.delete(follower);
+    return this.#followers.add(listener, this.list());
   }
 
   close(): void {
@@ -1113,8 +1111,7 @@ class SessionRegistry implements Sessions {
   }
 
   #notify(): void {
-    const sessions = this.list();
-    for (const follower of this.#followers) follower(sessions);
+    this.#followers.tell(() => this.list());
   }
 }
 

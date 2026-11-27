@@ -1138,6 +1138,25 @@ describe("a session's states, from the driver's events", () => {
     expect(sessionOf()?.state).toBe('busy');
   });
 
+  it('tells every follower each change though one throws, the change made: what it threw goes to the console', async () => {
+    const thrown = new Error('A follower failed.');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const seen: string[] = [];
+    sessions.follow((list) => {
+      if (list.length > 0) throw thrown;
+    });
+    sessions.follow((list) => seen.push(list.map((session) => session.state).join()));
+
+    const launching = launch({ key: KEY, directory: DIRECTORY, prompt: 'Explain README.md' });
+    await settle();
+    hook('/start-and-take');
+
+    await expect(launching).resolves.toMatchObject({ state: 'busy' });
+    expect(seen).toEqual(['', 'starting', 'busy']);
+    expect(errors).toHaveBeenCalledWith(thrown);
+    errors.mockRestore();
+  });
+
   it('changes once for one hook that tells several events: its followers see the end', async () => {
     await busy();
     const seen: Session[][] = [];

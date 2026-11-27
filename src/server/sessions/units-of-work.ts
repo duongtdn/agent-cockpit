@@ -28,6 +28,7 @@ import type { Driver, DriverSettings } from '../driver.js';
 import { checkRecordedFolder, type JobFolder } from '../job-folders.js';
 import { refuseUnfitPrompt } from '../prompt-length.js';
 import type { RecordStore, UnitRecord } from '../state/records.js';
+import { Followers } from './followers.js';
 import type { JobRun, JobRuns } from './job-runs.js';
 import { type FreeTurn, KeyQueue } from './key-queue.js';
 import { type Sessions, SessionsClosedError, wrongState } from './sessions.js';
@@ -139,7 +140,9 @@ export interface UnitsOfWork {
   list(): Session[];
   /**
    * Follows the units of work: the listener gets the list now, then again
-   * at every change of a session or a record.
+   * at every change of a session or a record. A listener that throws stops
+   * neither the others nor the change: what it threw goes to
+   * `console.error`.
    *
    * @param listener - Called with the list.
    * @returns A function that stops the following.
@@ -258,7 +261,7 @@ class Units implements UnitsOfWork {
   readonly #closing = new AbortController();
   readonly #queue = new KeyQueue(this.#closing.signal, closedRefusal);
   readonly #admissions = new KeyQueue(this.#closing.signal, closedRefusal);
-  readonly #followers = new Set<(sessions: readonly Session[]) => void>();
+  readonly #followers = new Followers();
   readonly #stops: (() => void)[];
   /** The record writes under way, each settled whatever its outcome: what the close waits for. */
   readonly #writes = new Set<Promise<void>>();
@@ -310,10 +313,7 @@ class Units implements UnitsOfWork {
   }
 
   follow(listener: (sessions: readonly Session[]) => void): () => void {
-    const follower = (sessions: readonly Session[]) => listener(sessions);
-    this.#followers.add(follower);
-    follower(this.list());
-    return () => void this.#followers.delete(follower);
+    return this.#followers.add(listener, this.list());
   }
 
   close(): Promise<void> {
@@ -752,9 +752,7 @@ class Units implements UnitsOfWork {
   }
 
   #notify(): void {
-    if (this.#followers.size === 0) return;
-    const sessions = this.list();
-    for (const follower of this.#followers) follower(sessions);
+    this.#followers.tell(() => this.list());
   }
 }
 

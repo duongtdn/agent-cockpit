@@ -187,7 +187,8 @@ export interface Cockpit {
     list(): readonly Session[];
     /**
      * Follows the sessions: the handler gets the list now, then at every
-     * change.
+     * change. A handler that throws stops neither the others nor the
+     * change: what it threw goes to `console.error`.
      *
      * @returns A function that stops following.
      */

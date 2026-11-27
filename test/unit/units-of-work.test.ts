@@ -1530,6 +1530,23 @@ describe('the records of the units of work', () => {
     expect(seen.at(-1)).toBe(driver.launches[0]?.conversationId);
   });
 
+  it('tells every follower each change though one throws, the run done: what it threw goes to the console', async () => {
+    await open();
+    const thrown = new Error('A follower failed.');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    units.follow((list) => {
+      if (list.length > 0) throw thrown;
+    });
+    const seen: (string | undefined)[] = [];
+    units.follow((list) => seen.push(list[0]?.state));
+
+    await started();
+
+    expect(seen.at(-1)).toBe('busy');
+    expect(errors).toHaveBeenCalledWith(thrown);
+    errors.mockRestore();
+  });
+
   it('lists the keys in the order they were first recorded, a session not recorded yet last', async () => {
     await open({ records: [RECORDED] });
     await started('explain', 'a');

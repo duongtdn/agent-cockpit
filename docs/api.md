@@ -553,8 +553,9 @@ its state carries and its `record` (`conversationId`,
 their keys were first recorded; a recorded key with no live session is
 `ended` (`lost` when it was recorded before the server started);
 `cockpit.sessions.follow(handler)` gives that list at once, then at every
-change, and returns a function that stops. A session that ends is seen
-within a second. The client's `sessions.follow` gives the same list.
+change, and returns a function that stops; a handler that throws stops
+neither the other handlers nor the change, and what it threw goes to
+`console.error`. A session that ends is seen within a second. The client's `sessions.follow` gives the same list.
 
 ## Events
 

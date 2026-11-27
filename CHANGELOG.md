@@ -19,7 +19,8 @@ Nothing is published yet.
   (`unsupported-machine`), takes the app's lock (`cockpit-locked`), opens
   the state folder, the app's token and the agent-facing listener. The
   cockpit runs a job (`run`; the units of work below), lists and follows
-  the sessions, gives the page's link with the token in its fragment
+  the sessions (a follower that throws stops neither the others nor the
+  change: what it threw goes to `console.error`), gives the page's link with the token in its fragment
   (`link`), serves the browser on the mounted handler (`handle`,
   `upgrade`: running a job, listing and following the sessions, and each
   session's terminal over a WebSocket), and `close()`s, the sessions going
