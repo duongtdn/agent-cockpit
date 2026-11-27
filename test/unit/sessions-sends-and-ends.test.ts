@@ -643,20 +643,16 @@ describe('ending a live session gracefully', () => {
     expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'restarted' });
   });
 
-  it('refuses a send from the moment it is asked, and hears nothing more of the agent, until it is gone', async () => {
+  it('refuses a send from the moment it is asked until the session is gone, the agent heard as it goes', async () => {
     await idleSession();
-    const moves: string[] = [];
-    sessions.onConversation((_key, conversationId) => void moves.push(conversationId));
 
     const ended = sessions.end(KEY, 'session-cap');
-    await expect(sending()).rejects.toMatchObject({ code: 'wrong-state', key: KEY });
+    await expect(sending()).rejects.toMatchObject({ code: 'wrong-state', key: KEY, state: 'idle' });
     await settle();
-    hook(`${CONVERSATION_PATH}c-cleared`);
     hook('/prompt-taken');
+    expect(sessions.session(KEY)?.state).toBe('busy');
+    await expect(sending()).rejects.toMatchObject({ code: 'wrong-state', key: KEY });
 
-    expect(moves).toEqual([]);
-    expect(sessions.conversationOf(KEY)).toBe(CONVERSATION);
-    expect(sessions.session(KEY)?.state).toBe('idle');
     host.exit(KEY);
     await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
     await ended;

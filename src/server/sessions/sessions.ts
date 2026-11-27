@@ -239,7 +239,7 @@ export interface Sessions {
    * and given the driver's bound to exit, keeping its conversation, then
    * killed on the host. The session is `ended` for the reason given. From
    * the moment it is asked until the session is gone, a send to it is
-   * refused and its agent is not heard: its state stays as it was.
+   * refused.
    *
    * @param key - The session's key.
    * @param reason - Why the cockpit ends it.
@@ -269,7 +269,7 @@ export interface Sessions {
   conversationOf(key: string): string | undefined;
   /**
    * Tells each move of a session's agent to another conversation (Claude
-   * Code's `/clear`), while the cockpit hears it: not once it is being ended.
+   * Code's `/clear`).
    *
    * @param listener - Called with the key, the new conversation's id and
    * the id of the one the agent left.
@@ -364,7 +364,7 @@ type Phase =
   | 'live'
   /**
    * It lives on the host, and the cockpit asked its agent to end: its hooks
-   * are not heard, and nothing is typed into it.
+   * are heard as it goes, but nothing is typed into it.
    */
   | 'ending'
   /** It lives on the host, and the cockpit is killing it: its hooks are not heard. */
@@ -516,7 +516,7 @@ class SessionRegistry implements Sessions {
       });
     }
     if (entry.phase === 'ending') throw wrongState(entry.session, 'The cockpit is ending it.');
-    if (!isListened(entry) || entry.session.state !== 'idle') throw wrongState(entry.session);
+    if (!takesInput(entry) || entry.session.state !== 'idle') throw wrongState(entry.session);
     const outcome = await this.#type(entry, prompt);
     if (outcome !== 'taken') throw typingFailure(outcome, entry.session);
     return entry.session;
@@ -598,7 +598,7 @@ class SessionRegistry implements Sessions {
       key: entry.key,
       host: this.#options.host,
       readInputBox: (text) => this.#options.driver.readInputBox(text),
-      session: () => (isListened(entry) && !this.#closed ? entry.session : undefined),
+      session: () => (takesInput(entry) && !this.#closed ? entry.session : undefined),
     });
     entry.typing = terminal;
     const release = this.#options.holds.hold(entry.key);
@@ -630,7 +630,7 @@ class SessionRegistry implements Sessions {
     try {
       const shown = await this.#inputBoxShown(entry, keys);
       // Ended or closed meanwhile: the end, or the close, settles the launch.
-      if (!isListened(entry) || this.#closed) return;
+      if (!takesInput(entry) || this.#closed) return;
       const outcome = await this.#typedFirstPrompt(entry, prompt, shown);
       if (outcome !== 'taken') failure = outcome;
     } catch (error) {
@@ -643,7 +643,7 @@ class SessionRegistry implements Sessions {
       entry.departure.resolve(entry.session);
       return;
     }
-    if (!isListened(entry) || entry.session.state !== 'starting') {
+    if (!takesInput(entry) || entry.session.state !== 'starting') {
       entry.departure.reject(failure(entry.session));
       return;
     }
@@ -693,7 +693,7 @@ class SessionRegistry implements Sessions {
     entry.inputBoxWait = wait;
     const shown = await wait.start();
     delete entry.inputBoxWait;
-    if (!shown || !isListened(entry)) return shown;
+    if (!shown || !takesInput(entry)) return shown;
     keys.hold();
     if (entry.session.state === 'waiting') {
       this.#update(entry, { key: entry.key, state: 'starting', since: now() });
@@ -1215,9 +1215,14 @@ function isOnHost(entry: Entry): boolean {
   return entry.phase === 'live' || entry.phase === 'ending' || entry.phase === 'killing';
 }
 
-/** Whether what a session's agent tells is listened to: from its launch until the cockpit ends it. */
+/** Whether what a session's agent tells is listened to: from its launch until the cockpit kills it, or it is gone. */
 function isListened(entry: Entry | undefined): entry is Entry {
-  return entry?.phase === 'launching' || entry?.phase === 'live';
+  return entry?.phase === 'launching' || entry?.phase === 'live' || entry?.phase === 'ending';
+}
+
+/** Whether a prompt may be typed into the session: from its launch until the cockpit asks it to end. */
+function takesInput(entry: Entry): boolean {
+  return entry.phase === 'launching' || entry.phase === 'live';
 }
 
 function courseOf(entry: Entry): SessionCourse {
