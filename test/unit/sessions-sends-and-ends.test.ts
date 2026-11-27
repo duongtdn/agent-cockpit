@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TypingStoppedError, type TypingTerminal } from '../../src/server/driver.ts';
 import {
   createSessions,
+  INPUT_BOX_BOUND_MS,
   LIVENESS_INTERVAL_MS,
   PROMPT_BOUND_MS,
+  SCREEN_INTERVAL_MS,
   type Sessions,
 } from '../../src/server/sessions/sessions.ts';
 import { createTerminalHolds, type TerminalHolds } from '../../src/server/terminal-hold.ts';
@@ -342,6 +344,98 @@ describe('a first prompt too long for the command line', () => {
 
     await expect(launched).rejects.toMatchObject({ code: 'prompt-not-taken', state: 'idle' });
     expect(sessions.session(KEY)?.state).toBe('idle');
+  });
+
+  it('waits for the input box the agent draws after it said it started: nothing typed on a blank screen', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    await settle();
+
+    hook('/ready');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(writes()).toEqual([]);
+    expect(sessions.session(KEY)?.state).toBe('starting');
+
+    host.show(KEY, stubScreen('ready'));
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+    expect(writes()).toContain('text:A long prompt.');
+    hook(`${PROMPT_PATH}A long prompt.`);
+
+    await expect(launched).resolves.toMatchObject({ state: 'busy' });
+  });
+
+  it('fails the launch `wrong-state`, nothing typed, when no input box showed within its bound: the session is `idle`', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    launched.catch(() => {});
+    await settle();
+    hook('/ready');
+
+    await vi.advanceTimersByTimeAsync(INPUT_BOX_BOUND_MS - SCREEN_INTERVAL_MS);
+    expect(sessions.session(KEY)?.state).toBe('starting');
+    await vi.advanceTimersByTimeAsync(2 * SCREEN_INTERVAL_MS);
+
+    await expect(launched).rejects.toMatchObject({ code: 'wrong-state', state: 'idle' });
+    expect(writes()).toEqual([]);
+    expect(sessions.session(KEY)?.state).toBe('idle');
+  });
+
+  it('stops waiting for the box when the session ends meanwhile: the launch resolves `ended`, nothing typed', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    await settle();
+    hook('/ready');
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+
+    await expect(launched).resolves.toMatchObject({ state: 'ended' });
+    await vi.advanceTimersByTimeAsync(INPUT_BOX_BOUND_MS);
+    expect(writes()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the session `waiting` while a dialog shows in place of the box, then types once the box shows, `starting` again', async () => {
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: CONVERSATION,
+      prompt: 'A long prompt.',
+    });
+    await settle();
+    hook('/ready');
+    host.show(KEY, stubScreen('dialog'));
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+    await expect(launched).resolves.toMatchObject({ state: 'waiting' });
+
+    await vi.advanceTimersByTimeAsync(3 * INPUT_BOX_BOUND_MS);
+    expect(writes()).toEqual([]);
+    expect(sessions.session(KEY)).toMatchObject({
+      state: 'waiting',
+      pending: [{ kind: 'terminal' }],
+    });
+
+    host.show(KEY, stubScreen('ready'));
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+    expect(writes()).toContain('text:A long prompt.');
+    expect(sessions.session(KEY)?.state).toBe('starting');
+    hook(`${PROMPT_PATH}A long prompt.`);
+    await settle();
+
+    expect(sessions.session(KEY)?.state).toBe('busy');
   });
 
   it('is typed once the person answered a start-up dialog, the launch resolved `waiting` before', async () => {

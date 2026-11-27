@@ -39,12 +39,14 @@ import type {
 } from '../session-host/session-host.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
 import type { TerminalHold } from '../terminal-hold.js';
+import { InputBoxWait } from './input-box-wait.js';
 import { LivenessWatch } from './liveness-watch.js';
 import { ScreenWatch } from './screen-watch.js';
 import { courseAfter, type SessionCourse } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
 import { SessionTypingTerminal } from './typing-terminal.js';
 
+export { INPUT_BOX_BOUND_MS } from './input-box-wait.js';
 export { SCREEN_INTERVAL_MS } from './screen-watch.js';
 export { READY_BOUND_MS, START_DEADLINE_MS } from './start-up-watch.js';
 
@@ -423,6 +425,12 @@ interface Entry {
   /** Reads the screen for what became of a launch prompt no hook said was taken. */
   promptWatch?: ScreenWatch;
   /**
+   * Reads the screen, once the agent started, until it draws the input box
+   * a first prompt too long for the command line is typed into; no hook
+   * tells it.
+   */
+  inputBoxWait?: InputBoxWait;
+  /**
    * Reads the screen while a compaction begun `idle` runs: an agent whose
    * compaction fails or is interrupted tells its end by no hook.
    */
@@ -566,14 +574,18 @@ class SessionRegistry implements Sessions {
 
   /**
    * Types a first prompt too long for the command line, once the agent is
-   * ready: the session stays `starting` until the agent takes it, which
-   * the launch then resolves on. Not taken, the session is `idle`, and the
-   * launch fails as a send does.
+   * ready and its input box drawn: the session stays `starting` until the
+   * agent takes it, which the launch then resolves on. Not taken, or no
+   * box drawn in time, the session is `idle`, and the launch fails as a
+   * send does.
    */
   async #typeFirstPrompt(entry: Entry, prompt: string): Promise<void> {
+    const shown = await this.#inputBoxShown(entry);
+    // Ended or closed meanwhile: the end, or the close, settles the launch.
+    if (!isListened(entry) || this.#closed) return;
     let failure: (session: Session) => unknown;
     try {
-      const outcome = await this.#type(entry, prompt);
+      const outcome = shown ? await this.#type(entry, prompt) : 'no-input-box';
       if (outcome === 'taken') return;
       failure = (session) => typingFailure(outcome, session);
     } catch (error) {
@@ -586,6 +598,28 @@ class SessionRegistry implements Sessions {
     const idle: Session = { key: entry.key, state: 'idle', since: now() };
     entry.departure.reject(failure(idle));
     this.#update(entry, idle);
+  }
+
+  /**
+   * Waits for the agent to draw its input box, which Claude Code does a
+   * moment after its `SessionStart`: a dialog in its place makes the
+   * session wait in the terminal, `starting` again once the box shows.
+   *
+   * @returns Whether the box showed; `false` once the bound passed, or the
+   * wait was stopped.
+   */
+  async #inputBoxShown(entry: Entry): Promise<boolean> {
+    const wait = new InputBoxWait({
+      read: () => this.#readScreen(entry.key),
+      onDialog: (shown) => this.#waitInTerminal(entry, shown),
+    });
+    entry.inputBoxWait = wait;
+    const shown = await wait.start();
+    delete entry.inputBoxWait;
+    if (shown && isListened(entry) && entry.session.state === 'waiting') {
+      this.#update(entry, { key: entry.key, state: 'starting', since: now() });
+    }
+    return shown;
   }
 
   receive({ key, path, body }: HookRequest): void {
@@ -715,6 +749,7 @@ class SessionRegistry implements Sessions {
     this.#watch.close();
     for (const entry of this.#entries.values()) {
       entry.typing?.close();
+      entry.inputBoxWait?.stop();
       stopReadingTheScreen(entry);
       this.#stopWatchingTheCompaction(entry);
       stopFollowingEveryConversation(entry);
@@ -980,6 +1015,7 @@ class SessionRegistry implements Sessions {
     const entry = this.#entries.get(key);
     if (entry?.phase !== 'live' && entry?.phase !== 'killing') return;
     entry.phase = 'going';
+    entry.inputBoxWait?.stop();
     stopReadingTheScreen(entry);
     this.#stopWatchingTheCompaction(entry);
     stopFollowingEveryConversation(entry);
