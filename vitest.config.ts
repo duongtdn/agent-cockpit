@@ -21,6 +21,8 @@ export default defineConfig({
           globalSetup: ['test/support/tmux-sockets-global.ts'],
           setupFiles: ['test/support/tmux-sockets-setup.ts', 'test/support/timeline-setup.ts'],
           testTimeout: PATIENCE.integrationTest,
+          // A test's teardown waits for its processes to exit, under bounds of the same table.
+          hookTimeout: PATIENCE.integrationTest,
         },
       },
       {
@@ -33,6 +35,8 @@ export default defineConfig({
           globalSetup: ['test/support/tmux-sockets-global.ts'],
           setupFiles: ['test/support/tmux-sockets-setup.ts', 'test/support/timeline-setup.ts'],
           testTimeout: PATIENCE.contractTest,
+          // A test's teardown waits for its processes to exit, under bounds of the same table.
+          hookTimeout: PATIENCE.contractTest,
           maxWorkers: CONTRACT_WORKERS,
         },
       },
@@ -46,6 +50,8 @@ export default defineConfig({
           globalSetup: ['test/support/tmux-sockets-global.ts'],
           setupFiles: ['test/support/tmux-sockets-setup.ts', 'test/support/timeline-setup.ts'],
           testTimeout: PATIENCE.browserTest,
+          // A test's teardown waits for its processes to exit, under bounds of the same table.
+          hookTimeout: PATIENCE.browserTest,
         },
       },
       {

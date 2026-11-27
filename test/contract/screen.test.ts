@@ -13,7 +13,7 @@ import {
   sessionAfter,
   startContractCockpit,
 } from './cockpit-harness.ts';
-import { startContractAgent } from './harness.ts';
+import { startContractAgent, submitPrompt } from './harness.ts';
 
 /**
  * What tells a busy agent from an idle one on its screen, with a person's
@@ -221,12 +221,12 @@ it("120 — While a hook of a turn runs (UserPromptSubmit, PreToolUse, PostToolU
   for (const event of events) agent.hooks.hold(event);
   const session = await agent.startNew();
   await agent.hook('SessionStart');
-  await session.type('go');
-  await session.press('Enter');
+  // Submitted as the driver submits: an Enter right after SessionStart may be lost.
+  const { hook: promptHeld } = await submitPrompt(agent, session, 'go');
 
   const screens: Record<string, { empty: Seen; overDraft: Seen }> = {};
   for (const event of events) {
-    const held = await agent.hook(event);
+    const held = event === 'UserPromptSubmit' ? promptHeld : await agent.hook(event);
     const empty = await settled(agent.eventually, session, '', withHint);
     await session.type(DRAFT);
     const overDraft = await settled(agent.eventually, session, DRAFT, any);
