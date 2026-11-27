@@ -1,9 +1,8 @@
 import { expect, it } from 'vitest';
 import { eventually } from '../support/eventually.ts';
-import { INTERRUPTED } from '../support/fake-agent/transcript.ts';
 import { heldTurn, TEXT_WRITTEN, turn } from '../support/fake-api/index.ts';
 import { SAID_KEY, sessionAfter, startContractCockpit } from './cockpit-harness.ts';
-import { userTexts } from './harness.ts';
+import { INTERRUPTED, userTexts } from './harness.ts';
 
 /** A `/clear` typed in a session, met by a cockpit with the driver's own launch and hooks. */
 

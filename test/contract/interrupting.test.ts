@@ -3,12 +3,17 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import type { DriverEvent } from '../../src/server/driver.ts';
 import { eventually } from '../support/eventually.ts';
-// The markers the fake agent plays are the ones the real agent is held to here.
-import { INTERRUPTED, INTERRUPTED_FOR_TOOL_USE } from '../support/fake-agent/transcript.ts';
 import { heldTurn, TEXT_WRITTEN, toolUse, turn } from '../support/fake-api/index.ts';
 import type { AgentSession } from '../support/real-agent/runner.ts';
 import { type Moment, SAID_KEY, sessionAfter, startContractCockpit } from './cockpit-harness.ts';
-import { type ContractAgent, startContractAgent, submitPrompt, userTexts } from './harness.ts';
+import {
+  type ContractAgent,
+  INTERRUPTED,
+  INTERRUPTED_FOR_TOOL_USE,
+  startContractAgent,
+  submitPrompt,
+  userTexts,
+} from './harness.ts';
 
 /** The file a running tool call leaves, for the test to know the tool runs. */
 const TOOL_STARTED = 'tool-started';

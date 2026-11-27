@@ -401,6 +401,12 @@ export function conversationTexts(request: LoggedRequest): string[] {
   return (request.body?.messages ?? []).flatMap((message) => textsOf(message.content));
 }
 
+/** What the agent records in the user's name when a turn is interrupted while it writes. */
+export const INTERRUPTED = '[Request interrupted by user]';
+
+/** What the agent records in the user's name when a turn is interrupted while a tool call is open. */
+export const INTERRUPTED_FOR_TOOL_USE = '[Request interrupted by user for tool use]';
+
 /**
  * Gives the texts a session's transcript records as the user's: the prompts
  * and the markers the agent writes in the user's name.
