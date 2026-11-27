@@ -88,7 +88,8 @@ const jobs: JobRuns = {
   read(jobId, args) {
     const job = JOBS[jobId];
     if (job === undefined) throw new CockpitError('unknown-job', `No ${jobId}.`, { jobId });
-    const run = { jobId, ...job(args as { file: string }) };
+    // The arguments as given, as the cockpit's reader keeps them.
+    const run = { jobId, ...job(args as { file: string }), args };
     return {
       key: run.key,
       ...(run.prompt === undefined ? {} : { prompt: run.prompt }),
@@ -248,6 +249,17 @@ describe('a run on a key with no record', () => {
       directory: '.',
       launchSettings: { part: null },
     });
+  });
+
+  it('keeps the arguments in the history as they were at the call: a change the caller makes after is not recorded', async () => {
+    const args = { file: 'a' };
+    const ran = pending(units.run('explain', args));
+    args.file = 'changed';
+    await settle();
+    hook('/start-and-take');
+    await ran;
+
+    expect(recordOf()?.history).toMatchObject([{ args: { file: 'a' } }]);
   });
 
   it('lists the session with its record', async () => {

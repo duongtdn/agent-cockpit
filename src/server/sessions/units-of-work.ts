@@ -78,8 +78,10 @@ export interface UnitsOfWork {
    * differ from an `idle` session's. With `fresh`, a new conversation
    * (`fresh-on-request`), a live session ended first, `starting` refused.
    * A prompt too long for the agent's command line is typed once it
-   * started: the run settles once the agent took it. A run that fails with
-   * its session live is not kept in the key's history.
+   * started: the run settles once the agent took it, the key left to the
+   * calls that follow while a start-up dialog waits for a person. A run
+   * that fails with its session live is not kept in the key's history,
+   * which keeps its arguments as they were at the call.
    *
    * @param jobId - The job's id.
    * @param args - The arguments, unchecked.
@@ -90,7 +92,8 @@ export interface UnitsOfWork {
    * `folder-outside-app`); `invalid-arguments` for a prompt that is empty
    * or only whitespace; `prompt-too-long`; `folder-changed`;
    * `wrong-state`; `prompt-not-taken`; `session-cap-reached`; and what a
-   * launch throws.
+   * launch throws. `TypeError` for arguments the key's history cannot keep
+   * (a `BigInt`, a cycle), before anything is launched.
    */
   run(jobId: string, args: unknown, options?: RunOptions): Promise<RunResult>;
   /**
@@ -279,8 +282,9 @@ class Units implements UnitsOfWork {
     // Read at once, so that the run takes its place among its key's operations as it is asked.
     const reading = this.#jobs.read(jobId, args);
     if (reading.prompt !== undefined) refuseUnfitPrompt(reading.prompt);
+    const operation: Operation = { operation: 'run', jobId, args: asRecorded(args), at };
     return this.#queue.run(reading.key, async (freeTurn) =>
-      this.#run(await reading.checked(), options.fresh === true, at, freeTurn),
+      this.#run(await reading.checked(), options.fresh === true, operation, freeTurn),
     );
   }
 
@@ -337,11 +341,15 @@ class Units implements UnitsOfWork {
     if (this.#closing.signal.aborted) throw new SessionsClosedError(key);
   }
 
-  async #run(run: JobRun, fresh: boolean, at: string, freeTurn: FreeTurn): Promise<RunResult> {
+  async #run(
+    run: JobRun,
+    fresh: boolean,
+    history: Operation,
+    freeTurn: FreeTurn,
+  ): Promise<RunResult> {
     const { key } = run;
     const record = this.#records.get(key);
     const session = this.#liveSession(key);
-    const history: Operation = { operation: 'run', jobId: run.jobId, args: run.args, at };
     const launch = (take: Take, endFirst?: EndReason) =>
       this.#launch({
         key,
@@ -717,6 +725,19 @@ class Units implements UnitsOfWork {
 
 function closedRefusal(key: string): SessionsClosedError {
   return new SessionsClosedError(key);
+}
+
+/**
+ * The arguments of a run as the key's history keeps them, copied at the
+ * call: what the caller changes in its object afterwards is not the run's.
+ * The copy keeps what a record keeps.
+ *
+ * @throws `TypeError` for arguments no record can keep (a `BigInt`, a
+ * cycle), before anything is launched.
+ */
+function asRecorded(args: unknown): unknown {
+  const text = JSON.stringify(args);
+  return text === undefined ? undefined : JSON.parse(text);
 }
 
 /** What the key's history keeps of an operation that launched its session. */
