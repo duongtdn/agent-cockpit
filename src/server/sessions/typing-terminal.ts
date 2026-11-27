@@ -102,8 +102,15 @@ export class SessionTypingTerminal implements TypingTerminal {
     await this.#checked(() => this.#pressKeys(keys));
   }
 
+  /** Reads the screen; a session gone stops the typing, as a write to it does. */
   async readScreen(): Promise<TerminalScreen> {
-    const { text, cursor } = await this.#options.host.readScreen(this.#options.key);
+    const { text, cursor } = await this.#written(
+      () => this.#options.host.readScreen(this.#options.key),
+      () => {
+        this.#stopped = true;
+        this.#restoreStopped = true;
+      },
+    );
     return { text, cursor };
   }
 
@@ -149,10 +156,10 @@ export class SessionTypingTerminal implements TypingTerminal {
     });
   }
 
-  /** Runs a write; a session gone meanwhile stops the writes. */
-  async #written(write: () => Promise<void>, stop: () => void): Promise<void> {
+  /** Runs a write or a read; a session gone meanwhile stops the writes. */
+  async #written<T>(write: () => Promise<T>, stop: () => void): Promise<T> {
     try {
-      await write();
+      return await write();
     } catch (error) {
       if (error instanceof SessionHostError && error.reason === 'no-session') {
         stop();
@@ -200,10 +207,12 @@ export class SessionTypingTerminal implements TypingTerminal {
   }
 
   async #refusalByScreen(): Promise<string | undefined> {
-    const { text } = await this.readScreen().catch((error: unknown) => {
-      if (error instanceof SessionHostError && error.reason === 'no-session') return { text: '' };
-      throw error;
-    });
+    const { text } = await this.#options.host
+      .readScreen(this.#options.key)
+      .catch((error: unknown) => {
+        if (error instanceof SessionHostError && error.reason === 'no-session') return { text: '' };
+        throw error;
+      });
     return this.#options.readInputBox(text) === undefined
       ? 'The screen shows no input box.'
       : undefined;

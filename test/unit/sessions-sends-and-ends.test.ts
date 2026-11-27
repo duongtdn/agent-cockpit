@@ -282,6 +282,19 @@ describe('a prompt sent to an `idle` session', () => {
     expect(writes()).toEqual([]);
   });
 
+  it('stops when the session is gone as the driver reads its screen: `wrong-state`, no error of the host', async () => {
+    await idleSession();
+    driver.typePrompt = async (prompt, terminal) => {
+      await terminal.pressKeys(['C-u']);
+      host.exit(KEY);
+      await expect(terminal.readScreen()).rejects.toThrow(TypingStoppedError);
+      await expect(terminal.restoring.readScreen()).rejects.toThrow(TypingStoppedError);
+      return typeAsADriverDoes(prompt, terminal);
+    };
+
+    await expect(sending()).rejects.toMatchObject({ code: 'wrong-state', key: KEY });
+  });
+
   it.each([
     ['starting', [] as string[]],
     ['busy', ['/prompt-taken']],
