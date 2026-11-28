@@ -13,8 +13,9 @@ export const RELEASE_FILE_NAME = '.fake-agent-release';
 /**
  * A call a turn asks the person for: `PreToolUse`, then `PermissionRequest`
  * held until it is answered. A decision on the hook settles it: `allow`
- * fires `PostToolUse`; `deny` goes on, or with `interrupt` ends the turn as
- * an interruption does. A reply with no decision leaves it to the terminal,
+ * fires `PostToolUse` and the batch of a call that ran; `deny` fires the
+ * batch of a denied call, or with `interrupt` ends the turn as an
+ * interruption does. A reply with no decision leaves it to the terminal,
  * where the test answers it ({@link answerInTerminal}).
  */
 export interface AskedCall {
@@ -28,7 +29,7 @@ export interface AskedCall {
  * What the person does in the terminal on an ask, in place of the hook's
  * answer, as the real agent tells it: `esc` (Esc, or a plain "No") closes the
  * held connection and interrupts the turn; `yes` runs the call
- * (`PostToolUse`), the connection left open; `amended-no` ("No" with a text)
+ * (`PostToolUse`, then `PostToolBatch`), the connection left open; `amended-no` ("No" with a text)
  * refuses the call (`PostToolBatch` of a refused call), the connection left
  * open and the turn going on.
  */

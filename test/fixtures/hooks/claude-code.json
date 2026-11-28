@@ -183,6 +183,31 @@
     ],
     "PostToolBatch": [
       {
+        "shape": "tool_calls=denied",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "97a68482-4627-4eed-a3de-259c9b431daa",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolBatch",
+          "tool_calls": [
+            {
+              "tool_name": "Bash",
+              "tool_input": {
+                "command": "touch denied.txt",
+                "description": "Create denied.txt"
+              },
+              "tool_use_id": "toolu_fake_1_0",
+              "tool_response": "Permission denied by hook"
+            }
+          ]
+        }
+      },
+      {
         "shape": "tool_calls=ran",
         "payload": {
           "session_id": "{{session_id}}",

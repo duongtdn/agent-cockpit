@@ -1,4 +1,4 @@
-import { REFUSED_CALL } from '../hooks/payload-recording.ts';
+import { type CallOutcome, callOutcome } from '../hooks/payload-recording.ts';
 import type { ShapeChoice } from '../recorded-hooks.ts';
 import type { HookRunner } from './hook-runner.ts';
 import type { AskedCall, Step, TerminalAnswer, TurnStep } from './script.ts';
@@ -71,14 +71,34 @@ export const ofTheCall =
   (payload) =>
     OF_THE_SESSION(payload) && payload.tool_name === tool;
 
-/** The session's own `PostToolBatch` of a batch whose call the person refused with a text. */
-export const REFUSED_BATCH: ShapeChoice = (payload) =>
-  OF_THE_SESSION(payload) &&
-  Array.isArray(payload.tool_calls) &&
-  payload.tool_calls.some(
-    (call: { tool_response?: unknown }) =>
-      typeof call.tool_response === 'string' && call.tool_response.startsWith(REFUSED_CALL),
-  );
+/**
+ * The session's own `PostToolBatch` whose calls all ended one way.
+ *
+ * @param outcome - How they ended: ran, refused in the terminal with a
+ * text, or denied by the hook.
+ */
+export const batchWhoseCalls =
+  (outcome: CallOutcome): ShapeChoice =>
+  (payload) =>
+    OF_THE_SESSION(payload) &&
+    Array.isArray(payload.tool_calls) &&
+    payload.tool_calls.every(
+      (call: { tool_response?: unknown }) => callOutcome(call.tool_response) === outcome,
+    );
+
+/** The hooks of one asked call, each fired when the call gets that far. */
+interface CallHooks {
+  /** Fires its `PreToolUse`. */
+  before(): Promise<void>;
+  /** Gives its `PermissionRequest`, for the caller to fire and hold. */
+  permission(): Record<string, unknown>;
+  /** Fires its `PostToolUse`, then the `PostToolBatch` of a call that ran. */
+  ran(): Promise<void>;
+  /** Fires the `PostToolBatch` of a call the hook denied, the deny's message its result if it gave one. */
+  denied(message: string | undefined): Promise<void>;
+  /** Fires the `PostToolBatch` of a call the person refused with a text. */
+  refused(): Promise<void>;
+}
 
 /** How an ask's turn goes on: to its next ask and its end, or ended as an interruption. */
 type AskOutcome = 'went-on' | 'interrupted';
@@ -91,6 +111,8 @@ type FirstAnswer =
 /** The decision a `PermissionRequest` hook's reply carries, as Claude Code reads it. */
 interface PermissionDecision {
   readonly behavior: 'allow' | 'deny';
+  /** A deny's message, which the agent gives the model as the call's result. */
+  readonly message?: string;
   readonly interrupt?: boolean;
 }
 
@@ -109,63 +131,65 @@ export function createFakeAgent(parts: FakeAgentParts): FakeAgent {
     await hooks.fire(payload);
   }
 
-  async function takePrompt(prompt: string): Promise<void> {
+  /** Takes the prompt, and gives the prompt's id, which every hook of its turn carries. */
+  async function takePrompt(prompt: string): Promise<unknown> {
     // Written first: a conversation that took a prompt is kept, however soon the process is killed.
     transcript.recordPrompt(prompt);
-    await fire({ ...recorded('UserPromptSubmit', OF_THE_SESSION), prompt });
+    const submitted: Record<string, unknown> = {
+      ...recorded('UserPromptSubmit', OF_THE_SESSION),
+      prompt,
+    };
+    await fire(submitted);
+    return submitted.prompt_id;
   }
 
   async function turn(prompt: string, step: TurnStep): Promise<void> {
-    await takePrompt(prompt);
+    const promptId = await takePrompt(prompt);
     for (const call of step.asks ?? []) {
-      if ((await ask(call)) === 'interrupted') return;
+      if ((await ask(hooksOfCall(call, promptId))) === 'interrupted') return;
     }
     transcript.recordReply(step.reply);
     await fire({ ...recorded('Stop', STOP_WITH_NO_TASK), last_assistant_message: step.reply });
   }
 
   /**
-   * Fires a call's hooks, the recorded payloads given its tool and input,
-   * and the ids of its `PreToolUse` in those that follow, as one call's
-   * hooks carry them.
+   * Builds a call's hooks from the recorded payloads, given its tool and
+   * input, its turn's prompt id and its `PreToolUse`'s `tool_use_id`, as
+   * one call's hooks carry them.
    */
-  function hooksOfCall(call: AskedCall) {
-    const before: Record<string, unknown> = {
-      ...recorded('PreToolUse', ofTheCall(call.tool)),
-      tool_input: call.input,
-    };
-    const ids = { prompt_id: before.prompt_id, tool_use_id: before.tool_use_id };
+  function hooksOfCall(call: AskedCall, promptId: unknown): CallHooks {
     const ofThisCall = (event: string) => ({
       ...recorded(event, ofTheCall(call.tool)),
       tool_input: call.input,
+      prompt_id: promptId,
     });
+    const before = ofThisCall('PreToolUse');
+    const { tool_use_id } = before as Record<string, unknown>;
+    const batch = (outcome: CallOutcome, result: Record<string, unknown> = {}) => {
+      const recordedBatch = recorded('PostToolBatch', batchWhoseCalls(outcome));
+      const [recordedCall] = recordedBatch.tool_calls as Record<string, unknown>[];
+      const ofTheBatch = { tool_name: call.tool, tool_input: call.input, tool_use_id };
+      return fire({
+        ...recordedBatch,
+        prompt_id: promptId,
+        tool_calls: [{ ...recordedCall, ...ofTheBatch, ...result }],
+      });
+    };
     return {
       before: () => fire(before),
-      permission: () => ({ ...ofThisCall('PermissionRequest'), prompt_id: ids.prompt_id }),
-      ran: () => fire({ ...ofThisCall('PostToolUse'), ...ids }),
-      refused: () => fire(refusedBatch(call, ids)),
+      permission: () => ofThisCall('PermissionRequest'),
+      ran: async () => {
+        await fire({ ...ofThisCall('PostToolUse'), tool_use_id });
+        await batch('ran');
+      },
+      denied: (message: string | undefined) =>
+        batch('denied', message === undefined ? {} : { tool_response: message }),
+      refused: () => batch('refused'),
     };
   }
 
-  function refusedBatch(call: AskedCall, ids: Record<string, unknown>): Record<string, unknown> {
-    const batch = recorded('PostToolBatch', REFUSED_BATCH);
-    const [refusedCall] = batch.tool_calls as Record<string, unknown>[];
-    return {
-      ...batch,
-      prompt_id: ids.prompt_id,
-      tool_calls: [
-        {
-          ...refusedCall,
-          tool_name: call.tool,
-          tool_input: call.input,
-          tool_use_id: ids.tool_use_id,
-        },
-      ],
-    };
-  }
-
-  async function ask(call: AskedCall): Promise<AskOutcome> {
-    const hooksOf = hooksOfCall(call);
+  /** Asks for a call and follows the answer, the hook's or the person's in the terminal. */
+  async function ask(hooksOf: CallHooks): Promise<AskOutcome> {
     await hooksOf.before();
     const letGo = new AbortController();
     const holding = hooks.fire(hooksOf.permission(), letGo.signal);
@@ -187,13 +211,12 @@ export function createFakeAgent(parts: FakeAgentParts): FakeAgent {
 
   async function followDecision(
     decision: PermissionDecision,
-    hooksOf: ReturnType<typeof hooksOfCall>,
+    hooksOf: CallHooks,
   ): Promise<AskOutcome> {
-    if (decision.behavior === 'allow') {
-      await hooksOf.ran();
-      return 'went-on';
-    }
-    return decision.interrupt === true ? interrupted() : 'went-on';
+    if (decision.behavior === 'allow') await hooksOf.ran();
+    else if (decision.interrupt === true) return interrupted();
+    else await hooksOf.denied(decision.message);
+    return 'went-on';
   }
 
   /**
@@ -231,7 +254,8 @@ export function createFakeAgent(parts: FakeAgentParts): FakeAgent {
       case 'turn':
         return turn(parts.prompt as string, step);
       case 'stay-busy':
-        return takePrompt(parts.prompt as string);
+        await takePrompt(parts.prompt as string);
+        return;
       case 'hold':
         return parts.released();
       case 'exit':

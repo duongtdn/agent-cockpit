@@ -229,10 +229,12 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   and reads as the box free, as idle), `permission-dialog` (127 keys typed
   as `PermissionRequest` arrives, before the dialog shows: they answer
   nothing; after Esc the box holds them or nothing), `permissions` (the
-  agent's half of 137, 142, 144, 146, 147, through `startContractAgent`,
+  agent's half of 137, 138, 142, 144, 146, 147, through `startContractAgent`,
   the cockpit's half to come: 137 a `PermissionRequest` of a `Bash` with a
   description, of a `Write`, of a background task's call, each after its
-  `PreToolUse`, with no `tool_use_id`, the hook's `allow` running it; 142
+  `PreToolUse`, with no `tool_use_id`, the hook's `allow` running it; 138
+  the hook's `deny`, with a message (the call's result) or bare
+  (`Permission denied by hook`): no hook for the call, `PostToolBatch`; 142
   a Yes in the terminal whose command fails, `PostToolUseFailure`; 144 an
   amended "No": no hook for the call, then `PostToolBatch`; 146 three
   concurrent `Read`s, each ask after its own `PreToolUse`'s answer; 147
@@ -290,12 +292,14 @@ without `CLAUDE_CONFIG_DIR` (it never writes the person's configuration).
 It fires `SessionStart` once started; then a script's steps: `turn` (the
 launch prompt's `UserPromptSubmit`, its `asks`, then `Stop` with the
 reply; each ask a tool and input: `PreToolUse`, then `PermissionRequest`
-held for its reply — `allow` fires `PostToolUse`, `deny` goes on, `deny`
-with `interrupt` ends the turn with the transcript's interruption marker
-and no `Stop`; with no decision, or before one, the test answers as the
-person in the terminal, `answerInTerminal`: `esc` closes the hook and
-interrupts, `yes` fires `PostToolUse`, `amended-no` the refused call's
-`PostToolBatch`, both leaving the hook open),
+held for its reply — `allow` fires `PostToolUse` then `PostToolBatch`,
+`deny` the denied call's `PostToolBatch` (its message the call's result),
+`deny` with `interrupt` ends the turn with the transcript's interruption
+marker and no `Stop`; with no decision, or before one, the test answers as
+the person in the terminal, `answerInTerminal`: `esc` closes the hook and
+interrupts, `yes` fires `PostToolUse` then `PostToolBatch`, `amended-no`
+the refused call's `PostToolBatch`, both leaving the hook open; every hook
+of the turn carries its prompt's id),
 `stay-busy` (`UserPromptSubmit`, then nothing until killed), `hold` (until
 the test's `release`), `exit` (`SessionEnd` with the reason of the agent's
 own exit, then status 0). On SIGTERM, as the cockpit ends a session, it
@@ -311,7 +315,8 @@ Every payload it fires is the real agent's: `test/fixtures/hooks/claude-code.jso
 holds, for each event, each shape the contract suite saw (its fields and
 the values that tell variants apart: a `SessionEnd`'s `reason`, a
 `StopFailure`'s `error`, an `agent_id`, the kinds of tasks a `Stop` lists,
-whether a `PostToolBatch`'s calls ran or one was refused)
+whether a `PostToolBatch`'s calls ran, one was refused in the terminal or
+denied by the hook with no message)
 with one example, the run's own values made placeholders
 (`{{session_id}}`, `{{transcript_path}}`, `{{cwd}}`, `{{root}}`). The fake
 agent fills them with its session's, and puts in the prompt and the reply;

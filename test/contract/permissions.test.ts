@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import type { AgentSession } from '../support/agent-session.ts';
 import { toolUse, turn } from '../support/fake-api/index.ts';
 import type { ReceivedHook } from '../support/hooks/hook-receiver.ts';
-import { escaped, REFUSED_CALL } from '../support/hooks/payload-recording.ts';
+import { DENIED_BY_HOOK, escaped, REFUSED_CALL } from '../support/hooks/payload-recording.ts';
 import type { LaunchOptions } from '../support/real-agent/runner.ts';
 import { toolResults } from './confinement-probes.ts';
 import { answerYes, pressOnDialog, selectOnDialog } from './dialog-keys.ts';
@@ -195,6 +195,49 @@ it("137 — A background task's call asks only once its PreToolUse is answered: 
   });
   expect(existsSync(join(agent.workFolder, 'inner.txt'))).toBe(true);
 });
+
+it.each([
+  ["with a message: the message is the call's result", 'Not this file', 'Not this file'],
+  ["bare: the agent's own text is the call's result", undefined, DENIED_BY_HOOK],
+])(
+  "138 — The hook's deny %s; no hook for the call, the turn going on: PostToolBatch, then Stop",
+  async (_how, message, result) => {
+    const agent = await askingAgent();
+    const input = { command: 'touch denied.txt', description: 'Create denied.txt' };
+    agent.api.script(turn(toolUse('Bash', input)), turn('Understood.'));
+    agent.hooks.hold('PermissionRequest');
+    const session = await startedSession(agent);
+    await submitPrompt(agent, session, 'make the file');
+
+    const pre = await agent.hook('PreToolUse');
+    const ask = await agent.hook('PermissionRequest');
+    ask.answer({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny', ...(message === undefined ? {} : { message }) },
+      },
+    });
+    const batch = await agent.hook('PostToolBatch');
+    await agent.hook('Stop');
+
+    expect(batch.payload).toMatchObject({
+      prompt_id: pre.payload.prompt_id,
+      tool_calls: [
+        {
+          tool_name: 'Bash',
+          tool_input: input,
+          tool_use_id: pre.payload.tool_use_id,
+          tool_response: result,
+        },
+      ],
+    });
+    for (const event of ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied']) {
+      expect(received(agent, event)).toEqual([]);
+    }
+    expect(toolResults(agent.api)).toEqual([{ text: result, isError: true }]);
+    expect(existsSync(join(agent.workFolder, 'denied.txt'))).toBe(false);
+  },
+);
 
 it("142 — A Bash call allowed in the terminal whose command fails: PostToolUseFailure with the PreToolUse's tool_use_id, the error, not an interruption; no PostToolUse", async () => {
   const agent = await askingAgent();

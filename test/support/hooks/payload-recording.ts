@@ -164,8 +164,11 @@ const TASK_LISTS: readonly string[] = ['background_tasks'];
 
 /**
  * The fields that list a batch's calls, told apart by how the calls ended:
- * a batch whose call the person refused with a text in the terminal (no
- * hook tells of that call but the batch) from one whose calls ran.
+ * a batch whose call the person refused with a text in the terminal, or
+ * whose call the hook denied with no message (no hook tells of either call
+ * but the batch), from one whose calls ran. A call denied with a message
+ * has that message for its result, and is told from one that ran by
+ * nothing in the batch.
  */
 const CALL_LISTS: readonly string[] = ['tool_calls'];
 
@@ -176,6 +179,12 @@ const CALL_LISTS: readonly string[] = ['tool_calls'];
  * that ran.
  */
 export const REFUSED_CALL = "The user doesn't want to proceed with this tool use.";
+
+/**
+ * The agent's result of a call the hook denied with no message, as a
+ * batch's call carries it. A contract row checks it, as {@link REFUSED_CALL}.
+ */
+export const DENIED_BY_HOOK = 'Permission denied by hook';
 
 function tellingOf(payload: Record<string, unknown>): [string, unknown][] {
   const values = TELLING_FIELDS.filter((field) => field in payload).map(
@@ -195,13 +204,26 @@ function taskKinds(list: unknown): string {
   return [...new Set(kinds)].sort().join('+');
 }
 
-/** How the calls a list holds ended, each once, sorted: `ran`, `refused`, or both joined by `+`; none for no list. */
+/** How the calls a list holds ended, each once, sorted: `denied`, `ran`, `refused`, joined by `+`; none for no list. */
 function callOutcomes(list: unknown): string {
   if (!Array.isArray(list)) return '';
-  const outcomes = list.map((call) =>
-    isRecord(call) && String(call.tool_response).startsWith(REFUSED_CALL) ? 'refused' : 'ran',
-  );
+  const outcomes = list.map((call) => callOutcome(isRecord(call) ? call.tool_response : undefined));
   return [...new Set(outcomes)].sort().join('+');
+}
+
+/** How a batch's call ended, as its result tells. */
+export type CallOutcome = 'ran' | 'refused' | 'denied';
+
+/**
+ * Tells how a batch's call ended from its result: refused in the terminal
+ * with a text, denied by the hook with no message, or ran.
+ *
+ * @param result - The call's `tool_response`, as the batch carries it.
+ */
+export function callOutcome(result: unknown): CallOutcome {
+  const text = String(result);
+  if (text.startsWith(REFUSED_CALL)) return 'refused';
+  return text === DENIED_BY_HOOK ? 'denied' : 'ran';
 }
 
 /** Removes what an earlier recording run left of its workers' files. */

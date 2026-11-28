@@ -14,10 +14,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  batchWhoseCalls,
   CANNOT_PLAY_STATUS,
   OF_THE_SESSION,
   ofTheCall,
-  REFUSED_BATCH,
   STOP_WITH_NO_TASK,
   TERMINATED_STATUS,
 } from '../support/fake-agent/agent.ts';
@@ -32,6 +32,7 @@ import {
 import { transcriptPathFor } from '../support/fake-agent/transcript.ts';
 import { versionOutput } from '../support/fake-agent/version.ts';
 import { type HookReceiver, startHookReceiver } from '../support/hooks/hook-receiver.ts';
+import type { CallOutcome } from '../support/hooks/payload-recording.ts';
 import { recordedPayload } from '../support/recorded-hooks.ts';
 
 let root: string;
@@ -262,46 +263,89 @@ describe('the fake agent', () => {
   });
 
   describe('asks for a call', () => {
-    it("fires the recorded PreToolUse then PermissionRequest for the call, the call's own ids in both, and waits on the held hook", async () => {
+    /** What the run's payloads of the call carry: its turn's prompt id, and its PreToolUse's id. */
+    function idsOf(agent: Run) {
+      const values = valuesOf(agent);
+      return {
+        prompt_id: recordedPayload('UserPromptSubmit', OF_THE_SESSION, values).prompt_id,
+        tool_use_id: recordedPayload('PreToolUse', ofTheCall(CALL.tool), values).tool_use_id,
+      };
+    }
+
+    /** The recorded PostToolBatch of a call that ended so, made the run's call's. */
+    function batchOfTheCall(agent: Run, outcome: CallOutcome, call: Record<string, unknown> = {}) {
+      const { prompt_id, tool_use_id } = idsOf(agent);
+      const batch = recordedPayload('PostToolBatch', batchWhoseCalls(outcome), valuesOf(agent));
+      const [recordedCall] = batch.tool_calls as Record<string, unknown>[];
+      return {
+        ...batch,
+        prompt_id,
+        tool_calls: [
+          { ...recordedCall, tool_name: CALL.tool, tool_input: CALL.input, tool_use_id, ...call },
+        ],
+      };
+    }
+
+    it("fires the recorded PreToolUse then PermissionRequest for the call, its turn's prompt id in both, and waits on the held hook", async () => {
       const { agent, permission } = await asking();
       const values = valuesOf(agent);
-      const before = recordedPayload('PreToolUse', ofTheCall(CALL.tool), values);
+      const { prompt_id } = idsOf(agent);
 
       expect(postedEvents()).toEqual(['UserPromptSubmit', 'PreToolUse', 'PermissionRequest']);
-      expect(posted()[1]?.payload).toEqual({ ...before, tool_input: CALL.input });
+      expect(posted()[1]?.payload).toEqual({
+        ...recordedPayload('PreToolUse', ofTheCall(CALL.tool), values),
+        tool_input: CALL.input,
+        prompt_id,
+      });
       expect(permission.payload).toEqual({
         ...recordedPayload('PermissionRequest', ofTheCall(CALL.tool), values),
         tool_input: CALL.input,
-        prompt_id: before.prompt_id,
+        prompt_id,
       });
       expect(permission.isOpen()).toBe(true);
     });
 
-    it('on allow, fires PostToolUse of the call and goes on to end the turn', async () => {
+    it('on allow, fires PostToolUse of the call and the PostToolBatch of a call that ran, then ends the turn', async () => {
       const { agent, permission } = await asking();
-      const values = valuesOf(agent);
-      const before = recordedPayload('PreToolUse', ofTheCall(CALL.tool), values);
 
       permission.answer(decision({ behavior: 'allow' }));
 
       expect((await agent.ended).status).toBe(0);
       expect((await receiver.next('PostToolUse')).payload).toEqual({
-        ...recordedPayload('PostToolUse', ofTheCall(CALL.tool), values),
+        ...recordedPayload('PostToolUse', ofTheCall(CALL.tool), valuesOf(agent)),
         tool_input: CALL.input,
-        tool_use_id: before.tool_use_id,
-        prompt_id: before.prompt_id,
+        ...idsOf(agent),
       });
-      expect(postedEvents().slice(3)).toEqual(['PostToolUse', 'Stop', 'SessionEnd']);
+      expect((await receiver.next('PostToolBatch')).payload).toEqual(batchOfTheCall(agent, 'ran'));
+      expect(postedEvents().slice(3)).toEqual([
+        'PostToolUse',
+        'PostToolBatch',
+        'Stop',
+        'SessionEnd',
+      ]);
     });
 
-    it('on deny, goes on to end the turn, the call not run', async () => {
-      const { agent, permission } = await asking();
+    it.each([
+      [
+        'with a message, the message its result',
+        { message: 'Not now' },
+        { tool_response: 'Not now' },
+      ],
+      ["bare, the agent's own text its result", {}, {}],
+    ])(
+      'on deny %s, fires the PostToolBatch of a denied call, the call not run, and ends the turn',
+      async (_how, message, call) => {
+        const { agent, permission } = await asking();
 
-      permission.answer(decision({ behavior: 'deny', message: 'Not now' }));
+        permission.answer(decision({ behavior: 'deny', ...message }));
 
-      expect((await agent.ended).status).toBe(0);
-      expect(postedEvents().slice(3)).toEqual(['Stop', 'SessionEnd']);
-    });
+        expect((await agent.ended).status).toBe(0);
+        expect((await receiver.next('PostToolBatch')).payload).toEqual(
+          batchOfTheCall(agent, 'denied', call),
+        );
+        expect(postedEvents().slice(3)).toEqual(['PostToolBatch', 'Stop', 'SessionEnd']);
+      },
+    );
 
     it('on deny with interrupt, ends the turn as an interruption: the marker in the transcript, no Stop', async () => {
       const { agent, permission } = await asking();
@@ -316,16 +360,6 @@ describe('the fake agent', () => {
       ]);
     });
 
-    it('on a reply with no decision, leaves the call to the terminal, as its dialog stays there', async () => {
-      const { agent, permission } = await asking();
-      permission.answer({});
-
-      answerInTerminal(agent.folder, 'yes');
-
-      expect((await agent.ended).status).toBe(0);
-      expect(postedEvents().slice(3)).toEqual(['PostToolUse', 'Stop', 'SessionEnd']);
-    });
-
     it("on the person's Esc, closes the held connection and ends the turn as an interruption", async () => {
       const { agent, permission } = await asking();
 
@@ -337,38 +371,26 @@ describe('the fake agent', () => {
       expect(transcriptTexts(agent).at(-1)).toBe('[Request interrupted by user for tool use]');
     });
 
-    it("on the person's Yes, fires PostToolUse of the call and leaves the connection open, the turn going on", async () => {
+    it("on the person's Yes, fires PostToolUse and the PostToolBatch of a call that ran, the connection left open, the turn going on", async () => {
       const { agent, permission } = await asking(ASK_THEN_HOLD);
 
       answerInTerminal(agent.folder, 'yes');
 
       await receiver.next('Stop');
-      expect(postedEvents().slice(3)).toEqual(['PostToolUse', 'Stop']);
+      expect((await receiver.next('PostToolBatch')).payload).toEqual(batchOfTheCall(agent, 'ran'));
+      expect(postedEvents().slice(3)).toEqual(['PostToolUse', 'PostToolBatch', 'Stop']);
       expect(permission.isOpen()).toBe(true);
     });
 
-    it("on the person's amended No, fires the recorded PostToolBatch of a refused call and leaves the connection open, the turn going on", async () => {
+    it("on the person's amended No, fires the PostToolBatch of a refused call, the connection left open, the turn going on", async () => {
       const { agent, permission } = await asking(ASK_THEN_HOLD);
-      const values = valuesOf(agent);
-      const before = recordedPayload('PreToolUse', ofTheCall(CALL.tool), values);
-      const refused = recordedPayload('PostToolBatch', REFUSED_BATCH, values);
-      const [recordedCall] = refused.tool_calls as Record<string, unknown>[];
 
       answerInTerminal(agent.folder, 'amended-no');
 
       await receiver.next('Stop');
-      expect((await receiver.next('PostToolBatch')).payload).toEqual({
-        ...refused,
-        prompt_id: before.prompt_id,
-        tool_calls: [
-          {
-            ...recordedCall,
-            tool_name: CALL.tool,
-            tool_input: CALL.input,
-            tool_use_id: before.tool_use_id,
-          },
-        ],
-      });
+      expect((await receiver.next('PostToolBatch')).payload).toEqual(
+        batchOfTheCall(agent, 'refused'),
+      );
       expect(postedEvents().slice(3)).toEqual(['PostToolBatch', 'Stop']);
       expect(permission.isOpen()).toBe(true);
     });
