@@ -1000,7 +1000,7 @@ class SessionRegistry implements Sessions {
       key: entry.key,
       host: this.#options.host,
       readInputBox: (text) => this.#options.driver.readInputBox(text),
-      session: () => (this.#takesInput(entry) ? entry.session : undefined),
+      session: () => (this.#typesInto(entry) ? entry.session : undefined),
     });
     entry.typing = terminal;
     const release = this.#options.holds.hold(entry.key);
@@ -1481,7 +1481,7 @@ class SessionRegistry implements Sessions {
       key: entry.key,
       holds: this.#options.holds,
       session: () => entry.session,
-      takesInput: () => this.#takesInput(entry),
+      takesInput: () => this.#typesInto(entry),
       readScreen: () => this.#readScreen(entry.key),
       waitInTerminal: (shown) => this.#waitInTerminal(entry, shown),
       type: (prompt) => this.#type(entry, prompt),
@@ -1490,9 +1490,9 @@ class SessionRegistry implements Sessions {
   }
 
   /**
-   * Whether a prompt may be typed into the session now: the core open, the
-   * session the key's (not one whose launch failed: the key's name may
-   * reach another) and not being ended.
+   * Whether keys may go into the session now: the core open, the session
+   * the key's (not one whose launch failed: the key's name may reach
+   * another) and not being ended.
    */
   #takesInput(entry: Entry): boolean {
     return (
@@ -1500,6 +1500,15 @@ class SessionRegistry implements Sessions {
       !this.#closing.signal.aborted &&
       this.#entries.get(entry.key) === entry
     );
+  }
+
+  /**
+   * Whether the core may type into the session now (a prompt, a clearing,
+   * a draft put back): as {@link #takesInput} says, and no end asked of it
+   * by an app, whose interrupt alone goes in before its signal.
+   */
+  #typesInto(entry: Entry): boolean {
+    return this.#takesInput(entry) && entry.endAskedBecause === undefined;
   }
 
   #update(entry: Entry, session: Session): void {

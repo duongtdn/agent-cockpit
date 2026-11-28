@@ -483,6 +483,32 @@ describe('a permission asked in the terminal only', () => {
 });
 
 describe('a session while asks are pending', () => {
+  it('presses nothing more of a first prompt being typed once an end is asked of it: the interrupt’s reply alone, no restore of a draft', async () => {
+    driver.promptFitsLaunch = () => false;
+    host.show(KEY, stubScreen('input-box'));
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: 'c-1',
+      prompt: PROMPT,
+    });
+    launched.catch(() => {});
+    await settle();
+    hook('/ready');
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+    expect(writes().at(-1)).toBe('Enter');
+    const { held } = asked('call-1');
+    const written = host.writes.length;
+
+    ending();
+    await settle();
+    hook(`${PROMPT_PATH}${PROMPT}`);
+    await settle();
+
+    expect(held.replies).toEqual([driver.interrupting.appAsk.reply]);
+    expect(host.writes.slice(written)).toEqual([]);
+  });
+
   it('takes no first prompt typed after the start once its agent asked: the box that shows then is not typed into', async () => {
     driver.promptFitsLaunch = () => false;
     const launched = sessions.launch({
