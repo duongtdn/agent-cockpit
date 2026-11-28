@@ -59,9 +59,10 @@ export type HookReader = (request: HookRequest) => HookOutcome;
  * `SubagentStart`, until the session's process ends.
  *
  * A background task's hooks carry its `agent_id`, and never move the
- * session's state: they tell nothing, but the task's `SubagentStart`, which
- * tells that the task started, and its `SubagentStop`, which tells that it
- * finished. A compaction's own agent carries one too,
+ * session's state: they tell nothing, but the task's `SubagentStop`, which
+ * tells that it finished. The session's own `Agent` call that launches a
+ * subagent in the background tells that the task started. A compaction's
+ * own agent carries one too,
  * and starts with no `SubagentStart`: a `StopFailure` with an `agent_id` no
  * task of the session's has is the compaction's, which failed, and ended.
  *
@@ -78,7 +79,7 @@ export function createHookReader(): HookReader {
     const { hook_event_name: name, agent_id: agentId } = body;
     if (name === 'SubagentStart' && isText(agentId)) {
       tasksBySession.set(key, tasksOf(key).add(agentId));
-      return { events: [taskStarted(agentId, body.agent_type)] };
+      return NOTHING;
     }
     if (name === 'SubagentStop') return { events: taskFinished(agentId) };
     if (agentId !== undefined) {
@@ -110,8 +111,9 @@ function eventsOf(payload: Record<string, unknown>): DriverEvent[] {
     case 'UserPromptSubmit':
       return [promptTaken(payload.prompt)];
     case 'PreToolUse':
-    case 'PostToolUse':
       return [{ type: 'working' }];
+    case 'PostToolUse':
+      return [{ type: 'working' }, ...backgroundAgentStarted(payload)];
     case 'Stop':
       return [turnEnded(payload.last_assistant_message), ...tasks(payload.background_tasks)];
     case 'StopFailure':
@@ -175,9 +177,21 @@ function turnError(payload: Record<string, unknown>): TurnError {
   return { kind, message };
 }
 
-/** A background task started, named by its agent's type: its `SubagentStart` gives no description. */
-function taskStarted(id: string, agentType: unknown): DriverEvent {
-  return { type: 'task-started', task: { id, type: isText(agentType) ? agentType : '' } };
+/**
+ * The subagent an `Agent` call launched in the background, as `Stop` will
+ * list it: by the id `background_tasks` gives it, its type and its
+ * description. One the call ran in the foreground is no background task.
+ * A `SubagentStart` is not read so: it starts the agent's own helpers too,
+ * and carries no description.
+ */
+function backgroundAgentStarted(payload: Record<string, unknown>): DriverEvent[] {
+  const { tool_name: tool, tool_input: input, tool_response: response } = payload;
+  if (tool !== 'Agent' || !isRecord(response) || response.isAsync !== true) return [];
+  const type = isRecord(input) ? input.subagent_type : undefined;
+  return backgroundTask({ ...response, id: response.agentId, agent_type: type }).map((task) => ({
+    type: 'task-started',
+    task,
+  }));
 }
 
 function taskFinished(id: unknown): DriverEvent[] {

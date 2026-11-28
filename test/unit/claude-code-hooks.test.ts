@@ -26,6 +26,9 @@ function eventsOfPayload(body: unknown, path = HOOKS_PATH) {
 }
 
 const subagentStart = () => payload('SubagentStart', ofATask);
+/** The session's own `Agent` call, whose subagent runs in the background. */
+const launchedInTheBackground = () =>
+  payload('PostToolUse', (each) => each.tool_name === 'Agent' && !('agent_id' in each));
 const subagentStop = () => payload('SubagentStop', (each) => each.agent_type !== '');
 /** A Stop that lists tasks running in the background, of one kind. */
 const stopListing = (kind: string) =>
@@ -85,7 +88,9 @@ describe("what Claude Code's hooks tell the core", () => {
 
   it('PreToolUse and PostToolUse of the session: it works on its turn', () => {
     expect(eventsOfPayload(payload('PreToolUse'))).toEqual([{ type: 'working' }]);
-    expect(eventsOfPayload(payload('PostToolUse'))).toEqual([{ type: 'working' }]);
+    expect(eventsOfPayload(payload('PostToolUse', { tool_name: 'Read' }))).toEqual([
+      { type: 'working' },
+    ]);
   });
 
   it("a background task's hooks change nothing: they carry its agent_id", () => {
@@ -195,16 +200,30 @@ describe("what Claude Code's hooks tell the core", () => {
     expect(eventsOfPayload(body)).toEqual([{ type: 'task-finished', id: body.agent_id }]);
   });
 
-  it("SubagentStart: a background task started, named by its agent_id and its agent's type", () => {
-    const body = subagentStart();
+  it('PostToolUse of an Agent launched in the background: a background task started, as the end of a turn lists it', () => {
+    const body = launchedInTheBackground();
+    const [listed] = eventsOfPayload(stopListing('subagent')).filter(
+      (event) => event.type === 'tasks',
+    );
 
     expect(eventsOfPayload(body)).toEqual([
-      { type: 'task-started', task: { id: body.agent_id, type: body.agent_type } },
+      { type: 'working' },
+      { type: 'task-started', task: listed?.type === 'tasks' ? listed.running[0] : undefined },
     ]);
   });
 
-  it('SubagentStart and SubagentStop that name no task tell nothing', () => {
-    expect(eventsOfPayload({ ...subagentStart(), agent_id: 7 })).toEqual([]);
+  it('PostToolUse of an Agent that ran in the foreground: it works on its turn, no task', () => {
+    const body = launchedInTheBackground();
+    const ranInTheForeground = {
+      ...body,
+      tool_response: { ...(body.tool_response as object), isAsync: false },
+    };
+
+    expect(eventsOfPayload(ranInTheForeground)).toEqual([{ type: 'working' }]);
+  });
+
+  it('SubagentStart, and a SubagentStop that names no task, tell nothing', () => {
+    expect(eventsOfPayload(subagentStart())).toEqual([]);
     expect(eventsOfPayload({ ...subagentStop(), agent_id: 7 })).toEqual([]);
   });
 
