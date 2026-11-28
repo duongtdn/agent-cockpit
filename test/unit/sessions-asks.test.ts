@@ -31,6 +31,7 @@ import {
   stubAsk,
   stubFolders,
   stubScreen,
+  TYPING_PATIENCE_MS,
   withdrawnScreen,
 } from '../support/sessions-doubles.ts';
 
@@ -458,6 +459,30 @@ describe('a permission asked in the terminal only', () => {
 });
 
 describe('a session while asks are pending', () => {
+  it('takes no first prompt typed after the start once its agent asked: the box that shows then is not typed into', async () => {
+    driver.promptFitsLaunch = () => false;
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: 'c-1',
+      prompt: PROMPT,
+    });
+    await settle();
+    hook('/ready');
+    const { id } = asked('call-1');
+    await expect(launched).resolves.toMatchObject({ state: 'waiting' });
+
+    const typed = sessions.firstPrompt(KEY);
+    typed?.catch(() => {});
+    host.show(KEY, stubScreen('input-box'));
+    await vi.advanceTimersByTimeAsync(2 * SCREEN_INTERVAL_MS + TYPING_PATIENCE_MS);
+
+    await expect(typed).rejects.toMatchObject({ code: 'wrong-state' });
+
+    expect(host.writes).toEqual([]);
+    expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'ask', id }] });
+  });
+
   it('lists each in the order they opened, `waiting` since the first, through asks opening and settling', async () => {
     await busySession();
     await later();

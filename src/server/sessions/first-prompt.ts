@@ -216,11 +216,20 @@ export class FirstPrompt {
     this.#inputBoxWait = undefined;
     if (!shown || !session.takesInput()) return shown;
     keys.hold();
-    if (session.session().state === 'waiting') {
+    if (waitsOnlyInTheTerminal(session.session())) {
       session.update({ key: session.key, state: 'starting', since: new Date().toISOString() });
     }
     return shown;
   }
+}
+
+/**
+ * Whether the session waits on a start-up dialog alone, which the box
+ * showing answered; one that waits on an ask of its agent's (with an id)
+ * stays so, and its first prompt is not typed.
+ */
+function waitsOnlyInTheTerminal(session: Session): boolean {
+  return session.state === 'waiting' && session.pending.every((each) => each.id === undefined);
 }
 
 /**
