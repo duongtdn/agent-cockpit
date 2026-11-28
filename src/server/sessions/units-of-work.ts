@@ -424,8 +424,10 @@ class Units implements UnitsOfWork {
     this.#loaded.delete(key);
     // The core tells its followers, these units of work among them, when it forgets a session.
     if (!this.#sessions.forget(key)) this.#notify();
-    const stoppedTasks = end.action === 'ended' ? end.stoppedTasks : [];
-    return { action: 'removed', ...(stoppedTasks.length === 0 ? {} : { stoppedTasks }) };
+    return {
+      action: 'removed',
+      ...stoppedTasksOf({ stoppedTasks: end.action === 'ended' ? end.stoppedTasks : [] }),
+    };
   }
 
   /** The state of a key with no session in this process: `ended` when it is recorded, none when not. */
@@ -940,7 +942,10 @@ function startedOrResumed(launched: Launched): RunResult {
   return { action: 'started', ...reason, state, ...stoppedTasksOf(launched) };
 }
 
-function stoppedTasksOf({ stoppedTasks }: Launched): { stoppedTasks?: readonly BackgroundTask[] } {
+/** The tasks an end stopped, as a result gives them: absent when none ran. */
+function stoppedTasksOf({ stoppedTasks }: Pick<Launched, 'stoppedTasks'>): {
+  stoppedTasks?: readonly BackgroundTask[];
+} {
   return stoppedTasks.length === 0 ? {} : { stoppedTasks };
 }
 
