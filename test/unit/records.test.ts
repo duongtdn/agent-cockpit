@@ -21,6 +21,9 @@ const foreign = vi.hoisted(() => new Set<string>());
 /** Paths whose next rename fails, as a full disk or a crash before it would. */
 const failingRenames = vi.hoisted(() => new Set<string>());
 
+/** Paths whose next deletion fails, as a folder the user can no longer write. */
+const failingRemovals = vi.hoisted(() => new Set<string>());
+
 vi.mock('node:fs/promises', async (importOriginal) => {
   const fs = await importOriginal<typeof import('node:fs/promises')>();
   return {
@@ -37,6 +40,12 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       }
       return fs.rename(from, to);
     },
+    rm: async (path: string, options?: Parameters<typeof fs.rm>[1]) => {
+      if (failingRemovals.delete(String(path))) {
+        throw Object.assign(new Error(`EACCES: ${path}`), { code: 'EACCES' });
+      }
+      return fs.rm(path, options);
+    },
   };
 });
 
@@ -51,6 +60,7 @@ beforeEach(() => {
 afterEach(() => {
   foreign.clear();
   failingRenames.clear();
+  failingRemovals.clear();
   rmSync(folder, { recursive: true, force: true });
 });
 
@@ -302,6 +312,15 @@ describe('removing a record', () => {
     await store.remove('a');
     await store.remove('../a');
     expect(store.list()).toEqual([]);
+  });
+
+  it('keeps the record, in memory and on disk, when its file cannot be deleted', async () => {
+    const store = await openRecordStore(folder);
+    await store.put(aRecord('a'));
+    failingRemovals.add(join(records, 'a.json'));
+    await expect(store.remove('a')).rejects.toThrow('EACCES');
+    expect(store.list()).toEqual([aRecord('a')]);
+    expect((await openRecordStore(folder)).get('a')).toEqual(aRecord('a'));
   });
 
   it('acts after the puts asked before it, and a put after it records the key anew, last', async () => {
