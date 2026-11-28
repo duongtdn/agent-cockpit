@@ -96,15 +96,15 @@ function screenOf(key: string): string {
 /**
  * Answers the permission dialog in a session's terminal with its first
  * option, "Yes", as a person at the terminal presses Enter: once the dialog
- * shows, and again only when a whole scaled patience passed with it still
- * shown (a dialog was seen to drop a key pressed as it showed).
+ * shows, and again only when a whole scaled patience for its answer passed
+ * with it still shown (a dialog was seen to drop a key pressed as it showed).
  */
 async function answerYesInTerminal(key: string): Promise<void> {
   await eventually(() => expect(screenOf(key)).toContain(PERMISSION_DIALOG), undefined, WAIT_MS);
   for (let presses = 1; presses <= DIALOG_KEY_PRESSES; presses++) {
     tmux('send-keys', '-t', key, 'Enter');
     const answered = () => !screenOf(key).includes(PERMISSION_DIALOG);
-    if (await cameTrue(answered, PATIENCE.dialogKey, POLL.screen)) return;
+    if (await cameTrue(answered, PATIENCE.dialogAnswered, POLL.screen)) return;
   }
   throw new Error(`The dialog did not take Enter:\n${screenOf(key)}`);
 }

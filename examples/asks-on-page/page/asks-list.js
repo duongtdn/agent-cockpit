@@ -16,7 +16,7 @@ const SETTLED_BY = {
 /**
  * How each kind of ask is drawn, by its `kind`: its title; its content; a
  * line that sums it up once it is settled; and the controls that answer it,
- * each calling `answer(value)` with an answer of the kind.
+ * drawn from the ask, each calling `answer(value)` with an answer of the kind.
  */
 const KINDS = {
   permission: {
@@ -25,6 +25,16 @@ const KINDS = {
     summary: (ask) => ask.description ?? JSON.stringify(ask.input),
     answers: permissionAnswers,
   },
+};
+
+/**
+ * A kind this page does not know, from a newer package: named, its content
+ * left out, and never answered here, whoever may answer it.
+ */
+const UNKNOWN_KIND = {
+  title: (ask) => `A ${ask.kind} ask this page cannot draw`,
+  content: () => [],
+  summary: () => 'answer it in the terminal',
 };
 
 /**
@@ -66,7 +76,7 @@ export function createAsksList({ pending, settled, noPending, noSettled }, clien
 
 /** A pending ask: its key and title, its content, and its answers or where to answer it. */
 function pendingItem(ask, client) {
-  const kind = KINDS[ask.kind];
+  const kind = kindOf(ask);
   const item = element('li', { className: 'ask' });
   Object.assign(item.dataset, { id: ask.id, key: ask.key, answerable: ask.answerable });
   const status = element('p', { className: 'result', role: 'status' });
@@ -85,10 +95,16 @@ function pendingItem(ask, client) {
     element('h3', { textContent: `${ask.key} — ${kind.title(ask)}` }),
     ...kind.content(ask),
     element('p', { className: 'since', textContent: `Asked at ${timeOf(ask.since)}.` }),
-    ...(ask.answerable === 'app' ? kind.answers(answer) : [inTheTerminal(ask)]),
+    ...(ask.answerable === 'app' && kind.answers !== undefined
+      ? kind.answers(ask, answer)
+      : [inTheTerminal(ask)]),
     status,
   );
   return item;
+}
+
+function kindOf(ask) {
+  return KINDS[ask.kind] ?? UNKNOWN_KIND;
 }
 
 /** What an ask only a person in its session's terminal can answer shows in place of answers. */
@@ -103,7 +119,7 @@ function inTheTerminal(ask) {
 function settledItem(ask, { id, key, by }) {
   const item = element('li', { className: 'ask settled' });
   Object.assign(item.dataset, { id, key, by });
-  const kind = ask === undefined ? undefined : KINDS[ask.kind];
+  const kind = ask === undefined ? undefined : kindOf(ask);
   const what = kind === undefined ? 'an ask' : `${kind.title(ask)}: ${kind.summary(ask)}`;
   item.append(
     element('span', { textContent: `${key} — ${what} — settled by ` }),
@@ -131,7 +147,7 @@ function permissionContent(ask) {
 }
 
 /** A permission's answers: allow, allow for the rest of the session, or deny with a message. */
-function permissionAnswers(answer) {
+function permissionAnswers(_ask, answer) {
   const allow = button('Allow', () => answer({ allow: true }));
   const remember = button('Allow for the session', () =>
     answer({ allow: true, remember: 'session' }),
