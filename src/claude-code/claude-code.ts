@@ -6,7 +6,6 @@ import {
   type DriverSettings,
   HOOKS_PATH,
   type HookAddress,
-  type JsonValue,
   type Launch,
   type LaunchCommand,
   type SessionNetwork,
@@ -15,6 +14,7 @@ import { writePrivateFile } from '../server/state/private-files.js';
 import { CockpitError } from '../shared/cockpit-error.js';
 import type { KeyRule } from '../shared/wire.js';
 import { agentVersionReader } from './agent-version.js';
+import { INTERRUPT_REPLY, permissionReply } from './ask-replies.js';
 import { agentConfigFolder, keepsConversation, type TranscriptLookup } from './conversations.js';
 import { createHookReader } from './hook-payloads.js';
 import {
@@ -62,14 +62,7 @@ const ENDING = { signal: 'SIGTERM', boundMs: 5_000 } as const;
  */
 const INTERRUPTING = {
   busy: { keys: ['Escape'] },
-  appAsk: {
-    reply: {
-      hookSpecificOutput: {
-        hookEventName: 'PermissionRequest',
-        decision: { behavior: 'deny', interrupt: true },
-      },
-    },
-  },
+  appAsk: { reply: INTERRUPT_REPLY },
   terminalAsk: { keys: ['Escape'] },
   boundMs: 5_000,
 } as const;
@@ -251,19 +244,11 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
       return launchSession(launch, checked);
     },
     readHook: createHookReader(),
-    answerReply,
+    answerReply: permissionReply,
     follow: (conversation, report) =>
       followTranscript({ ...lookupOf(conversation), isNew: conversation.isNew }, report).stop,
     canResume: (conversation) => keepsConversation(lookupOf(conversation)),
   };
-}
-
-/**
- * Claude Code's reply to an ask: its hook reader opens none, so no answer
- * is ever asked of it.
- */
-function answerReply(): JsonValue {
-  throw new Error("Claude Code's driver opens no ask, and answers none.");
 }
 
 /**
