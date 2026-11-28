@@ -6,6 +6,7 @@ import { CockpitError, type Issue } from '../shared/cockpit-error.js';
 import type { Driver, SessionNetwork } from './driver.js';
 import { jobDefinitionIssues } from './job-definitions.js';
 import { issuesOf, type Job } from './jobs.js';
+import { MAX_TIMER_DELAY_MS } from './sessions/idle-timeout.js';
 
 /** What `createCockpit` takes. */
 export interface CockpitOptions {
@@ -114,10 +115,11 @@ export interface CockpitOptions {
    * `idle`; any other state, and every new `idle`, starts it again. A
    * session with a background task running, a terminal attached or a call
    * of the app's under way on its key is not ended then, and is looked at
-   * again one full timeout later: one may stay up to about twice the
-   * timeout after its last page closed.
+   * again one full timeout after each look that found it so: it is ended
+   * within one timeout of what held it going, so up to about twice the
+   * timeout after it became `idle`.
    */
-  readonly idleTimeout?: `${number}${'ms' | 's' | 'm' | 'h'}` | false;
+  readonly idleTimeout?: `${bigint}${'ms' | 's' | 'm' | 'h'}` | false;
 }
 
 /** The options once checked: the app's folder absolute, the access options with their values. */
@@ -230,29 +232,28 @@ function isWebOrigin(text: string): boolean {
 /** The idle timeout when the app gives none: 30 minutes. */
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 
-/** The longest wait a timer of Node keeps: past it, it fires at once. */
-const MAX_TIMER_MS = 2_147_483_647;
-
 const UNIT_MS = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 } as const;
 
 const DURATION = /^([1-9][0-9]*)(ms|s|m|h)$/;
 
-/** A duration's milliseconds; `undefined` for a text of another form. */
-function durationMs(text: string): number | undefined {
-  const match = DURATION.exec(text);
-  if (match === null) return undefined;
-  return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
-}
+const DURATION_FORM =
+  "Expected a duration, a whole number from 1 with its unit ('<n>ms', '<n>s', '<n>m' or '<n>h'), or false.";
 
-const idleTimeout = z
-  .custom<string | false>(
-    (value) => value === false || (typeof value === 'string' && durationMs(value) !== undefined),
-    "Expected a duration, a whole number from 1 with its unit ('<n>ms', '<n>s', '<n>m' or '<n>h'), or false.",
-  )
+/** A duration, read as its milliseconds. */
+const duration = z
+  .string()
+  .regex(DURATION, DURATION_FORM)
+  .transform((text) => {
+    const [, count, unit] = DURATION.exec(text) as RegExpExecArray;
+    return Number(count) * UNIT_MS[unit as keyof typeof UNIT_MS];
+  })
   .refine(
-    (value) => value === false || (durationMs(value) ?? Number.POSITIVE_INFINITY) <= MAX_TIMER_MS,
+    (ms) => ms <= MAX_TIMER_DELAY_MS,
     'Expected a duration of at most 2,147,483,647 ms (about 24.8 days): a longer one no timer waits.',
   );
+
+/** The idle timeout: a duration's milliseconds, or `false` (off). */
+const idleTimeout = z.union([z.literal(false), duration], { error: DURATION_FORM });
 
 const options = z.object({
   name: z.string().min(1),
@@ -308,7 +309,7 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
   if (!(await isFolder(directory))) {
     throw invalidOptions([{ path: ['directory'], message: `No folder at ${directory}.` }]);
   }
-  const idleTimeoutMs = idleTimeoutMsOf(checked.idleTimeout);
+  const idleTimeoutMs = idleTimeoutMsOf(parsed.data.idleTimeout);
   return {
     ...checked,
     directory,
@@ -321,9 +322,9 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
 }
 
 /** A checked idle timeout's milliseconds: the default when left out, none when off. */
-function idleTimeoutMsOf(given: CockpitOptions['idleTimeout']): number | undefined {
-  if (given === false) return undefined;
-  return given === undefined ? DEFAULT_IDLE_TIMEOUT_MS : durationMs(given);
+function idleTimeoutMsOf(parsed: number | false | undefined): number | undefined {
+  if (parsed === false) return undefined;
+  return parsed ?? DEFAULT_IDLE_TIMEOUT_MS;
 }
 
 /**

@@ -177,8 +177,11 @@ export interface Cockpit {
    * @throws `CockpitError` `wrong-state` on `starting`;
    * `interrupt-unconfirmed` (`key`, the last state known) when the session
    * was not seen `idle` within the driver's bound (for Claude Code, 5
-   * seconds): nothing more was pressed. An `Error` with no code once the
-   * cockpit is closed (500 on the wire).
+   * seconds): nothing more was pressed.
+   * @throws The session host's error, with no code, when the host fails
+   * while the keys are pressed. On the wire, a 500 with no body, and the
+   * failure goes to `on('error')` as `internal-failure`. An `Error` with
+   * no code once the cockpit is closed (500 on the wire).
    */
   interrupt(key: string): Promise<InterruptResult>;
   /**

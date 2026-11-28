@@ -79,7 +79,7 @@ export function createIdleTimeout(options: IdleTimeoutOptions): IdleTimeout {
 }
 
 /** The longest a timer waits: Node fires a longer one after 1 ms. */
-const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 function isTimerDelay(ms: number): boolean {
   return Number.isInteger(ms) && ms >= 1 && ms <= MAX_TIMER_DELAY_MS;

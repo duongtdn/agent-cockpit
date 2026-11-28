@@ -131,7 +131,8 @@ export interface CockpitClient {
    * Removes a unit of work, as the server's `cockpit.remove` does: it ends
    * a live session first, then deletes everything the cockpit wrote for the
    * key, which is unknown afterwards; the agent's transcripts are left. On
-   * a key with no record it resolves with `nothing-to-remove`. Made again
+   * a key with neither a record nor a session it resolves with
+   * `nothing-to-remove`. Made again
    * once, as a run is, when a renewal of the token overlapped it.
    *
    * @param key - The unit of work's key.
