@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import type { AgentSession } from '../support/agent-session.ts';
 import { toolUse, turn } from '../support/fake-api/index.ts';
 import type { ReceivedHook } from '../support/hooks/hook-receiver.ts';
-import { REFUSED_CALL } from '../support/hooks/payload-recording.ts';
+import { escaped, REFUSED_CALL } from '../support/hooks/payload-recording.ts';
 import type { LaunchOptions } from '../support/real-agent/runner.ts';
 import { toolResults } from './confinement-probes.ts';
 import { answerYes, pressOnDialog, selectOnDialog } from './dialog-keys.ts';
@@ -252,7 +252,7 @@ it('144 — A "No" amended in the terminal (No selected, Tab, a text, Enter): no
     tool_calls: [
       expect.objectContaining({
         tool_use_id: pre.payload.tool_use_id,
-        tool_response: expect.stringContaining(REFUSED_CALL),
+        tool_response: expect.stringMatching(new RegExp(`^${escaped(REFUSED_CALL)}`)),
       }),
     ],
   });

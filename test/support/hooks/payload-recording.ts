@@ -131,7 +131,8 @@ function withPlaceholders(payload: Record<string, unknown>): Record<string, unkn
   }) as Record<string, unknown>;
 }
 
-function escaped(text: string): string {
+/** Gives a text as a regular expression's source that matches it alone. */
+export function escaped(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 

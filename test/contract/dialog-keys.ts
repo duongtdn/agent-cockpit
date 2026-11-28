@@ -130,5 +130,5 @@ export async function selectOnDialog(
  * the transcript shows above the dialog with the same sign.
  */
 function selectionOn(screen: string | undefined): string | undefined {
-  return /^\s*❯ \d+\. .*$/mu.exec(screen ?? '')?.[0];
+  return /^[ \t]*❯ \d+\. .*$/mu.exec(screen ?? '')?.[0];
 }
