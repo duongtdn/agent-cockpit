@@ -408,6 +408,23 @@ export interface ScreenStateSigns {
    * @returns `true` once the panel is gone and the agent waits.
    */
   launchPanelClosed(text: string): boolean;
+  /**
+   * Tells that an Esc pressed before the model answered withdrew the
+   * turn's prompt: the agent put it back into its empty input box, and
+   * waits for a prompt (`idle`), with no hook, no transcript entry, no
+   * other sign. The input box holds exactly the prompt, compared with
+   * every run of whitespace left out (the box breaks a wrapped line where
+   * a space was), and the screen shows no sign above the box that the
+   * agent works. Over a draft the same Esc interrupts instead, and the box
+   * holds the draft alone: never read so. Nor is a box under a dialog, an
+   * entry recalled from the history, or a screen the driver cannot read.
+   *
+   * @param text - The screen, row by row, as the terminal shows it: never
+   * a person's scrolling back, which the core does not read.
+   * @param prompt - The turn's prompt, as the agent took it.
+   * @returns `true` when the box holds the prompt withdrawn.
+   */
+  promptWithdrawn(text: string, prompt: string): boolean;
 }
 
 /** A value JSON writes and reads back the same: what the cockpit keeps in its files. */

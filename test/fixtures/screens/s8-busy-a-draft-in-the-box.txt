@@ -1,0 +1,40 @@
+
+██▟        Claude Code v2.1.332
+███▀       Opus 5.5 · API Usage Billing
+ ▝▝        /tmp/cockpit-real-agent-P9Hbrd/work
+
+
+❯ get ready
+
+● Ready.
+
+✻ Cooked for 0s · done 8:36 AM
+
+❯ the sent prompt
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+✢ Unfurling…
+  ⎿  Tip: Start small, ask Claude for a plan, and check its edits
+                                                                                          ctrl+y to paste deleted text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ my one-line draft
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

@@ -104,7 +104,33 @@ export const SCREEN_STATE_SIGNS: ScreenStateSigns = {
     const box = readBoxRows(rows);
     return box !== undefined && !showsSpinner(rows, box);
   },
+  promptWithdrawn(text, prompt) {
+    const rows = text.split('\n');
+    const box = readBoxRows(rows);
+    if (box === undefined || box.recalled || showsSpinner(rows, box)) return false;
+    return holdsExactly(box, prompt);
+  },
 };
+
+/**
+ * Tells whether the box holds exactly a text, every run of whitespace left
+ * out. A box scrolled holds more than it shows, which cannot be told equal.
+ */
+function holdsExactly(box: InputBoxView, text: string): boolean {
+  const held = withoutWhitespace(box.text);
+  return held !== '' && box.hiddenAbove + box.hiddenBelow === 0 && held === withoutWhitespace(text);
+}
+
+/**
+ * Gives a text with every run of whitespace left out: what the box shows
+ * of a text compares so, since the box wraps a line onto rows where a
+ * space was.
+ *
+ * @param text - The text.
+ */
+export function withoutWhitespace(text: string): string {
+  return text.replace(/\s+/g, '');
+}
 
 /** Tells whether the agent works on a turn or a compaction: either sign of it shows. */
 function isWorking(rows: readonly string[], box: InputBoxView): boolean {

@@ -28,7 +28,7 @@ export const DRIVER_DEFAULTS: Pick<
   environmentIssues: async () => [],
   networkOf: () => ({ reach: 'confined' }),
   readScreen: () => ({ shows: 'nothing' }),
-  screenStateSigns: { launchPanelClosed: () => false },
+  screenStateSigns: { launchPanelClosed: () => false, promptWithdrawn: () => false },
   follow: () => () => {},
   readInputBox: () => undefined,
   typePrompt: async () => 'not-taken',

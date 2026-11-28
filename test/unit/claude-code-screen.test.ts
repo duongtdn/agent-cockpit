@@ -9,8 +9,10 @@ import type { ScreenReading } from '../../src/server/driver.ts';
  * 120×40 pane, trailing blanks removed: each start-up dialog, the ready
  * input box, local commands given as the launch prompt, (`s6-`) the
  * agent busy and idle, a draft in the box or none, in each mode, and
- * (`s7-`) the panels a launch prompt opens and the box once one closed. Named
- * `<case>-<step>`: `-0` after the launch, `-1` after the first keys, and so
+ * (`s7-`) the panels a launch prompt opens and the box once one closed, and
+ * (`s8-`) an early Esc's screens: the prompt withdrawn into the empty box,
+ * the turn interrupted over a draft, the busy screens before it, a prompt
+ * glued to a draft, a permission dialog. Named `<case>-<step>`: `-0` after the launch, `-1` after the first keys, and so
  * on; the temporary paths in them differ per capture.
  */
 const SCREENS = fileURLToPath(new URL('../fixtures/screens/', import.meta.url));
@@ -131,6 +133,18 @@ const EXPECTED: Readonly<Record<string, ScreenReading>> = {
   's7-cost-closed': INPUT_BOX,
   's7-model-chosen': INPUT_BOX,
   's7-start-hook-running': NOTHING,
+  // An early Esc over an empty box withdraws the prompt into it (one line, five lines, one line
+  // wrapped over four rows); over a draft it interrupts, the draft alone left in the box. Before
+  // the Esc, the spinner's row above the box, empty or holding a draft. The prompt and a draft
+  // glued in the box, and a permission dialog the agent draws over it, which no hint names.
+  's8-withdrawn-one-line': INPUT_BOX,
+  's8-withdrawn-five-lines': INPUT_BOX,
+  's8-withdrawn-wrapped-line': INPUT_BOX,
+  's8-interrupted-over-a-draft': INPUT_BOX,
+  's8-busy-prompt-above-an-empty-box': NOTHING,
+  's8-busy-a-draft-in-the-box': NOTHING,
+  's8-prompt-glued-to-a-draft': INPUT_BOX,
+  's8-permission-dialog': UNKNOWN,
 };
 
 /** The screens of each case in each mode the driver runs, named `s6-<mode>-<case>`. */
@@ -144,6 +158,11 @@ function byMode(cases: Readonly<Record<string, ScreenReading>>): Record<string, 
 
 function screen(name: string): string {
   return readFileSync(`${SCREENS}${name}.txt`, 'utf8');
+}
+
+/** A screen of the input box's own fixtures: a draft scrolled, an entry recalled from the history. */
+function inputBoxScreen(name: string): string {
+  return readFileSync(new URL(`../fixtures/input-box/${name}.txt`, import.meta.url), 'utf8');
 }
 
 const readScreen = (text: string) => claudeCode().readScreen(text);
@@ -284,5 +303,83 @@ describe("the Claude Code driver's sign on screen that a panel a launch prompt o
   it('reads no close on a screen with no input box: blank, or one the driver does not know', () => {
     expect(claudeCode().screenStateSigns.launchPanelClosed('')).toBe(false);
     expect(closed('s1-offline-nokey-0')).toBe(false);
+  });
+});
+
+describe("the Claude Code driver's sign on screen that an early Esc withdrew the turn's prompt", () => {
+  const FIVE_LINES = 'p-one first line\np-two\np-three\np-four\np-five last';
+  const WRAPPED_LINE = Array.from({ length: 60 }, (_, index) => `word${index}`).join(' ');
+  const withdrawn = (name: string, prompt: string) =>
+    claudeCode().screenStateSigns.promptWithdrawn(screen(name), prompt);
+
+  it.each([
+    ['s8-withdrawn-one-line', 'withdraw me'],
+    ['s8-withdrawn-five-lines', FIVE_LINES],
+    ['s8-withdrawn-wrapped-line', WRAPPED_LINE],
+  ])('reads %s: the box holds the prompt, no spinner above it', (name, prompt) => {
+    expect(withdrawn(name, prompt)).toBe(true);
+  });
+
+  it('compares with every run of whitespace left out: the box breaks a wrapped line where a space was', () => {
+    expect(withdrawn('s8-withdrawn-wrapped-line', WRAPPED_LINE.replaceAll(' ', '  '))).toBe(true);
+    expect(withdrawn('s8-withdrawn-five-lines', FIVE_LINES.replaceAll('\n', ' '))).toBe(true);
+  });
+
+  it('reads no withdrawal where the turn was interrupted over a draft: the box holds the draft alone', () => {
+    expect(withdrawn('s8-interrupted-over-a-draft', 'the sent prompt')).toBe(false);
+  });
+
+  it('reads no withdrawal where the box holds the prompt and more, or another text', () => {
+    expect(withdrawn('s8-prompt-glued-to-a-draft', 'the sent prompt')).toBe(false);
+    expect(withdrawn('s8-withdrawn-one-line', 'withdraw')).toBe(false);
+    expect(withdrawn('s8-withdrawn-one-line', 'withdraw me now')).toBe(false);
+  });
+
+  it("reads no withdrawal while the spinner's row shows: the prompt above an empty box, or the text in the box", () => {
+    expect(withdrawn('s8-busy-prompt-above-an-empty-box', 'withdraw me')).toBe(false);
+    expect(withdrawn('s8-busy-a-draft-in-the-box', 'my one-line draft')).toBe(false);
+  });
+
+  it("reads the spinner's row, never the footer: the box under a spinner's row holds no withdrawn prompt", () => {
+    const spinnerOverThePrompt = screen('s8-busy-a-draft-in-the-box').replace(
+      '❯ my one-line draft',
+      '❯ withdraw me',
+    );
+    const footerHintOnly = screen('s8-withdrawn-one-line').replace(
+      '⏸ manual mode on',
+      '⏸ manual mode on · esc to interrupt · ← for agents',
+    );
+
+    expect(claudeCode().screenStateSigns.promptWithdrawn(spinnerOverThePrompt, 'withdraw me')).toBe(
+      false,
+    );
+    expect(claudeCode().screenStateSigns.promptWithdrawn(footerHintOnly, 'withdraw me')).toBe(true);
+  });
+
+  it('reads no withdrawal where no input box shows: a dialog over it, a blank screen, one it does not know', () => {
+    expect(withdrawn('s8-permission-dialog', 'Make a file')).toBe(false);
+    expect(withdrawn('s1-trust-0', 'withdraw me')).toBe(false);
+    expect(claudeCode().screenStateSigns.promptWithdrawn('', 'withdraw me')).toBe(false);
+    expect(withdrawn('s1-offline-nokey-0', 'withdraw me')).toBe(false);
+  });
+
+  it('reads no withdrawal from a box scrolled: it holds more than it shows', () => {
+    const scrolled = inputBoxScreen('a1-draft-25-lines-cursor-up-1-downs');
+    const shown = Array.from(
+      { length: 15 },
+      (_, index) => `draft line ${String(index + 11).padStart(2, '0')}`,
+    ).join('\n');
+
+    expect(claudeCode().screenStateSigns.promptWithdrawn(scrolled, shown)).toBe(false);
+  });
+
+  it('reads no withdrawal of an empty prompt from an empty box: nothing was withdrawn', () => {
+    expect(withdrawn('s1-ready-noprompt-final', '')).toBe(false);
+  });
+
+  it('reads no withdrawal from an entry the person recalled from the history, the same text in it', () => {
+    const recalled = inputBoxScreen('b1-history-empty-box-up-0-setup');
+
+    expect(claudeCode().screenStateSigns.promptWithdrawn(recalled, 'past prompt two')).toBe(false);
   });
 });

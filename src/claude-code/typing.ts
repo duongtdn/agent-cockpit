@@ -5,7 +5,12 @@ import {
   TypingStoppedError,
   type TypingTerminal,
 } from '../server/driver.js';
-import { type InputBoxView, isEmptyBox, readInputBoxView } from './screen-reading.js';
+import {
+  type InputBoxView,
+  isEmptyBox,
+  readInputBoxView,
+  withoutWhitespace,
+} from './screen-reading.js';
 
 /**
  * Typed after the draft and killed with it, so that the kill ring's last
@@ -517,10 +522,6 @@ function showsEnd(box: InputBoxView, prompt: string): boolean {
   const end = withoutWhitespace(prompt).slice(-END_SHOWN_LENGTH);
   if (shown === '') return end === '';
   return shown.endsWith(box.hiddenAbove > 0 ? end.slice(-shown.length) : end);
-}
-
-function withoutWhitespace(text: string): string {
-  return text.replace(/\s+/g, '');
 }
 
 /** What the box draws, to tell whether a key changed it. */

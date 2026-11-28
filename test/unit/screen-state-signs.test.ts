@@ -32,8 +32,11 @@ function coreFilesWith(pattern: RegExp): string[] {
 }
 
 describe("the screen's signs of the agent's state", () => {
-  it("are the whole list: a launch panel's close", () => {
-    expect(Object.keys(claudeCode().screenStateSigns)).toEqual(['launchPanelClosed']);
+  it("are the whole list: a launch panel's close, and a prompt an early Esc withdrew", () => {
+    expect(Object.keys(claudeCode().screenStateSigns)).toEqual([
+      'launchPanelClosed',
+      'promptWithdrawn',
+    ]);
   });
 
   it('are read in one place of the core: the watch of a launch prompt that opened a panel', () => {

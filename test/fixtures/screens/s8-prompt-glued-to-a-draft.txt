@@ -1,0 +1,40 @@
+
+ ▐▟███▟█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-4jELKf/work
+
+
+❯ get ready
+
+● Ready.
+
+✻ Worked for 0s · done 8:38 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                          ctrl+y to paste deleted text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ the sent promptmy one-line draft
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

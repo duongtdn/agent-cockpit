@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-S6xkxA/work
+
+
+❯ get ready
+
+● Ready.
+
+✻ Sautéed for 0s · done 8:37 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                 ctrl+g to edit in Vim
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ p-one first line
+  p-two
+  p-three
+  p-four
+  p-five last
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

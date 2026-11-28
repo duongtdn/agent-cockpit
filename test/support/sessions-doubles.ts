@@ -398,7 +398,10 @@ export function createStubDriver(): StubDriver {
     silentStartCause: 'The stub agent sent no hook.',
     ...DRIVER_DEFAULTS,
     readScreen: readStubScreen,
-    screenStateSigns: { launchPanelClosed: (text) => text === 'input-box' },
+    screenStateSigns: {
+      ...DRIVER_DEFAULTS.screenStateSigns,
+      launchPanelClosed: (text) => text === 'input-box',
+    },
     readInputBox: readStubInputBox,
     typePrompt: typeAsADriverDoes,
     failNextLaunch(error) {
