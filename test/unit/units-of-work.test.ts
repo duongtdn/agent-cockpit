@@ -21,6 +21,7 @@ import {
   createMemoryRecords,
   createRecordingHookAccess,
   createStubDriver,
+  createTestAsks,
   type FakeHost,
   holdNoHook,
   type MemoryRecords,
@@ -144,6 +145,7 @@ beforeEach(() => {
       listener: { host: '127.0.0.1', port: 4000 },
     }),
     holds: createTerminalHolds(),
+    asks: createTestAsks(),
     signal(pid, signal) {
       const key = sessions.liveKeys().find((each) => host.pidOf(each) === pid);
       signals.push(`${key} ${signal}`);

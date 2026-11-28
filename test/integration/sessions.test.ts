@@ -24,7 +24,7 @@ import {
   startHookForwarder,
 } from '../support/fake-agent-driver.ts';
 import { PATIENCE } from '../support/patience.ts';
-import { holdNoHook } from '../support/sessions-doubles.ts';
+import { createTestAsks, holdNoHook } from '../support/sessions-doubles.ts';
 
 const appName = `sessions-test-${process.pid}-${Date.now()}`;
 
@@ -72,6 +72,7 @@ function sessionsWith(driver: Driver): Sessions {
       listener: { host: '127.0.0.1', port: 0 },
     }),
     holds: createTerminalHolds(),
+    asks: createTestAsks(),
   });
 }
 

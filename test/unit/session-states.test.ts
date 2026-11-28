@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { DriverEvent } from '../../src/server/driver.ts';
 import {
+  asksSettledBy,
   courseAfter,
+  courseAsked,
+  courseSettled,
   courseWithdrawn,
   type SessionCourse,
 } from '../../src/server/sessions/session-states.ts';
@@ -597,3 +600,134 @@ describe('the background tasks across a turn that ends with no list of them', ()
     expect(course.session).toEqual({ key: KEY, state: 'idle', since: NOW });
   });
 });
+
+describe('a session whose agent asks a person', () => {
+  const ask = { kind: 'ask', id: 'ask-1' } as const;
+  const inTerminal = { kind: 'terminal', id: 'ask-2' } as const;
+  const LATER = '2026-11-26T10:09:00.000Z';
+
+  it('waits on the ask from then', () => {
+    expect(courseAsked({ session: busy }, ask, NOW).session).toEqual({
+      key: KEY,
+      state: 'waiting',
+      since: NOW,
+      pending: [ask],
+    });
+  });
+
+  it('lists a later ask after the earlier, its since kept', () => {
+    const once = courseAsked({ session: busy }, ask, NOW);
+    expect(courseAsked(once, inTerminal, LATER).session).toEqual({
+      key: KEY,
+      state: 'waiting',
+      since: NOW,
+      pending: [ask, inTerminal],
+    });
+  });
+
+  it('lists it after whatever the session waited for already, its since kept', () => {
+    expect(courseAsked({ session: waiting }, ask, NOW).session).toEqual({
+      key: KEY,
+      state: 'waiting',
+      since: BEFORE,
+      pending: [{ kind: 'terminal', dialog: 'trust-folder' }, ask],
+    });
+  });
+
+  it('sets aside the tasks an idle session listed, as a turn does', () => {
+    const asked = courseAsked({ session: idleWithTasks }, ask, NOW);
+    expect(tasksAfterInterrupt(asked)).toEqual([reviewer, tests]);
+  });
+
+  it('no longer has a prompt to withdraw', () => {
+    const turn = courseAfter({ session: idle }, { type: 'prompt-taken', prompt: 'Go.' }, true, NOW);
+    expect(courseAsked(turn, ask, NOW).withdrawablePrompt).toBeUndefined();
+  });
+
+  it.each<[string, DriverEvent]>([
+    ['a concurrent call', { type: 'working' }],
+    ['a prompt taken', { type: 'prompt-taken' }],
+  ])('stays waiting through %s: the same session', (_, event) => {
+    const asked = courseAsked({ session: busy }, ask, NOW);
+    expect(courseAfter(asked, event, true, LATER).session).toBe(asked.session);
+  });
+
+  it('waiting on an ask in the terminal is not a launch command’s panel: a command done leaves it waiting', () => {
+    const asked = courseAsked({ session: busy }, inTerminal, NOW);
+    const done: DriverEvent = { type: 'command-done', entry: 'result' };
+    expect(courseAfter(asked, done, true, LATER).session).toBe(asked.session);
+  });
+
+  it.each<[string, DriverEvent, IdleSession]>([
+    ['the turn’s end', { type: 'turn-ended', lastMessage: 'Done.' }, idle],
+    ['the turn’s failure', overloaded, failed],
+    ['the interruption', { type: 'interrupted' }, { key: KEY, state: 'idle', since: BEFORE }],
+  ])('is idle after %s', (_, event, after) => {
+    const asked = courseAsked({ session: busy }, ask, NOW);
+    expect(courseAfter(asked, event, true, LATER).session).toEqual({ ...after, since: LATER });
+  });
+});
+
+describe('a session whose asks are settled', () => {
+  const first = { kind: 'ask', id: 'ask-1' } as const;
+  const second = { kind: 'terminal', id: 'ask-2' } as const;
+  const LATER = '2026-11-26T10:09:00.000Z';
+  const twoAsks = courseAsked(courseAsked({ session: busy }, first, NOW), second, NOW);
+
+  it('lists those left, its since kept', () => {
+    expect(courseSettled(twoAsks, ['ask-1'], LATER).session).toEqual({
+      key: KEY,
+      state: 'waiting',
+      since: NOW,
+      pending: [second],
+    });
+  });
+
+  it('is busy from then once none is left', () => {
+    expect(courseSettled(twoAsks, ['ask-1', 'ask-2'], LATER).session).toEqual({
+      key: KEY,
+      state: 'busy',
+      since: LATER,
+    });
+  });
+
+  it('keeps waiting for what it waited for before its asks', () => {
+    const asked = courseAsked({ session: waiting }, first, NOW);
+    expect(courseSettled(asked, ['ask-1'], LATER).session).toEqual(waiting);
+  });
+
+  it('keeps the tasks set aside for the turn', () => {
+    const asked = courseAsked({ session: idleWithTasks }, first, NOW);
+    expect(tasksAfterInterrupt(courseSettled(asked, ['ask-1'], LATER))).toEqual([reviewer, tests]);
+  });
+
+  it.each<[string, SessionCourse]>([
+    ['an ask it does not list', twoAsks],
+    ['a session not waiting', { session: busy }],
+  ])('changes nothing for %s: the same course', (_, course) => {
+    expect(courseSettled(course, ['ask-9'], LATER)).toBe(course);
+  });
+});
+
+describe('what settles every pending ask of the session', () => {
+  const promptTaken = { session: busy, promptTakenAt: NOW };
+
+  it.each<[DriverEvent, 'terminal' | 'cancelled' | undefined]>([
+    [{ type: 'batch-ended' }, 'terminal'],
+    [{ type: 'turn-ended' }, 'terminal'],
+    [overloaded, 'terminal'],
+    [{ type: 'interrupted', at: NOW }, 'cancelled'],
+    [{ type: 'interrupted' }, 'cancelled'],
+    [{ type: 'interrupted', at: BEFORE }, undefined],
+    [{ type: 'working' }, undefined],
+    [{ type: 'call-finished', ref: 'call-1' }, undefined],
+  ])('%o: %s', (event, by) => {
+    expect(asksSettledBy(promptTaken, event)).toBe(by);
+  });
+});
+
+/** The tasks an interruption of the course's turn lists: those it set aside. */
+function tasksAfterInterrupt(course: SessionCourse): readonly BackgroundTask[] | undefined {
+  const after = courseAfter(course, { type: 'interrupted' }, true, NOW).session;
+  return after.state === 'idle' ? after.backgroundTasks : undefined;
+}

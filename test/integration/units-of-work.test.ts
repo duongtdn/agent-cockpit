@@ -22,6 +22,7 @@ import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import { writeScript } from '../support/fake-agent/script.ts';
 import { transcriptPathFor } from '../support/fake-agent/transcript.ts';
 import { PATIENCE } from '../support/patience.ts';
+import { createTestAsks } from '../support/sessions-doubles.ts';
 
 /**
  * What only real files and real tmux show of the units of work, through the
@@ -81,6 +82,7 @@ beforeEach(async () => {
       listener: { host: '127.0.0.1', port: listener.port },
     }),
     holds: createTerminalHolds(),
+    asks: createTestAsks(),
   });
   records = await openRecordStore(folder.path);
   units = await openUnits();

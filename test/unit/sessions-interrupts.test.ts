@@ -15,6 +15,7 @@ import {
   createFakeHost,
   createRecordingHookAccess,
   createStubDriver,
+  createTestAsks,
   type FakeHost,
   holdNoHook,
   PROMPT_PATH,
@@ -64,6 +65,7 @@ beforeEach(() => {
       listener: { host: '127.0.0.1', port: 4000 },
     }),
     holds,
+    asks: createTestAsks(),
     // An agent signalled stays until the test makes it go.
     signal: () => {},
   });

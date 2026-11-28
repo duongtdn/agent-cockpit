@@ -21,6 +21,7 @@ import {
   createFakeHost,
   createRecordingHookAccess,
   createStubDriver,
+  createTestAsks,
   type FakeHost,
   holdNoHook,
   type RecordingHookAccess,
@@ -65,6 +66,7 @@ beforeEach(() => {
     admitAgent: (environment) => admitAgent(environment),
     confinement: () => confinement(),
     holds: createTerminalHolds(),
+    asks: createTestAsks(),
   });
 });
 

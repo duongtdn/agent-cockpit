@@ -1,5 +1,23 @@
-import type { BackgroundTask, IdleSession, Session } from '../../shared/session.js';
+import type {
+  BackgroundTask,
+  IdleSession,
+  Pending,
+  Session,
+  WaitingSession,
+} from '../../shared/session.js';
 import type { DriverEvent } from '../driver.js';
+
+/**
+ * What a `waiting` session lists for one of its agent's asks: one the app
+ * can answer (`ask`), or one answerable in the terminal only (`terminal`),
+ * each with the ask's id.
+ */
+export interface AskPending {
+  /** Who can answer it: the app, or the terminal alone. */
+  readonly kind: 'ask' | 'terminal';
+  /** The ask's id. */
+  readonly id: string;
+}
 
 /**
  * A session as the core follows it from its agent's events: the session as
@@ -96,6 +114,83 @@ export function tasksKnown(course: SessionCourse): readonly BackgroundTask[] {
 }
 
 /**
+ * Gives the course once the agent asks a person: `waiting`, the ask listed
+ * after whatever the session waited for already, its `since` kept when it
+ * waited already. A session not yet in a turn enters one, setting aside
+ * the tasks it listed; the turn's prompt is no longer withdrawable, for the
+ * agent works on it.
+ *
+ * @param course - The course as it is; its session never `ended`.
+ * @param ask - What the session lists for the ask.
+ * @param now - The time the ask opened, as `since` holds it.
+ * @returns The new course.
+ */
+export function courseAsked(course: SessionCourse, ask: AskPending, now: string): SessionCourse {
+  const turn = withoutWithdrawablePrompt(
+    course.session.state === 'waiting' ? course : inTurn(course, now),
+  );
+  const { session } = turn;
+  const waited = session.state === 'waiting' ? session : undefined;
+  const waiting: WaitingSession = {
+    key: session.key,
+    state: 'waiting',
+    since: waited?.since ?? now,
+    pending: [...(waited?.pending ?? []), ask],
+  };
+  return { ...turn, session: waiting };
+}
+
+/**
+ * Gives the course once some of the agent's asks are settled: they leave
+ * the session's list; a session that waits for nothing more is `busy` from
+ * now, for the agent goes on (an interruption that ended its turn as well
+ * then makes it `idle`, as the event tells).
+ *
+ * @param course - The course as it is.
+ * @param ids - The ids of the asks settled.
+ * @param now - The time they were settled, as `since` holds it.
+ * @returns The course, the same object when the session listed none of them.
+ */
+export function courseSettled(
+  course: SessionCourse,
+  ids: readonly string[],
+  now: string,
+): SessionCourse {
+  const { session } = course;
+  if (session.state !== 'waiting') return course;
+  const pending = session.pending.filter((each) => each.id === undefined || !ids.includes(each.id));
+  if (pending.length === session.pending.length) return course;
+  if (pending.length > 0) return { ...course, session: { ...session, pending } };
+  return { ...course, session: busySince(session, now) };
+}
+
+/**
+ * What settles every ask of the session's own still pending, as an event
+ * tells it: the batch's or the turn's end, past which a turn goes only once
+ * the person answered in the terminal (`terminal`), or an interruption of
+ * the open turn (`cancelled`), not one that ended an earlier turn.
+ *
+ * @param course - The course before the event.
+ * @param event - What the agent told.
+ * @returns What settles them; `undefined` for an event that settles none.
+ */
+export function asksSettledBy(
+  course: SessionCourse,
+  event: DriverEvent,
+): 'terminal' | 'cancelled' | undefined {
+  switch (event.type) {
+    case 'batch-ended':
+    case 'turn-ended':
+    case 'turn-failed':
+      return 'terminal';
+    case 'interrupted':
+      return endsAnEarlierTurn(course, event.at) ? undefined : 'cancelled';
+    default:
+      return undefined;
+  }
+}
+
+/**
  * Whether an event tells something of the open turn, past its prompt: the
  * prompt was no longer withdrawable by then. A background task's end is
  * not of the turn, nor an interruption recorded before the turn's prompt
@@ -176,13 +271,16 @@ function nextCourse(
 /**
  * Whether the session still waits for its launch prompt to be done: not
  * taken yet (`starting`), or a panel it opened waits in the terminal, with
- * no dialog's name (a session waits so only at its start).
+ * no dialog's name and no ask's id (a session waits so only at its start).
  */
 function awaitsLaunchCommand(session: Session): boolean {
   if (session.state === 'starting') return true;
   return (
     session.state === 'waiting' &&
-    session.pending.every((pending) => pending.kind === 'terminal' && pending.dialog === undefined)
+    session.pending.every(
+      (pending) =>
+        pending.kind === 'terminal' && pending.id === undefined && pending.dialog === undefined,
+    )
   );
 }
 
@@ -196,10 +294,13 @@ function withSession(course: SessionCourse, session: Session): SessionCourse {
 /**
  * The course of a session whose turn shows: `busy`, its `since` kept when
  * it was already; a compaction that began idle is now inside the turn. The
- * tasks the `idle` session listed are set aside for the turn.
+ * tasks the `idle` session listed are set aside for the turn. A session
+ * waiting on an ask stays so: its turn goes on underneath (a concurrent
+ * call's hooks) while the ask is pending.
  */
 function inTurn(course: SessionCourse, now: string): SessionCourse {
   const { session, compactingFrom } = course;
+  if (waitsOnAnAsk(session)) return course;
   const resting = compactingFrom ?? (session.state === 'idle' ? session : undefined);
   const turn =
     session.state === 'busy' && compactingFrom === undefined
@@ -208,6 +309,16 @@ function inTurn(course: SessionCourse, now: string): SessionCourse {
   // A turn that waited on a person goes on with the tasks it set aside.
   const tasks = resting === undefined ? course.tasksDuringTurn : resting.backgroundTasks;
   return tasks === undefined ? turn : { ...turn, tasksDuringTurn: tasks };
+}
+
+/** Whether the session lists an ask of its agent's among what it waits for. */
+function waitsOnAnAsk(session: Session): boolean {
+  return session.state === 'waiting' && session.pending.some(isAsk);
+}
+
+/** Whether a pending entry is an ask of the agent's: one with an id, not a channel request. */
+function isAsk(pending: Pending): boolean {
+  return pending.id !== undefined && pending.kind !== 'request';
 }
 
 /** The background tasks the open turn set aside: those of the idle session a compaction began on, while it runs. */

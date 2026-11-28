@@ -9,6 +9,7 @@
  * @packageDocumentation
  */
 
+import type { AskSettled } from '../../shared/ask.js';
 import { CockpitError } from '../../shared/cockpit-error.js';
 import {
   type BackgroundTask,
@@ -19,9 +20,11 @@ import {
   isSessionKey,
   type Session,
 } from '../../shared/session.js';
-import type { HookHold } from '../agent-listener/agent-listener.js';
+import type { HeldHook, HookHold } from '../agent-listener/agent-listener.js';
+import type { Answering, Asks } from '../asks/asks.js';
 import {
   type AgentEndReason,
+  type AskOfCall,
   type Confinement,
   type Conversation,
   type Driver,
@@ -45,7 +48,15 @@ import { LaunchPromptWatch } from './launch-prompt-watch.js';
 import { LivenessWatch } from './liveness-watch.js';
 import { typingFailure, wrongState } from './refusals.js';
 import { SessionLifecycle } from './session-lifecycle.js';
-import { courseAfter, courseWithdrawn, type SessionCourse, tasksKnown } from './session-states.js';
+import {
+  asksSettledBy,
+  courseAfter,
+  courseAsked,
+  courseSettled,
+  courseWithdrawn,
+  type SessionCourse,
+  tasksKnown,
+} from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
 import { type InterruptedSession, interruptTurn } from './turn-interrupt.js';
 import { SessionTypingTerminal } from './typing-terminal.js';
@@ -160,6 +171,12 @@ export interface SessionsOptions {
   readonly confinement: () => Promise<Confinement>;
   /** Holds the keys of the page's terminals of a session while a prompt is typed into it. */
   readonly holds: TerminalHold;
+  /**
+   * The asks of every session: the core opens there what its sessions'
+   * agents ask a person, settles them from what the agents tell, and
+   * follows the app's answers.
+   */
+  readonly asks: Asks;
   /**
    * Sends a signal to a process: how a session's agent is asked to end
    * gracefully. `process.kill` when left out.
@@ -384,7 +401,10 @@ export interface Sessions {
   /**
    * Takes a request of a session's hooks, already proved to come from its
    * agent: the driver reads it, and the session's state follows. A request
-   * of a key with no live session changes nothing.
+   * of a key with no live session changes nothing. A request that asks a
+   * person is held and opens an ask the app can answer, while its session
+   * is launched or live and not being ended; on any other session it is
+   * answered `{}` at once, the dialog left to the terminal.
    *
    * @param request - The request.
    * @param hold - Holds the request, for a reply given later, when called
@@ -506,6 +526,30 @@ interface Entry {
    * turn was open, each still heard until no turn is.
    */
   readonly stopFollowingLeft: (() => void)[];
+  /** Its agent's asks still pending, by id: the call each is about, and its held hook. */
+  readonly asks: Map<string, OpenAsk>;
+}
+
+/** An ask of a session's agent, pending, as the core keeps it. */
+interface OpenAsk {
+  /** The driver's reference to the call the ask is about. */
+  readonly ref: string;
+  /** The hook the agent waits on for the app's answer; none for an ask answerable in the terminal only. */
+  readonly held?: HeldHook;
+}
+
+/** An ask the core opens: what the driver read, and how the agent's request is held for the app's answer. */
+interface Asked {
+  readonly ask: AskOfCall;
+  /** Holds the request; none for an ask answerable in the terminal only. */
+  readonly hold?: HookHold;
+}
+
+/** An ask the core settled from what the agent told, its registry told after the session's change. */
+interface Settlement {
+  readonly id: string;
+  readonly open: OpenAsk;
+  readonly by: 'terminal' | 'cancelled';
 }
 
 class SessionRegistry implements Sessions {
@@ -517,9 +561,11 @@ class SessionRegistry implements Sessions {
   /** Aborted by the close: what every operation under way checks before it goes on. */
   readonly #closing = new AbortController();
   readonly #launches: Launches<Entry>;
+  readonly #stopHearingAnswers: () => void;
 
   constructor(options: SessionsOptions) {
     this.#options = options;
+    this.#stopHearingAnswers = options.asks.on('settled', (settled) => this.#answered(settled));
     this.#watch = new LivenessWatch({
       list: () => options.host.list(),
       onGone: (key) => void this.#goneByKey(key),
@@ -724,6 +770,7 @@ class SessionRegistry implements Sessions {
     if (entry === undefined) return false;
     if (!entry.lifecycle.isEnded) throw wrongState(entry.session);
     this.#entries.delete(key);
+    this.#options.asks.forget(key);
     this.#notify();
     return true;
   }
@@ -812,10 +859,12 @@ class SessionRegistry implements Sessions {
     }
   }
 
-  receive({ key, path, body }: HookRequest): void {
+  receive({ key, path, body }: HookRequest, hold: HookHold): void {
     const entry = this.#entries.get(key);
     if (entry === undefined || !entry.lifecycle.isListened) return;
-    this.#told(entry, this.#options.driver.readHook({ key, path, body }).events);
+    const { events, ask } = this.#options.driver.readHook({ key, path, body });
+    this.#told(entry, events);
+    if (ask !== undefined && this.#opensAsks(entry)) this.#openAsk(entry, { ask, hold });
   }
 
   /** Follows the session's state from what its agent told, a hook's events or others. */
@@ -823,6 +872,8 @@ class SessionRegistry implements Sessions {
     // Closed, the core runs no timer of its own: nothing it hears would be watched.
     if (this.#closing.signal.aborted || !entry.lifecycle.isListened || events.length === 0) return;
     const at = now();
+    const settlements: Settlement[] = [];
+    const asked: Asked[] = [];
     // One hook is one change: its followers never see a session half told.
     let course: SessionCourse = courseOf(entry);
     for (const event of events) {
@@ -832,11 +883,109 @@ class SessionRegistry implements Sessions {
       if (event.type === 'ending') entry.agentSaid = event.reason;
       else this.#hear(entry);
       if (event.type === 'conversation') this.#moveTo(entry, event.conversationId);
+      const settled = this.#settledBy(entry, course, event);
+      settlements.push(...settled);
+      course = courseSettled(
+        course,
+        settled.map(({ id }) => id),
+        at,
+      );
+      if (event.type === 'asked-in-terminal' && this.#opensAsks(entry)) asked.push(event);
       course = courseAfter(course, event, entry.launchedWithPrompt, at);
     }
     this.#take(entry, course);
+    // Told once the session changed: what a handler does then starts from it.
+    for (const settlement of settlements) this.#tellSettled(settlement);
+    for (const ask of asked) this.#openAsk(entry, ask);
     entry.typing?.heard(events);
     if (events.some((event) => event.type === 'ready')) this.#awaitPrompt(entry);
+  }
+
+  /**
+   * The asks of the session an event settles, taken from those it keeps:
+   * the one about a call that finished, or every one, at the end of the
+   * batch or the turn, or at its interruption.
+   */
+  #settledBy(entry: Entry, course: SessionCourse, event: DriverEvent): Settlement[] {
+    if (event.type === 'call-finished') {
+      return takeAsks(entry, (open) => open.ref === event.ref, 'terminal');
+    }
+    const by = asksSettledBy(course, event);
+    return by === undefined ? [] : takeAsks(entry, () => true, by);
+  }
+
+  /**
+   * Lets the agent's hook go, with no decision (the agent no longer reads
+   * a reply on it), and tells the settlement.
+   */
+  #tellSettled({ id, open, by }: Settlement): void {
+    open.held?.release();
+    this.#options.asks.settle(id, by);
+  }
+
+  /**
+   * Whether an ask of the session's agent opens: while the session is
+   * launched or live, not being ended (its process goes within the end's
+   * bound), and the core open.
+   */
+  #opensAsks(entry: Entry): boolean {
+    const { phase } = entry.lifecycle;
+    return !this.#closing.signal.aborted && (phase === 'launching' || phase === 'live');
+  }
+
+  /**
+   * Opens an ask of the session's agent: held for the app's answer when a
+   * hold is given, else answerable in the terminal only; the session waits
+   * on it. An ask a follower answered as it opened is over already.
+   */
+  #openAsk(entry: Entry, { ask, hold }: Asked): void {
+    const opening: { id?: string } = {};
+    const held = hold?.(() => this.#heldClosed(entry, opening.id));
+    const answering: Answering =
+      held === undefined
+        ? { answerable: 'terminal' }
+        : {
+            answerable: 'app',
+            handOff: (answer) => held.reply(this.#options.driver.answerReply(ask, answer)),
+          };
+    const { id } = this.#options.asks.open(entry.key, ask.content, answering);
+    opening.id = id;
+    if (!this.#options.asks.pending(entry.key).some((each) => each.id === id)) return;
+    entry.asks.set(id, held === undefined ? { ref: ask.ref } : { ref: ask.ref, held });
+    const course = courseOf(entry);
+    const session = this.#sessionPastStartUp(entry, course.session);
+    this.#hear(entry);
+    const pending = { kind: held === undefined ? 'terminal' : 'ask', id } as const;
+    this.#take(entry, courseAsked({ ...course, session }, pending, now()));
+  }
+
+  /** The agent closed the hook of a pending ask: it let the ask go (a "No" in the terminal, an Esc). */
+  #heldClosed(entry: Entry, id: string | undefined): void {
+    if (id === undefined || this.#closing.signal.aborted || !entry.asks.delete(id)) return;
+    this.#take(entry, courseSettled(courseOf(entry), [id], now()));
+    // Closed by the agent: there is no hook left to let go.
+    this.#options.asks.settle(id, 'cancelled');
+  }
+
+  /**
+   * An ask settled in the registry: by the app's answer, written, or
+   * cancelled as the answer found the connection closed. The core's own
+   * settlements are no longer among the session's asks.
+   */
+  #answered({ id, key }: AskSettled): void {
+    const entry = this.#entries.get(key);
+    if (entry === undefined || !entry.asks.delete(id)) return;
+    this.#take(entry, courseSettled(courseOf(entry), [id], now()));
+  }
+
+  /**
+   * Settles every pending ask of a session that ended, `cancelled`, each
+   * hook still open let go.
+   */
+  #cancelAsks(entry: Entry): void {
+    for (const settlement of takeAsks(entry, () => true, 'cancelled')) {
+      this.#tellSettled(settlement);
+    }
   }
 
   /** Takes the course the session is on now. */
@@ -905,7 +1054,10 @@ class SessionRegistry implements Sessions {
     // A graceful end stops waiting for its agent.
     this.#closing.abort();
     this.#watch.close();
+    this.#stopHearingAnswers();
     for (const entry of this.#entries.values()) {
+      // Settled by nobody, told to nobody: the listener drops their connections.
+      entry.asks.clear();
       entry.typing?.close();
       entry.firstPrompt.stop();
       stopReadingTheScreen(entry);
@@ -944,6 +1096,7 @@ class SessionRegistry implements Sessions {
       lifecycle: new SessionLifecycle('reserved'),
       heard: false,
       stopFollowingLeft: [],
+      asks: new Map(),
       ...(replaces === undefined ? {} : { replaces }),
     };
     return entry;
@@ -989,8 +1142,12 @@ class SessionRegistry implements Sessions {
    * goes on, whose hooks come only once every dialog is answered.
    */
   #sessionAfterStartUp(entry: Entry, session: Session, event: DriverEvent): Session {
-    const pastDialog = event.type !== 'ending' && !entry.heard && session.state === 'waiting';
-    if (!pastDialog) return session;
+    return event.type === 'ending' ? session : this.#sessionPastStartUp(entry, session);
+  }
+
+  /** The session once the agent was heard past its start: no longer waiting on a start-up dialog. */
+  #sessionPastStartUp(entry: Entry, session: Session): Session {
+    if (entry.heard || session.state !== 'waiting') return session;
     return { key: session.key, state: 'starting', since: now() };
   }
 
@@ -1131,8 +1288,10 @@ class SessionRegistry implements Sessions {
         // A conversation the driver cannot find is one it cannot resume.
         .catch(() => false);
       const { key } = entry;
-      return () =>
+      return () => {
         this.#update(entry, { key, state: 'ended', since: now(), canResume, ...endOf(entry) });
+        this.#cancelAsks(entry);
+      };
     });
   }
 
@@ -1183,6 +1342,19 @@ function endOf(entry: Entry): Pick<EndedSession, 'reason' | 'dialog'> {
   return declined.dialog === undefined
     ? { reason: 'declined' }
     : { reason: 'declined', dialog: declined.dialog };
+}
+
+/** Removes the session's pending asks that `picked` chooses, to settle them. */
+function takeAsks(
+  entry: Entry,
+  picked: (open: OpenAsk) => boolean,
+  by: Settlement['by'],
+): Settlement[] {
+  const taken = [...entry.asks]
+    .filter(([, open]) => picked(open))
+    .map(([id, open]) => ({ id, open, by }));
+  for (const { id } of taken) entry.asks.delete(id);
+  return taken;
 }
 
 /**

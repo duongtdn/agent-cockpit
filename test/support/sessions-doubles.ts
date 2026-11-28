@@ -1,13 +1,17 @@
-import type { HeldHook } from '../../src/server/agent-listener/agent-listener.ts';
+import type { HeldHook, HookHold } from '../../src/server/agent-listener/agent-listener.ts';
+import { Asks } from '../../src/server/asks/asks.ts';
 import type {
+  AskOfCall,
   ClearingTerminal,
   Conversation,
   Driver,
   DriverEvent,
   FollowedConversation,
+  HookOutcome,
   HookRequest,
   InputBox,
   InputBoxClearing,
+  JsonValue,
   Launch,
   LaunchCommand,
   ScreenReading,
@@ -32,6 +36,86 @@ import { DRIVER_DEFAULTS } from './driver-defaults.ts';
  */
 export function holdNoHook(): HeldHook {
   throw new Error('This test holds no hook request.');
+}
+
+/** What became of a held hook: still open, replied to, released with `{}`, or closed by the agent. */
+export type HeldHookEnd = 'open' | 'replied' | 'released' | 'closed';
+
+/** A hook request held as the agent-facing listener holds one, which a test closes as the agent would. */
+export interface FakeHeldHook extends HeldHook {
+  /** What became of it so far. */
+  readonly end: HeldHookEnd;
+  /** Every body the core asked to write, in order, whether or not it was written. */
+  readonly replies: JsonValue[];
+  /** How many times the core let it go. */
+  readonly releases: number;
+  /** The agent closes the connection: `onClosed` is called, once, if it was open. */
+  closeByAgent(): void;
+  /**
+   * The connection breaks unseen: the next write finds it closed, and
+   * `onClosed` comes only when the test closes it.
+   */
+  breakUnseen(): void;
+}
+
+/** The hold a test gives `receive`: each request held is kept, in order. */
+export interface FakeHolds {
+  readonly hold: HookHold;
+  readonly held: FakeHeldHook[];
+}
+
+/** Creates a hold that keeps each request held, for a test to answer or close as the agent would. */
+export function createFakeHolds(): FakeHolds {
+  const held: FakeHeldHook[] = [];
+  const hold: HookHold = (onClosed) => {
+    let end: HeldHookEnd = 'open';
+    let broken = false;
+    const replies: JsonValue[] = [];
+    let releases = 0;
+    const hook: FakeHeldHook = {
+      get end() {
+        return end;
+      },
+      replies,
+      get releases() {
+        return releases;
+      },
+      reply(body) {
+        replies.push(body);
+        if (end !== 'open' || broken) return 'closed';
+        end = 'replied';
+        return 'written';
+      },
+      release() {
+        releases += 1;
+        if (end === 'open' && !broken) end = 'released';
+      },
+      closeByAgent() {
+        if (end !== 'open') return;
+        end = 'closed';
+        onClosed();
+      },
+      breakUnseen() {
+        broken = true;
+      },
+    };
+    held.push(hook);
+    return hook;
+  };
+  return { hold, held };
+}
+
+/**
+ * The asks of a test's sessions, on the real clock (a test's fake one): a
+ * handler that throws fails the test.
+ */
+export function createTestAsks(): Asks {
+  return new Asks({
+    clock: () => new Date(),
+    handlerThrew: (thrown) => {
+      throw thrown;
+    },
+  });
 }
 
 /** What a deferred host call waits for: the test settles it. */
@@ -299,7 +383,48 @@ export const STUB_EVENTS: Readonly<Record<string, readonly DriverEvent[]>> = {
   '/task-finished': [{ type: 'task-finished', id: 'a1' }],
   '/compaction-began': [{ type: 'compaction-began' }],
   '/compaction-ended': [{ type: 'compaction-ended' }],
+  '/turn-failed': [{ type: 'turn-failed', error: { kind: 'server', message: 'Overloaded.' } }],
+  '/batch-ended': [{ type: 'batch-ended' }],
 };
+
+/**
+ * The start of the path of a stub hook that asks a permission, held for
+ * the app's answer: the call's reference follows it.
+ */
+export const ASK_PATH = '/ask:';
+
+/**
+ * The start of the path of a stub hook that tells a call finished: the
+ * call's reference follows it.
+ */
+export const CALL_FINISHED_PATH = '/call-finished:';
+
+/**
+ * The start of the path of a stub hook that tells a permission asked in
+ * the terminal only: the call's reference follows it.
+ */
+export const ASKED_IN_TERMINAL_PATH = '/asked-in-terminal:';
+
+/** The permission a stub driver reads asked about a call: a `Bash` command named after it. */
+export function stubAsk(ref: string): AskOfCall {
+  return {
+    ref,
+    content: { kind: 'permission', tool: 'Bash', input: { command: `touch ${ref}` } },
+  };
+}
+
+/** What a stub hook whose path names a call tells: its ask, its end, or its ask in the terminal. */
+function readCallHook(path: string): HookOutcome | undefined {
+  if (path.startsWith(ASK_PATH)) return { events: [], ask: stubAsk(path.slice(ASK_PATH.length)) };
+  if (path.startsWith(CALL_FINISHED_PATH)) {
+    return { events: [{ type: 'call-finished', ref: path.slice(CALL_FINISHED_PATH.length) }] };
+  }
+  if (path.startsWith(ASKED_IN_TERMINAL_PATH)) {
+    const ask = stubAsk(path.slice(ASKED_IN_TERMINAL_PATH.length));
+    return { events: [{ type: 'asked-in-terminal', ask }] };
+  }
+  return undefined;
+}
 
 /**
  * The start of the path of a stub hook that names the conversation the
@@ -464,7 +589,7 @@ export function createStubDriver(): StubDriver {
           events: [{ type: 'prompt-taken', prompt: request.path.slice(PROMPT_PATH.length) }],
         };
       }
-      return { events: STUB_EVENTS[request.path] ?? [] };
+      return readCallHook(request.path) ?? { events: STUB_EVENTS[request.path] ?? [] };
     },
     follow(conversation, report) {
       const following = { conversation, report, stopped: false };

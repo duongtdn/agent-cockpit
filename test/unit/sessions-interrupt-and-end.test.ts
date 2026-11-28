@@ -14,6 +14,7 @@ import {
   createFakeHost,
   createRecordingHookAccess,
   createStubDriver,
+  createTestAsks,
   type FakeHost,
   holdNoHook,
   PROMPT_PATH,
@@ -54,6 +55,7 @@ beforeEach(() => {
       listener: { host: '127.0.0.1', port: 4000 },
     }),
     holds: createTerminalHolds(),
+    asks: createTestAsks(),
     signal: (pid, signal) => void signals.push(`${pid} ${signal}`),
   });
 });

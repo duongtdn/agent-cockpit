@@ -45,6 +45,7 @@ import {
   createMemoryRecords,
   createRecordingHookAccess,
   createStubDriver,
+  createTestAsks,
   type FakeHost,
   holdNoHook,
   type MemoryRecords,
@@ -206,6 +207,7 @@ class World {
         listener: { host: '127.0.0.1', port: 4000 },
       }),
       holds: createTerminalHolds(),
+      asks: createTestAsks(),
       signal: (pid) => {
         const key = KEYS.find((each) => this.host.pidOf(each) === pid);
         if (key === undefined) return;

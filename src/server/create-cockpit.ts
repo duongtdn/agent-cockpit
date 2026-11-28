@@ -22,6 +22,7 @@ import {
   type UntestedVersion,
 } from './agent-status.js';
 import { APP_PORT_SOURCE, createAppPorts, type LearnsAppPorts } from './app-ports.js';
+import { Asks } from './asks/asks.js';
 import {
   type CheckedCockpitOptions,
   type CockpitOptions,
@@ -520,6 +521,7 @@ async function openCockpit(
         listener: { host: '127.0.0.1', port: listener.port },
       }),
       holds,
+      asks: new Asks({ clock: () => new Date(), handlerThrew: (thrown) => console.error(thrown) }),
     });
     receiver.sessions = sessions;
     const jobs = new Map<string, Job>(checked.jobs.map((job) => [job.id, job]));
