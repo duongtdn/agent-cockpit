@@ -296,28 +296,32 @@ class World {
    */
   #watchTheInterrupts(): void {
     const interruptAndEnd = this.sessions.interruptAndEnd.bind(this.sessions);
-    this.sessions.interruptAndEnd = async (key, reason) => {
-      this.#interrupting.set(key, 0);
-      try {
-        return await interruptAndEnd(key, reason);
-      } finally {
-        this.#interrupting.delete(key);
-      }
-    };
+    this.sessions.interruptAndEnd = (key, reason) =>
+      this.#whileInterrupting(key, () => interruptAndEnd(key, reason));
     const interrupt = this.sessions.interrupt.bind(this.sessions);
-    this.sessions.interrupt = async (key) => {
-      this.#interrupting.set(key, 0);
-      this.#idleSeen.delete(key);
-      try {
+    this.sessions.interrupt = (key) =>
+      this.#whileInterrupting(key, async () => {
+        this.#idleSeen.delete(key);
         const result = await interrupt(key);
         if (result.action === 'interrupted' && !this.#idleSeen.has(key)) {
           this.interruptedNotIdle.push(key);
         }
         return result;
-      } finally {
-        this.#interrupting.delete(key);
-      }
-    };
+      });
+  }
+
+  /**
+   * Counts the interrupt's keys pressed while it runs: an end's whole run,
+   * its interrupt's inside it, is one mark.
+   */
+  async #whileInterrupting<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const outermost = !this.#interrupting.has(key);
+    if (outermost) this.#interrupting.set(key, 0);
+    try {
+      return await run();
+    } finally {
+      if (outermost) this.#interrupting.delete(key);
+    }
   }
 
   #write(key: string, write: string): void {
