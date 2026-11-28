@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { HOOKS_PATH, type HookRequest } from '../driver.js';
+import { HOOKS_PATH, type HookRequest, type JsonValue } from '../driver.js';
 import { readBodyWithin } from '../http/body.js';
 import type { HookAccess } from '../sessions/sessions.js';
 import { readOwnFile, type UntrustedStateError } from '../state/own-files.js';
@@ -20,6 +20,41 @@ const PORT_FILE = 'agent-port';
  * than held in memory.
  */
 export const MAX_HOOK_BODY_BYTES = 16 * 1024 * 1024;
+
+/**
+ * What became of a reply the core gave a held request: handed to the
+ * connection, or not written, the agent having closed the connection first.
+ */
+export type HeldReplyOutcome = 'written' | 'closed';
+
+/** A hook request the core holds: the agent waits on the connection for its reply. */
+export interface HeldHook {
+  /**
+   * Writes the reply as the response's body (`200`, `application/json`)
+   * and ends the response.
+   *
+   * @param body - The reply.
+   * @returns `'written'` once it is handed to the connection; `'closed'`
+   * when the agent closed the connection first, nothing written.
+   */
+  reply(body: JsonValue): HeldReplyOutcome;
+  /**
+   * Ends the response with the answer of nothing (`{}`), as a request not
+   * held is answered: for a request whose reply the agent no longer reads.
+   */
+  release(): void;
+}
+
+/**
+ * Takes a hook request as held: it gets no reply until the core gives one,
+ * and no keep-alive bytes meanwhile.
+ *
+ * @param onClosed - Called once, when the agent closes the connection
+ * before a reply ended; never after the listener's `close()`, which drops
+ * every held connection.
+ * @returns The held request.
+ */
+export type HookHold = (onClosed: () => void) => HeldHook;
 
 /** What the agent-facing listener is opened with. */
 export interface AgentListenerOptions {

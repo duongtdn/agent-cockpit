@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
+import type { Ask, AskAnswer, AskSettled } from '../shared/ask.js';
 import { CockpitError } from '../shared/cockpit-error.js';
 import type { Choice, JobDescription } from '../shared/job.js';
 import type {
@@ -298,6 +299,47 @@ export interface Cockpit {
      */
     follow(handler: (sessions: readonly Session[]) => void): () => void;
   };
+  /** The agent's asks, of every session: followed, answered, and told settled. */
+  readonly asks: {
+    /**
+     * Follows the asks of one unit of work, or of every one: the handler
+     * gets each pending ask of the scope at once, in the order they
+     * opened, then each new one, and an ask again when its `answerable`
+     * changes under the same id; never a settled one. A key with no
+     * session is followed all the same. Whether anyone follows never
+     * changes what the agent is answered.
+     *
+     * @param key - The unit of work's key, or `'*'` for every one.
+     * @param handler - Receives each ask; what it throws goes to
+     * `on('error')`, and it stays subscribed.
+     * @returns A function that stops following.
+     */
+    follow(key: string, handler: (ask: Ask) => void): () => void;
+    /**
+     * Answers an ask: the answer is given to the agent, the ask settled
+     * `app`, and every `on('settled')` handler told.
+     *
+     * @param id - The ask's id.
+     * @param answer - The answer, of the ask's kind.
+     * @returns A promise fulfilled, with nothing, once the answer is handed
+     * to the agent.
+     * @throws `CockpitError`, checked in this order: `unknown-id` for an id
+     * the cockpit does not know, or no longer remembers; `already-settled`
+     * with `by` for an ask settled before; `terminal-only` for an ask
+     * answerable in the terminal only; `invalid-answer` with `issues` for
+     * an answer that does not fit the ask's kind.
+     */
+    answer(id: string, answer: AskAnswer): Promise<void>;
+    /**
+     * Tells each ask settled, once, the app's own answers included.
+     *
+     * @param event - `'settled'`.
+     * @param handler - Receives the ask's id, its key and what settled it.
+     * @returns A function that removes the handler.
+     * @throws `TypeError` for an event the asks do not have.
+     */
+    on(event: 'settled', handler: (settled: AskSettled) => void): () => void;
+  };
   /**
    * Gives the link the person opens: the page's URL with the app's token in
    * its fragment (`#cockpit=…`), which is never sent to a server.
@@ -495,6 +537,7 @@ async function openCockpit(
       ...unitsOfWorkLimits(checked),
     });
     const descriptions = checked.jobs.map(describeJob);
+    const asks = asksNoneOpened();
     const operations = {
       run: (jobId: string, args: unknown, options?: RunOptions): Promise<RunResult> =>
         units.run(jobId, args, options),
@@ -512,7 +555,8 @@ async function openCockpit(
     >;
     const handler = createHandler({
       tokenMatches: appToken.matches,
-      operations,
+      // The handler's answer takes the body as parsed: the asks check its shape.
+      operations: { ...operations, answer: (id, answer) => asks.answer(id, answer as AskAnswer) },
       sessions: units,
       terminals: {
         attach: (key, size) => sessions.attach(key, size),
@@ -535,6 +579,7 @@ async function openCockpit(
     return {
       ...operations,
       sessions: { list: () => units.list(), follow: (handler) => units.follow(handler) },
+      asks,
       link: (pageUrl) => linkTo(pageUrl, appToken.value),
       verify: (request) => carriesAppToken(request, appToken.matches),
       on: eventsOf(failures, agentStatus),
@@ -584,6 +629,24 @@ async function readAgentVersion(
   } catch {
     // Left unread: the first launch reads it, and rejects with the failure.
   }
+}
+
+/**
+ * The cockpit's asks while the core opens none: nothing pending to follow,
+ * nothing settled to tell, and every id unknown.
+ */
+function asksNoneOpened(): Cockpit['asks'] {
+  return {
+    follow: () => () => {},
+    answer: async (id) => {
+      throw new CockpitError('unknown-id', `No ask has the id ${JSON.stringify(id)}.`, { id });
+    },
+    on: (event) => {
+      if (event !== 'settled')
+        throw new TypeError(`The asks have no event ${JSON.stringify(event)}.`);
+      return () => {};
+    },
+  };
 }
 
 /** The cockpit's `on`: each event's handlers to the part that tells it. */

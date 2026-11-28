@@ -100,6 +100,9 @@ beforeEach(async () => {
         asked.push({ operation: 'options', given });
         return [{ value: 'a.md', label: 'A' }];
       },
+      async answer(...given) {
+        asked.push({ operation: 'answer', given });
+      },
     },
     sessions: {
       list: () => [idle],

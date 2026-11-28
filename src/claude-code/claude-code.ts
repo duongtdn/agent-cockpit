@@ -6,6 +6,7 @@ import {
   type DriverSettings,
   HOOKS_PATH,
   type HookAddress,
+  type JsonValue,
   type Launch,
   type LaunchCommand,
   type SessionNetwork,
@@ -49,13 +50,29 @@ import { clearInputBox, typePrompt } from './typing.js';
 const ENDING = { signal: 'SIGTERM', boundMs: 5_000 } as const;
 
 /**
- * How a busy session's turn is stopped: one Esc, never two, which on an
- * empty box open the rewind menu, a dialog no hook reports. The agent
- * records the interruption within 0.36 s on a loaded machine (an Esc
- * before the model answered, within 0.17 s, puts the prompt back into an
- * empty box); the bound leaves it about fourteen times that.
+ * How a turn is stopped. A busy one: one Esc, never two, which on an empty
+ * box open the rewind menu, a dialog no hook reports. The agent records the
+ * interruption within 0.36 s on a loaded machine (an Esc before the model
+ * answered, within 0.17 s, puts the prompt back into an empty box); the
+ * bound leaves it about fourteen times that. One holding a
+ * `PermissionRequest`: that hook denied with `interrupt`, no message, which
+ * the agent would show nowhere; it closes the turn's other held hooks
+ * within milliseconds and writes one marker. One waiting on a dialog no
+ * hook holds: one Esc, the only way left.
  */
-const INTERRUPTING = { busy: { keys: ['Escape'] }, boundMs: 5_000 } as const;
+const INTERRUPTING = {
+  busy: { keys: ['Escape'] },
+  appAsk: {
+    reply: {
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny', interrupt: true },
+      },
+    },
+  },
+  terminalAsk: { keys: ['Escape'] },
+  boundMs: 5_000,
+} as const;
 
 /** The session's settings, which carry the token in the HTTP hooks' header. */
 const SETTINGS_FILE = 'settings.json';
@@ -234,10 +251,19 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
       return launchSession(launch, checked);
     },
     readHook: createHookReader(),
+    answerReply,
     follow: (conversation, report) =>
       followTranscript({ ...lookupOf(conversation), isNew: conversation.isNew }, report).stop,
     canResume: (conversation) => keepsConversation(lookupOf(conversation)),
   };
+}
+
+/**
+ * Claude Code's reply to an ask: its hook reader opens none, so no answer
+ * is ever asked of it.
+ */
+function answerReply(): JsonValue {
+  throw new Error("Claude Code's driver opens no ask, and answers none.");
 }
 
 /**

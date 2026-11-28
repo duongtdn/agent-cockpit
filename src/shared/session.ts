@@ -14,14 +14,19 @@ export type SessionState = 'starting' | 'idle' | 'busy' | 'waiting' | 'ended';
 export type StartupDialog = 'trust-folder' | 'bypass-permissions' | 'onboarding' | 'login';
 
 /**
- * One thing a `waiting` session waits for: an ask of the agent's (`ask`), a
- * channel request (`request`), or something only the terminal can answer
- * (`terminal`).
+ * One thing a `waiting` session waits for: an ask of the agent's the app
+ * can answer (`ask`), a channel request (`request`), or something only the
+ * terminal can answer (`terminal`): an ask answerable there only, a
+ * start-up dialog, a panel. Asks are listed in the order they opened.
  */
 export interface Pending {
   /** What kind of thing waits. */
   readonly kind: 'ask' | 'request' | 'terminal';
-  /** The id of the ask or the channel request, to answer it by. */
+  /**
+   * The id of the ask or the channel request: an ask's or a request's to
+   * answer it by, an ask answerable in the terminal only to find it among
+   * the asks followed; none for a dialog or a panel.
+   */
   readonly id?: string;
   /** The start-up dialog shown in the terminal, when it is a known one. */
   readonly dialog?: StartupDialog;

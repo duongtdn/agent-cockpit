@@ -166,6 +166,9 @@ function nextCourse(
       );
     case 'conversation':
     case 'ending':
+    case 'call-finished':
+    case 'batch-ended':
+    case 'asked-in-terminal':
       return course;
   }
 }

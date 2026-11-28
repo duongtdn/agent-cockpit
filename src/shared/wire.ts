@@ -13,6 +13,7 @@
  * @packageDocumentation
  */
 
+import type { Ask, AskAnswer, AskSettled } from './ask.js';
 import type { CockpitErrorCode, CockpitErrorFields } from './cockpit-error.js';
 import type { Choice, JobDescription } from './job.js';
 import {
@@ -136,6 +137,21 @@ export const SESSIONS_PATH = '/sessions';
  */
 export const FOLLOW_SESSIONS_PATH = '/follow/sessions';
 
+/** `POST`: answers an ask. The body is an {@link AnswerRequest}; the answer `204`, with no body. */
+export const ASKS_ANSWER_PATH = '/asks/answer';
+
+/**
+ * A WebSocket: follows the asks, of one session when the query's
+ * {@link FOLLOW_ASKS_KEY} names its key, of every session otherwise. The
+ * server sends an {@link AsksMessage} at each connection, then an
+ * {@link AskMessage} for each ask that opens or changes and an
+ * {@link AskSettledMessage} for each settlement; the browser sends nothing.
+ */
+export const FOLLOW_ASKS_PATH = '/follow/asks';
+
+/** The query parameter of {@link FOLLOW_ASKS_PATH} that names the one session followed. */
+export const FOLLOW_ASKS_KEY = 'key';
+
 /** What precedes a session's key in the path of its terminal. */
 const TERMINAL_PREFIX = '/terminal/';
 
@@ -208,6 +224,14 @@ export type OpenResponse = OpenResult;
 export interface KeyRequest {
   /** The key of the unit of work. */
   readonly key: string;
+}
+
+/** The body of an {@link ASKS_ANSWER_PATH} request. */
+export interface AnswerRequest {
+  /** The ask's id. */
+  readonly id: string;
+  /** The answer, which the server checks against the ask's kind. */
+  readonly answer: AskAnswer;
 }
 
 /** The answer to an {@link INTERRUPT_PATH} request that succeeded: what the interrupt did. */
@@ -322,6 +346,37 @@ export interface SessionsMessage {
   /** Every session the cockpit knows, now. */
   readonly sessions: readonly Session[];
 }
+
+/**
+ * What the server sends first on {@link FOLLOW_ASKS_PATH}, at each
+ * connection, as a text message: where the asks of its scope stand, so
+ * that a page that reconnects learns what was settled meanwhile.
+ */
+export interface AsksMessage {
+  /** Its kind. */
+  readonly type: 'asks';
+  /** Every pending ask of the scope, in the order they opened. */
+  readonly pending: readonly Ask[];
+  /** Every settlement of the scope the cockpit remembers. */
+  readonly settled: readonly AskSettled[];
+}
+
+/** What the server sends on {@link FOLLOW_ASKS_PATH} for an ask that opens, or changes under the same id. */
+export interface AskMessage {
+  /** Its kind. */
+  readonly type: 'ask';
+  /** The ask. */
+  readonly ask: Ask;
+}
+
+/** What the server sends on {@link FOLLOW_ASKS_PATH} for an ask settled. */
+export interface AskSettledMessage extends AskSettled {
+  /** Its kind. */
+  readonly type: 'settled';
+}
+
+/** Everything the server sends on {@link FOLLOW_ASKS_PATH}. */
+export type AsksServerMessage = AsksMessage | AskMessage | AskSettledMessage;
 
 /** A modifier key held with a key. */
 export type KeyModifier = 'shift' | 'ctrl' | 'alt' | 'meta';

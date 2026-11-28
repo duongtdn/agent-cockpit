@@ -126,6 +126,7 @@ async function serve(
       remove: async () => ({ action: 'nothing-to-remove' }),
       jobs: () => [],
       options: async () => [],
+      answer: async () => {},
     },
     sessions: {
       list: () => [idle],

@@ -12,6 +12,7 @@
  * @packageDocumentation
  */
 
+import type { Ask, AskAnswer } from '../shared/ask.js';
 import type { Issue } from '../shared/cockpit-error.js';
 import type { BackgroundTask, EndReason, StartupDialog, TurnError } from '../shared/session.js';
 import type { KeyRule } from '../shared/wire.js';
@@ -312,7 +313,61 @@ export type DriverEvent =
       readonly type: 'ending';
       /** Why. */
       readonly reason: AgentEndReason;
+    }
+  | {
+      /**
+       * A call an open ask is about finished, allowed or run: the person
+       * answered the ask in the terminal, and the core settles it
+       * `terminal`.
+       */
+      readonly type: 'call-finished';
+      /** The driver's reference to the call, as its {@link AskOfCall} gave it. */
+      readonly ref: string;
+    }
+  | {
+      /**
+       * The batch of tool calls of the session's own turn is over: an ask
+       * of it still pending was answered in the terminal (a denial with a
+       * text of the person's), and the core settles it `terminal`. No ask
+       * of a later batch is open yet.
+       */
+      readonly type: 'batch-ended';
+    }
+  | {
+      /**
+       * The agent asks a person, in its terminal only, about a call of the
+       * session's own turn that has no ask: the core opens the ask,
+       * answerable only in the terminal.
+       */
+      readonly type: 'asked-in-terminal';
+      /** The ask, and the call it is about. */
+      readonly ask: AskOfCall;
     };
+
+/** The fields of an ask that the core gives it rather than the agent. */
+type CoreFields = 'id' | 'key' | 'answerable' | 'since';
+
+/** One kind of ask without the {@link CoreFields}, each kind kept apart. */
+type ContentOf<Kind extends Ask> = Kind extends unknown ? Omit<Kind, CoreFields> : never;
+
+/**
+ * What an ask holds of the agent's, as the driver reads it from a hook:
+ * its kind and content. The core gives it its id, its key, who can answer
+ * and when it opened.
+ */
+export type AskContent = ContentOf<Ask>;
+
+/** An ask the driver read from a hook, with the call it is about. */
+export interface AskOfCall {
+  /**
+   * The driver's own reference to the call: opaque to the core, which
+   * keeps it with the ask's id and finds the ask by it when the call
+   * finishes.
+   */
+  readonly ref: string;
+  /** What the agent asks. */
+  readonly content: AskContent;
+}
 
 /** What a driver makes of a hook request. */
 export interface HookOutcome {
@@ -321,6 +376,12 @@ export interface HookOutcome {
    * nothing, such as one of a background task's.
    */
   readonly events: readonly DriverEvent[];
+  /**
+   * The ask the request opens, when the agent waits on its reply for a
+   * person's decision: the core holds the request and opens the ask,
+   * answerable by the app; none for every other request, answered at once.
+   */
+  readonly ask?: AskOfCall;
 }
 
 /** A conversation the agent may keep: the one a launch named, or one the agent moved to. */
@@ -481,11 +542,28 @@ export interface SessionInterrupting {
   /** What stops the turn of a `busy` session. */
   readonly busy: KeysInterrupt;
   /**
+   * What stops a turn that holds an ask the app can answer: the reply the
+   * oldest such ask's held request is given. The agent rejects every call
+   * of the turn with it, and the core settles the turn's asks `cancelled`.
+   */
+  readonly appAsk: ReplyInterrupt;
+  /**
+   * What stops a turn that waits on an ask answerable only in the
+   * terminal, which no held request lets the core answer.
+   */
+  readonly terminalAsk: KeysInterrupt;
+  /**
    * How long the core waits, in milliseconds, for the session to be
    * `idle` once it stopped the turn: past it, the interrupt fails
    * `interrupt-unconfirmed`.
    */
   readonly boundMs: number;
+}
+
+/** A turn stopped by the reply given to a request the core holds. */
+export interface ReplyInterrupt {
+  /** The reply, written as the held request's body. */
+  readonly reply: JsonValue;
 }
 
 /** A turn stopped by keys pressed in the session's terminal. */
@@ -760,6 +838,18 @@ export interface Driver {
    * @returns What it tells the core.
    */
   readHook(request: HookRequest): HookOutcome;
+  /**
+   * Makes the reply that gives the agent the app's answer to an ask it
+   * waits on: the call allowed once, allowed with a rule that spares the
+   * session asking it again, or denied with the app's message for the
+   * model.
+   *
+   * @param content - The ask, as the driver's {@link AskOfCall} gave it.
+   * @param answer - The app's answer, already checked against the ask's
+   * kind.
+   * @returns The reply, written as the held request's body.
+   */
+  answerReply(content: AskContent, answer: AskAnswer): JsonValue;
   /**
    * Follows what the agent of a live session tells outside its hooks, such
    * as an interruption only its transcript records: from now on, or from

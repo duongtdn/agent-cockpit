@@ -83,6 +83,8 @@ export interface Operations {
   jobs(): readonly JobDescription[];
   /** Reads a field's choices, as `cockpit.options` does. */
   options(jobId: string, field: string, argsSoFar?: unknown): Promise<readonly Choice[]>;
+  /** Answers an ask, as `cockpit.asks.answer` does, checking the answer as it checks it. */
+  answer(id: string, answer: unknown): Promise<void>;
 }
 
 /** What the handler serves the browser's requests with. */
