@@ -44,6 +44,12 @@ export interface HookReceiver {
   /** Holds, from now on, the hooks of an event until the test answers them; the others get `{}` at once. */
   hold(event: string): void;
   /**
+   * Keeps, from now on, the payloads of an event out of a recording run:
+   * for a test whose payload would be taken for another shape of the event
+   * (its example then what the fake agent fires for that shape).
+   */
+  unrecorded(event: string): void;
+  /**
    * Waits for the next hook of an event that no earlier call was given.
    *
    * @returns The hook; a held one still waits for its answer.
@@ -111,13 +117,14 @@ const REPORT_HOOK = fileURLToPath(new URL('./report-hook.mjs', import.meta.url))
 export async function startHookReceiver(): Promise<HookReceiver> {
   const received: ReceivedHook[] = [];
   const held = new Set<string>();
+  const unrecorded = new Set<string>();
   const untaken = new Map<string, ReceivedHook[]>();
   const waiting = new Map<string, ((hook: ReceivedHook) => void)[]>();
 
   function deliver(hook: ReceivedHook): void {
     received.push(hook);
     noteHook(String(hook.payload.session_id ?? hook.via), hook.payload);
-    recordHookPayload(hook.payload);
+    if (!unrecorded.has(hook.event)) recordHookPayload(hook.payload);
     const waiter = waiting.get(hook.event)?.shift();
     if (waiter) waiter(hook);
     else untaken.set(hook.event, [...(untaken.get(hook.event) ?? []), hook]);
@@ -135,6 +142,7 @@ export async function startHookReceiver(): Promise<HookReceiver> {
     events: () => received.map((hook) => hook.event),
     settings: () => settingsFor(address),
     hold: (event) => void held.add(event),
+    unrecorded: (event) => void unrecorded.add(event),
     next(event) {
       const arrived = untaken.get(event)?.shift();
       if (arrived) return Promise.resolve(arrived);

@@ -206,6 +206,8 @@ it.each([
     const input = { command: 'touch denied.txt', description: 'Create denied.txt' };
     agent.api.script(turn(toolUse('Bash', input)), turn('Understood.'));
     agent.hooks.hold('PermissionRequest');
+    // Its batch carries the message as the call's result, as a batch of a call that ran would.
+    if (message !== undefined) agent.hooks.unrecorded('PostToolBatch');
     const session = await startedSession(agent);
     await submitPrompt(agent, session, 'make the file');
 
