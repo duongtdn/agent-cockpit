@@ -7,6 +7,7 @@ import type { Driver, SessionNetwork } from './driver.js';
 import { jobDefinitionIssues } from './job-definitions.js';
 import { issuesOf, type Job } from './jobs.js';
 import { MAX_TIMER_DELAY_MS } from './sessions/idle-timeout.js';
+import type { UnitsOfWorkOptions } from './sessions/units-of-work.js';
 
 /** What `createCockpit` takes. */
 export interface CockpitOptions {
@@ -137,6 +138,22 @@ export interface CheckedCockpitOptions extends CockpitOptions {
   readonly hiddenEnv: readonly string[];
   /** The idle timeout in milliseconds; absent when the app turned it off. */
   readonly idleTimeoutMs?: number;
+}
+
+/**
+ * The limits the units of work are opened with, from the checked options:
+ * the cap on live sessions and the idle timeout, each when the app has one.
+ *
+ * @param checked - The options {@link checkCockpitOptions} gave.
+ * @returns `maxSessions` and `idleTimeoutMs`, each absent when there is none.
+ */
+export function unitsOfWorkLimits(
+  checked: CheckedCockpitOptions,
+): Pick<UnitsOfWorkOptions, 'maxSessions' | 'idleTimeoutMs'> {
+  return {
+    ...(checked.maxSessions === undefined ? {} : { maxSessions: checked.maxSessions }),
+    ...(checked.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: checked.idleTimeoutMs }),
+  };
 }
 
 const JOB_FIELDS: readonly string[] = [

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { claudeCode } from '../../src/claude-code/index.ts';
-import { checkCockpitOptions } from '../../src/server/cockpit-options.ts';
+import { checkCockpitOptions, unitsOfWorkLimits } from '../../src/server/cockpit-options.ts';
 import { checkPlatform, linkTo } from '../../src/server/create-cockpit.ts';
 import type { Job } from '../../src/server/jobs.ts';
 import { isCockpitError } from '../../src/shared/cockpit-error.ts';
@@ -420,6 +420,26 @@ describe("createCockpit's options", () => {
       const issues = await optionIssues({ ...valid(), idleTimeout: '1d', maxSessions: 0 });
 
       expect(issues.map(({ path }) => path).sort()).toEqual([['idleTimeout'], ['maxSessions']]);
+    });
+  });
+
+  describe('the limits the units of work are opened with', () => {
+    it('carry the idle timeout and the cap the app gave', async () => {
+      const checked = await checkCockpitOptions({ ...valid(), idleTimeout: '90s', maxSessions: 2 });
+
+      expect(unitsOfWorkLimits(checked)).toEqual({ idleTimeoutMs: 90_000, maxSessions: 2 });
+    });
+
+    it('carry the 30 minutes of an idle timeout left out, and no cap', async () => {
+      expect(unitsOfWorkLimits(await checkCockpitOptions(valid()))).toEqual({
+        idleTimeoutMs: 30 * 60_000,
+      });
+    });
+
+    it('carry no idle timeout once the app turned it off', async () => {
+      const checked = await checkCockpitOptions({ ...valid(), idleTimeout: false });
+
+      expect(unitsOfWorkLimits(checked)).toEqual({});
     });
   });
 

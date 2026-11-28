@@ -26,6 +26,7 @@ import {
   type CockpitOptions,
   checkCockpitOptions,
   jobPartIssues,
+  unitsOfWorkLimits,
 } from './cockpit-options.js';
 import { confinementReader, givenAndRealPaths, holdsRuleSyntax } from './confinement.js';
 import { createFailureReport, type FailureReport, type InternalFailure } from './failures.js';
@@ -486,8 +487,7 @@ async function openCockpit(
       driver: checked.driver,
       environment,
       folders: folder.sessions,
-      ...(checked.maxSessions === undefined ? {} : { maxSessions: checked.maxSessions }),
-      ...(checked.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: checked.idleTimeoutMs }),
+      ...unitsOfWorkLimits(checked),
     });
     const descriptions = checked.jobs.map(describeJob);
     const operations = {
