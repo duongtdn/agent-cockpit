@@ -19,7 +19,7 @@ import {
  * temporary folder (and the tmux socket, the agent's files in it) is gone.
  */
 
-const EXAMPLES = ['jobs-console', 'translate-and-access'] as const;
+const EXAMPLES = ['jobs-console', 'translate-and-access', 'asks-on-page'] as const;
 
 let app: ExampleApp | undefined;
 let taken: Server | undefined;
