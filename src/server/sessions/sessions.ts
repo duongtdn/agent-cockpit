@@ -14,6 +14,7 @@ import {
   type BackgroundTask,
   type EndedSession,
   type EndReason,
+  type InterruptResult,
   isSessionKey,
   type Session,
 } from '../../shared/session.js';
@@ -41,9 +42,11 @@ import { LaunchPromptWatch } from './launch-prompt-watch.js';
 import { LivenessWatch } from './liveness-watch.js';
 import { typingFailure, wrongState } from './refusals.js';
 import { SessionLifecycle } from './session-lifecycle.js';
-import { courseAfter, type SessionCourse } from './session-states.js';
+import { courseAfter, courseWithdrawn, type SessionCourse } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
+import { type InterruptedSession, interruptTurn } from './turn-interrupt.js';
 import { SessionTypingTerminal } from './typing-terminal.js';
+import { WithdrawnWatch } from './withdrawn-watch.js';
 
 export { INPUT_BOX_BOUND_MS } from './input-box-wait.js';
 export { PROMPT_BOUND_MS } from './launch-prompt-watch.js';
@@ -61,7 +64,7 @@ export { READY_BOUND_MS, START_DEADLINE_MS } from './start-up-watch.js';
 export const LIVENESS_INTERVAL_MS = 1000;
 
 /**
- * Why an operation on a session — a run, a send, an open, an end — did
+ * Why an operation on a session — a run, a send, an open, an interrupt, an end — did
  * not settle as it would have: the cockpit was closed first. It carries no
  * code, since no request of an app's can mend it — on the wire it is a 500
  * with no body — and the session, if its agent was started, goes on in
@@ -271,6 +274,27 @@ export interface Sessions {
    */
   end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]>;
   /**
+   * Interrupts the turn of a key's session, as `interruptTurn` does: the
+   * driver's keys pressed once, never twice, on a `busy` session or one
+   * waiting on more than the terminal, then the driver's bound for it to
+   * be `idle`; nothing pressed where no turn runs. A session the cockpit is
+   * ending is first awaited ended, then read again. Background tasks go
+   * on: the `idle` session lists those it listed before the turn.
+   *
+   * @param key - The session's key.
+   * @returns `interrupted` once the session is `idle`, told before a
+   * withdrawn prompt is cleared; `nothing-to-interrupt` with the session's
+   * state, none for a key with no session, when there was no turn to stop
+   * or the session ended meanwhile.
+   * @throws `CockpitError` `wrong-state` on a `starting` session;
+   * `interrupt-unconfirmed` with the key and the last state when the
+   * session was not `idle` within the driver's bound, left as it is. What
+   * the host fails with as the keys are pressed.
+   * @throws `SessionsClosedError` when the core is closed, or is closed
+   * before the interrupt settles: nothing more is pressed.
+   */
+  interrupt(key: string): Promise<InterruptResult>;
+  /**
    * The session of a key, as it is now.
    *
    * @param key - The key.
@@ -395,10 +419,14 @@ interface Entry {
    */
   replaces?: Entry;
   session: Session;
-  /** What a compaction begun while `idle` returns the session to. */
-  compactingFrom?: SessionCourse['compactingFrom'];
-  /** When the agent last took a prompt. */
-  promptTakenAt?: SessionCourse['promptTakenAt'];
+  /** What the agent told that a later event needs and the session does not carry. */
+  told: Omit<SessionCourse, 'session'>;
+  /** Called at each change of the session, until they unsubscribe. */
+  readonly changeListeners: Set<(session: Session) => void>;
+  /** Reads the screen for the open turn's prompt withdrawn by an early Esc, which nothing else tells. */
+  readonly withdrawal: WithdrawnWatch;
+  /** The `idle` session the screen showed with the turn's prompt withdrawn. */
+  withdrawnIdle?: Session;
   /** Where its launch and life stand: what the core may do with it. */
   readonly lifecycle: SessionLifecycle;
   /** Why the cockpit itself ends the session, which prevails over the agent's word. */
@@ -539,6 +567,52 @@ class SessionRegistry implements Sessions {
     await this.#gone(entry);
   }
 
+  async interrupt(key: string): Promise<InterruptResult> {
+    this.#refuseIfClosed(key);
+    const entry = this.#entries.get(key);
+    if (entry === undefined) return { action: 'nothing-to-interrupt' };
+    // An end under way is the cockpit's own: its outcome is the state the interrupt reads.
+    await settlesBeforeAbort(entry.lifecycle.endUnderWay, this.#closing.signal);
+    this.#refuseIfClosed(key);
+    return interruptTurn(this.#interrupted(entry), {
+      interrupting: this.#options.driver.interrupting,
+      closing: this.#closing.signal,
+      refusal: () => new SessionsClosedError(key),
+    });
+  }
+
+  /** The session as an interrupt acts on it. */
+  #interrupted(entry: Entry): InterruptedSession {
+    return {
+      key: entry.key,
+      session: () => this.session(entry.key),
+      onChange: (listener) => {
+        entry.changeListeners.add(listener);
+        return () => void entry.changeListeners.delete(listener);
+      },
+      pressKeys: (keys) => this.#pressKeys(entry, keys),
+      wasWithdrawn: (session) => session === entry.withdrawnIdle,
+      clearInputBox: () =>
+        this.#throughTypingTerminal(entry, (terminal) =>
+          this.#options.driver.clearInputBox(terminal),
+        ),
+    };
+  }
+
+  /**
+   * Presses keys in a session the cockpit is not ending; one found gone is
+   * ended at once, as the next list of the host would.
+   */
+  async #pressKeys(entry: Entry, keys: readonly string[]): Promise<void> {
+    if (!this.#takesInput(entry)) return;
+    try {
+      await this.#options.host.sendKeys(entry.key, keys);
+    } catch (error) {
+      if (!(error instanceof SessionHostError && error.reason === 'no-session')) throw error;
+      await this.#gone(entry);
+    }
+  }
+
   firstPrompt(key: string): Promise<Session> | undefined {
     return this.#entries.get(key)?.firstPrompt.typed;
   }
@@ -589,7 +663,24 @@ class SessionRegistry implements Sessions {
    * driver let through, is `no-input-box`: the session showed or told
    * something else.
    */
-  async #type(entry: Entry, prompt: string): Promise<TypingOutcome> {
+  #type(entry: Entry, prompt: string): Promise<TypingOutcome> {
+    return this.#throughTypingTerminal(entry, (terminal) =>
+      this.#options.driver.typePrompt(prompt, terminal),
+    );
+  }
+
+  /**
+   * Writes into a live session through its checked terminal, the page's
+   * terminals' keys held meanwhile: a prompt typed, or the input box
+   * cleared.
+   *
+   * @returns What the write came to; a write the terminal refused, which
+   * the driver let through, is `no-input-box`.
+   */
+  async #throughTypingTerminal<T>(
+    entry: Entry,
+    write: (terminal: SessionTypingTerminal) => Promise<T>,
+  ): Promise<T | 'no-input-box'> {
     const terminal = new SessionTypingTerminal({
       key: entry.key,
       host: this.#options.host,
@@ -599,7 +690,7 @@ class SessionRegistry implements Sessions {
     entry.typing = terminal;
     const release = this.#options.holds.hold(entry.key);
     try {
-      return await this.#options.driver.typePrompt(prompt, terminal);
+      return await write(terminal);
     } catch (error) {
       if (error instanceof TypingStoppedError) return 'no-input-box';
       throw error;
@@ -638,11 +729,25 @@ class SessionRegistry implements Sessions {
   }
 
   /** Takes the course the session is on now. */
-  #take(entry: Entry, course: SessionCourse): void {
-    entry.compactingFrom = course.compactingFrom;
-    entry.promptTakenAt = course.promptTakenAt;
-    this.#update(entry, course.session);
+  #take(entry: Entry, { session, ...told }: SessionCourse): void {
+    entry.told = told;
+    this.#update(entry, session);
     if (!isInTurn(entry.session)) stopFollowingTheConversationsLeft(entry);
+    entry.withdrawal.follow(entry.session.state === 'busy' ? told.withdrawablePrompt : undefined);
+  }
+
+  /** The screen showed the turn's prompt withdrawn: the session is `idle`, told at once. */
+  #withdrawn(entry: Entry): void {
+    if (
+      this.#closing.signal.aborted ||
+      !entry.lifecycle.isListened ||
+      entry.session.state !== 'busy'
+    )
+      return;
+    const course = courseWithdrawn(courseOf(entry), now());
+    // Known before the change is told: an interrupt waiting on it asks.
+    entry.withdrawnIdle = course.session;
+    this.#take(entry, course);
   }
 
   /**
@@ -707,6 +812,7 @@ class SessionRegistry implements Sessions {
       entry.typing?.close();
       entry.firstPrompt.stop();
       stopReadingTheScreen(entry);
+      entry.withdrawal.stop();
       stopFollowingEveryConversation(entry);
       entry.firstPrompt.fail(new SessionsClosedError(entry.key));
     }
@@ -718,7 +824,7 @@ class SessionRegistry implements Sessions {
     toType: string | undefined,
     replaces: Entry | undefined,
   ): Entry {
-    return {
+    const entry: Entry = {
       key,
       directory,
       environment: this.#options.environment(),
@@ -727,11 +833,19 @@ class SessionRegistry implements Sessions {
       launchedWithPrompt: prompt !== undefined,
       firstPrompt: new FirstPrompt(toType),
       session: { key, state: 'starting', since: now() },
+      told: {},
+      changeListeners: new Set(),
+      withdrawal: new WithdrawnWatch({
+        read: () => this.#readScreenText(key),
+        signs: this.#options.driver.screenStateSigns,
+        onWithdrawn: () => this.#withdrawn(entry),
+      }),
       lifecycle: new SessionLifecycle('reserved'),
       heard: false,
       stopFollowingLeft: [],
       ...(replaces === undefined ? {} : { replaces }),
     };
+    return entry;
   }
 
   /** Watches a session put on the host: its liveness, its agent's conversation and its start. */
@@ -906,6 +1020,7 @@ class SessionRegistry implements Sessions {
     return entry.lifecycle.go(async () => {
       entry.firstPrompt.stop();
       stopReadingTheScreen(entry);
+      entry.withdrawal.stop();
       stopFollowingEveryConversation(entry);
       this.#watch.unwatch(entry.key);
       this.#options.hooks.revoke(entry.key);
@@ -943,6 +1058,7 @@ class SessionRegistry implements Sessions {
     entry.session = session;
     entry.firstPrompt.changed(session);
     this.#notify();
+    for (const listener of entry.changeListeners) listener(session);
   }
 
   #notify(): void {
@@ -997,13 +1113,8 @@ function conversationOf(entry: Entry): Conversation {
   };
 }
 
-function courseOf(entry: Entry): SessionCourse {
-  const { session, compactingFrom, promptTakenAt } = entry;
-  return {
-    session,
-    ...(compactingFrom === undefined ? {} : { compactingFrom }),
-    ...(promptTakenAt === undefined ? {} : { promptTakenAt }),
-  };
+function courseOf({ session, told }: Entry): SessionCourse {
+  return { ...told, session };
 }
 
 /** Whether the promise settles within the time, in milliseconds. */

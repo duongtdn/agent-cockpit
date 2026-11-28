@@ -1,10 +1,12 @@
 import type {
+  ClearingTerminal,
   Conversation,
   Driver,
   DriverEvent,
   FollowedConversation,
   HookRequest,
   InputBox,
+  InputBoxClearing,
   Launch,
   LaunchCommand,
   ScreenReading,
@@ -314,9 +316,28 @@ export function stubScreen(
  */
 export const PROMPT_PATH = '/prompt:';
 
-/** The input box a stub driver reads: on the `input-box` screen, empty. */
+/** The start of a screen a stub driver reads as an input box holding a prompt an early Esc withdrew. */
+const WITHDRAWN = 'withdrawn:';
+
+/**
+ * The screen a stub driver reads as the input box holding the prompt, put
+ * back by an early Esc, with no sign that the agent works: its
+ * `promptWithdrawn` for that prompt.
+ */
+export function withdrawnScreen(prompt: string): string {
+  return `${WITHDRAWN}${prompt}`;
+}
+
+/** The input box a stub driver reads: on the `input-box` screen, empty; on a withdrawn one, the prompt. */
 function readStubInputBox(text: string): InputBox | undefined {
+  if (text.startsWith(WITHDRAWN)) return { text: text.slice(WITHDRAWN.length) };
   return text === 'input-box' ? { text: '' } : undefined;
+}
+
+/** Clears the input box as a stub driver does: one kill, the box taken for empty. */
+export async function clearAsADriverDoes(terminal: ClearingTerminal): Promise<InputBoxClearing> {
+  await terminal.pressKeys(['C-u']);
+  return 'cleared';
 }
 
 /**
@@ -339,7 +360,7 @@ export async function typeAsADriverDoes(
 export const TYPING_PATIENCE_MS = 3000;
 
 function readStubScreen(text: string): ScreenReading {
-  if (text === 'input-box') return { shows: 'input-box' };
+  if (text === 'input-box' || text.startsWith(WITHDRAWN)) return { shows: 'input-box' };
   if (text === 'panel') return { shows: 'panel', panel: 'panel' };
   if (text === 'unknown') return { shows: 'unknown' };
   if (text === 'dialog') return { shows: 'dialog' };
@@ -351,7 +372,8 @@ function readStubScreen(text: string): ScreenReading {
 
 /**
  * A driver for tests: it launches what it is told, reads hooks by their
- * path alone and screens as {@link stubScreen} writes them.
+ * path alone and screens as {@link stubScreen} and {@link withdrawnScreen}
+ * write them, and clears the input box with one kill.
  */
 export interface StubDriver extends Driver {
   /** Every launch it was asked for, in order. */
@@ -401,9 +423,11 @@ export function createStubDriver(): StubDriver {
     screenStateSigns: {
       ...DRIVER_DEFAULTS.screenStateSigns,
       launchPanelClosed: (text) => text === 'input-box',
+      promptWithdrawn: (text, prompt) => text === withdrawnScreen(prompt),
     },
     readInputBox: readStubInputBox,
     typePrompt: typeAsADriverDoes,
+    clearInputBox: clearAsADriverDoes,
     failNextLaunch(error) {
       nextLaunchError = error;
     },

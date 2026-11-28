@@ -6,7 +6,10 @@ import type { ScreenReading } from '../driver.js';
  * and its first hook comes at about 0.33 s: read every quarter second, a
  * dialog reaches the app within half a second of the launch, and a start
  * with no dialog is read at most twice. One read is one call to tmux, a
- * few milliseconds.
+ * few milliseconds. The same pace serves a prompt an early Esc withdrew:
+ * the agent redraws it in the box 0.07–0.17 s after the Esc, so the session
+ * is `idle` within about 0.4 s of it, far inside the driver's interrupt
+ * bound.
  */
 export const SCREEN_INTERVAL_MS = 250;
 

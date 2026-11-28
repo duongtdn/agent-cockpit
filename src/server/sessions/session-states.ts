@@ -258,7 +258,8 @@ function turnOver(
   if (state === 'idle') return course;
   const idle: IdleSession = { key, state: 'idle', since: now };
   if (event.type === 'turn-failed') return withSession(course, { ...idle, error: event.error });
-  if (event.type === 'interrupted') return withSession(course, withTasks(idle, tasksSetAside(course)));
+  if (event.type === 'interrupted')
+    return withSession(course, withTasks(idle, tasksSetAside(course)));
   if (event.lastMessage === undefined) return withSession(course, idle);
   return withSession(course, { ...idle, lastMessage: event.lastMessage });
 }
