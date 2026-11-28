@@ -1,0 +1,102 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  --rule: color-mix(in srgb, currentColor 20%, transparent);
+}
+body {
+  margin: 0 auto;
+  max-width: 64rem;
+  padding: 1rem;
+}
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+#connection {
+  margin: 0;
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+/* The forms and lists are laid out as flex boxes and grids: a hidden one must stay hidden. */
+[hidden] {
+  display: none;
+}
+form,
+.answers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.result {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  min-height: 1.2em;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+tr[data-state="waiting"] .state {
+  color: #b26b00;
+  font-weight: 600;
+}
+tr[data-state="idle"] .state {
+  color: #1d7a36;
+}
+tr[data-state="ended"] {
+  opacity: 0.6;
+}
+.asks {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+.ask {
+  border: 1px solid var(--rule);
+  border-radius: 0.4rem;
+  padding: 0.75rem;
+}
+.ask h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+.ask dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+}
+.ask dt {
+  font-weight: 600;
+}
+.ask dd {
+  margin: 0;
+}
+.ask pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.since {
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+.terminal-only {
+  font-weight: 600;
+  color: #b26b00;
+}
+.ask.settled {
+  padding: 0.5rem 0.75rem;
+  opacity: 0.85;
+}

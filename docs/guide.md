@@ -15,7 +15,9 @@ written as the parts they describe are built; until then they only say what
 they will cover. [examples/jobs-console](../examples/jobs-console/DEMO.md) is
 a whole app that does what this guide shows;
 [examples/translate-and-access](../examples/translate-and-access/DEMO.md)
-shows access.
+shows access;
+[examples/asks-on-page](../examples/asks-on-page/DEMO.md) shows the agent's
+asks answered on a page.
 
 ## Getting started
 

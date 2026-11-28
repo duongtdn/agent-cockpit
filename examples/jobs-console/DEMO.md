@@ -43,7 +43,9 @@ work, and shows a session's terminal.
   Anthropic's API (no model, no login, no network). Every question gets the
   same scripted answer, at once, except one that asks for a thorough answer
   (_Detail_ `thorough`): its answer is long and written a few words at a
-  time, for about 40 seconds, a turn at work long enough to stop. Each
+  time, for about 40 seconds, a turn at work long enough to stop (and one
+  that asks for `` `touch <file>` ``, which calls that command, as
+  `examples/asks-on-page` shows). Each
   launch passes the contract suite's guard first (a settings file, a file
   of MCP servers, a variable that could take the agent elsewhere stops
   it). It is development support, not part of the package: an app runs

@@ -69,6 +69,11 @@ access: the link and its token, the app's own API checking it, a page of
 the network refused, then served once the app opens itself with
 `authorize`, the app's routes that change something refusing pages of
 other origins, the terminal kept to the machine, and the token renewed.
+[examples/asks-on-page](examples/asks-on-page/DEMO.md) shows the agent's
+asks on a page with no terminal: each permission the agent asks, with its
+tool, input and description, answered Allow, Allow for the session or Deny
+with a message; one only the terminal can answer, shown as such; and every
+ask settled, with what settled it.
 
 ## Documents
 

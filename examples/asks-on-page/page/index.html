@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Asks on the page</title>
+    <link rel="stylesheet" href="/page.css" />
+    <!--
+      The browser loads the package's client as it is built: the import map
+      gives its bare name the path the app serves it at. No bundler, and no
+      terminal: the page answers the agent's asks itself.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@duongtdn/agent-cockpit/client": "/modules/agent-cockpit/client/index.js"
+        }
+      }
+    </script>
+    <script type="module" src="/page.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Asks on the page</h1>
+      <p id="connection" role="status">Connecting…</p>
+    </header>
+    <main>
+      <section aria-labelledby="run-heading">
+        <h2 id="run-heading">Jobs</h2>
+        <form id="run-form">
+          <label>File <input name="file" required value="hello.txt" autocomplete="off" /></label>
+          <button type="submit" name="job" value="create">Create it</button>
+          <button type="submit" name="job" value="create-in-plan">Create it in plan mode</button>
+        </form>
+        <p id="run-result" class="result" role="status"></p>
+      </section>
+      <section aria-labelledby="sessions-heading">
+        <h2 id="sessions-heading">Sessions</h2>
+        <p id="no-sessions">No sessions yet: create a file.</p>
+        <table id="sessions" hidden>
+          <thead>
+            <tr>
+              <th scope="col">Session</th>
+              <th scope="col">State</th>
+              <th scope="col">Waits for</th>
+              <th scope="col">Last answer</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section aria-labelledby="pending-heading">
+        <h2 id="pending-heading">Pending asks</h2>
+        <p id="no-pending">Nothing asked.</p>
+        <ul id="pending" class="asks"></ul>
+      </section>
+      <section aria-labelledby="settled-heading">
+        <h2 id="settled-heading">Settled asks</h2>
+        <p id="no-settled">None settled since the page opened.</p>
+        <ul id="settled" class="asks"></ul>
+      </section>
+    </main>
+  </body>
+</html>
