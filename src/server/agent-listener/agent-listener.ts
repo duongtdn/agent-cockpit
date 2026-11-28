@@ -1,4 +1,10 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerOptions,
+  type ServerResponse,
+} from 'node:http';
 import { join } from 'node:path';
 import { HOOKS_PATH, type HookRequest, type JsonValue } from '../driver.js';
 import { readBodyWithin } from '../http/body.js';
@@ -74,7 +80,19 @@ export interface AgentListenerOptions {
   readonly receive: (request: HookRequest, hold: HookHold) => void;
   /** Gives the app what failed while a hook was served: the agent is answered 500, and no more. */
   readonly reportFailure: (cause: unknown) => void;
+  /**
+   * Node's bounds on a connection, its defaults unless given. They bound a
+   * request's arrival and a kept-alive connection's idle time only, never a
+   * held reply's wait: a test shortens them to show it.
+   */
+  readonly serverTimeouts?: ServerTimeouts;
 }
+
+/** The bounds Node sets on the listener's connections. */
+export type ServerTimeouts = Pick<
+  ServerOptions,
+  'headersTimeout' | 'requestTimeout' | 'keepAliveTimeout' | 'connectionsCheckingInterval'
+>;
 
 /** The agent-facing listener, listening. */
 export interface AgentListener {
@@ -118,13 +136,22 @@ export interface AgentListener {
 export async function openAgentListener(options: AgentListenerOptions): Promise<AgentListener> {
   const portFile = join(options.folder, PORT_FILE);
   const remembered = await readRememberedPort(portFile);
-  const server = createServer();
+  // Node's request and headers timeouts end once a request has arrived
+  // whole, which `serve` waits for before `receive`; its socket timeout is
+  // 0 and its keep-alive timeout runs only between requests: none of them
+  // cuts a held reply, which may wait on a person for minutes.
+  const server = createServer({ ...options.serverTimeouts });
   const port = await bind(server, options.agentPort, remembered);
   const url = `http://${LOOPBACK}:${port}`;
   const tokens = createHookTokens(url);
+  const held = new Set<HeldResponse>();
+  const closeListener = () => {
+    for (const response of held) response.drop();
+    return close(server);
+  };
   // Requests arrive on later turns of the event loop: none is missed.
   server.on('request', (request, response) => {
-    void serve(request, response, port, tokens, options);
+    void serve(request, response, { port, tokens, held, ...options });
   });
   if (port !== remembered) {
     await writePrivateFile(portFile, String(port)).catch(async (error: unknown) => {
@@ -137,7 +164,7 @@ export async function openAgentListener(options: AgentListenerOptions): Promise<
     url,
     ...(remembered !== undefined && remembered !== port ? { previousPort: remembered } : {}),
     hooks: tokens,
-    close: () => close(server),
+    close: closeListener,
   };
 }
 
@@ -184,12 +211,21 @@ function close(server: Server): Promise<void> {
   });
 }
 
+/** What the body's read gives when the connection broke before the body ended. */
+const CONNECTION_LOST = Symbol('connection lost');
+
+/** What serving one request needs of its listener. */
+interface ServeContext extends Pick<AgentListenerOptions, 'receive' | 'reportFailure'> {
+  readonly port: number;
+  readonly tokens: HookTokens;
+  /** The responses held now, which the listener's close drops. */
+  readonly held: Set<HeldResponse>;
+}
+
 async function serve(
   request: IncomingMessage,
   response: ServerResponse,
-  port: number,
-  tokens: HookTokens,
-  { receive, reportFailure }: Pick<AgentListenerOptions, 'receive' | 'reportFailure'>,
+  { port, tokens, held, receive, reportFailure }: ServeContext,
 ): Promise<void> {
   // Before the token: a page learns nothing of the listener's answer to one.
   if (looksLikeBrowser(request.headers, port)) return answer(response, 403);
@@ -198,7 +234,11 @@ async function serve(
   const path = new URL(request.url ?? '/', 'http://listener').pathname;
   if (path !== HOOKS_PATH) return answer(response, 404);
   if (request.method !== 'POST') return answer(response, 405, { allow: 'POST' });
-  const text = await readBodyWithin(request, MAX_HOOK_BODY_BYTES);
+  const text = await readBodyWithin(request, MAX_HOOK_BODY_BYTES).catch(
+    (): typeof CONNECTION_LOST => CONNECTION_LOST,
+  );
+  // Node answered the request, cut by its timeout, or the agent left: nothing to say.
+  if (text === CONNECTION_LOST) return;
   if (text === undefined) return answer(response, 413);
   let body: unknown;
   try {
@@ -206,22 +246,71 @@ async function serve(
   } catch {
     return answer(response, 400);
   }
+  let taken: HeldResponse | undefined;
   try {
-    receive({ key, path, body }, holdNothing);
+    receive({ key, path, body }, (onClosed) => {
+      taken = holdResponse(response, held, onClosed);
+      return taken;
+    });
   } catch (error) {
+    taken?.drop();
     reportFailure(error);
     return answer(response, 500);
   }
   // A hook's answer of nothing: no decision of the cockpit's.
-  response.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+  if (taken === undefined) writeJson(response, '{}');
+}
+
+/** A held hook, as the listener keeps it until it is replied to, released, closed or dropped. */
+interface HeldResponse extends HeldHook {
+  /** Stops holding it, reporting nothing: the listener ends the connection itself. */
+  drop(): void;
 }
 
 /**
- * The hold the listener gives `receive`: the sessions hold no request, so
- * none is ever taken.
+ * Holds a response until the core replies or releases it, reporting the
+ * connection closed if the agent closes it first.
  */
-function holdNothing(): HeldHook {
-  throw new Error('The agent-facing listener holds no hook request.');
+function holdResponse(
+  response: ServerResponse,
+  held: Set<HeldResponse>,
+  onClosed: () => void,
+): HeldResponse {
+  const drop = () => {
+    held.delete(hook);
+  };
+  const end = (body: string): HeldReplyOutcome => {
+    if (!held.has(hook) || connectionGone(response)) return 'closed';
+    drop();
+    writeJson(response, body);
+    return 'written';
+  };
+  const hook: HeldResponse = {
+    reply: (body) => end(JSON.stringify(body)),
+    release: () => {
+      end('{}');
+    },
+    drop,
+  };
+  held.add(hook);
+  response.once('close', () => {
+    if (!held.has(hook)) return;
+    drop();
+    onClosed();
+  });
+  return hook;
+}
+
+/**
+ * Whether the connection can no longer carry the reply, though Node has not
+ * yet told its close: the socket destroyed or no longer writable.
+ */
+function connectionGone(response: ServerResponse): boolean {
+  return response.destroyed || !(response.socket?.writable ?? false);
+}
+
+function writeJson(response: ServerResponse, body: string): void {
+  response.writeHead(200, { 'content-type': 'application/json' }).end(body);
 }
 
 function bearerToken(header: string | undefined): string | undefined {

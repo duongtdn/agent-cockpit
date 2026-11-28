@@ -1,4 +1,4 @@
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import {
   chmodSync,
   mkdirSync,
@@ -10,12 +10,15 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
-import { connect, createServer, type Server } from 'node:net';
+import { connect, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   type AgentListener,
+  type AgentListenerOptions,
+  type HeldHook,
+  type HookHold,
   MAX_HOOK_BODY_BYTES,
   openAgentListener,
 } from '../../src/server/agent-listener/agent-listener.ts';
@@ -43,7 +46,7 @@ afterEach(async () => {
 });
 
 async function open(
-  options: { agentPort?: number; receive?: (request: HookRequest) => void } = {},
+  options: Partial<Pick<AgentListenerOptions, 'agentPort' | 'receive' | 'serverTimeouts'>> = {},
 ): Promise<AgentListener> {
   const listener = await openAgentListener({
     folder,
@@ -122,6 +125,98 @@ async function postAs(
   const chunks: Buffer[] = [];
   for await (const chunk of response) chunks.push(chunk as Buffer);
   return { status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') };
+}
+
+/** A hook the test's sessions hold, and what the listener reported of its connection. */
+interface Holding {
+  readonly hook: HeldHook;
+  /** How many times the listener reported the connection closed. */
+  closings(): number;
+  /** Settles at the first report of the connection closed. */
+  readonly closed: Promise<void>;
+}
+
+/**
+ * A sessions' `receive` that holds every hook it takes, as the core holds
+ * a permission's, and hands the held hooks to the test in their order.
+ */
+function holdingSessions(): {
+  receive: (request: HookRequest, hold: HookHold) => void;
+  next(): Promise<Holding>;
+} {
+  const arrived: Holding[] = [];
+  const waiting: ((holding: Holding) => void)[] = [];
+  return {
+    receive: (_request, hold) => {
+      let closings = 0;
+      let reportClosed = () => {};
+      const closed = new Promise<void>((resolve) => {
+        reportClosed = resolve;
+      });
+      const hook = hold(() => {
+        closings += 1;
+        reportClosed();
+      });
+      const holding = { hook, closings: () => closings, closed };
+      const taker = waiting.shift();
+      if (taker === undefined) arrived.push(holding);
+      else taker(holding);
+    },
+    next: () => {
+      const holding = arrived.shift();
+      if (holding !== undefined) return Promise.resolve(holding);
+      return new Promise((resolve) => waiting.push(resolve));
+    },
+  };
+}
+
+/** A hook request as the agent writes it on its connection. */
+function rawHook(listener: AgentListener, token: string, body = '{"hook_event_name":"Stop"}') {
+  return [
+    'POST /hooks HTTP/1.1',
+    `Host: 127.0.0.1:${listener.port}`,
+    `Authorization: Bearer ${token}`,
+    'Content-Type: application/json',
+    `Content-Length: ${Buffer.byteLength(body)}`,
+    '',
+    body,
+  ].join('\r\n');
+}
+
+/** Opens a connection to the listener, as the agent's hook does. */
+async function connectTo(listener: AgentListener): Promise<Socket> {
+  const socket = connect(listener.port, '127.0.0.1');
+  await once(socket, 'connect');
+  return socket;
+}
+
+/** What the listener wrote on a connection: its responses, which it sends chunked. */
+function recordResponses(socket: Socket): {
+  text(): string;
+  /** Settles once the connection carried this many responses whole. */
+  ended(count: number): Promise<void>;
+} {
+  let text = '';
+  let closed = false;
+  const changed = new EventEmitter();
+  socket.on('data', (chunk: Buffer) => {
+    text += String(chunk);
+    changed.emit('change');
+  });
+  socket.on('close', () => {
+    closed = true;
+    changed.emit('change');
+  });
+  const endings = () => text.split('\r\n0\r\n\r\n').length - 1;
+  return {
+    text: () => text,
+    ended: async (count) => {
+      while (endings() < count) {
+        if (closed) throw new Error(`The connection closed after: ${JSON.stringify(text)}`);
+        await once(changed, 'change');
+      }
+    },
+  };
 }
 
 describe('the agent-facing listener', () => {
@@ -340,6 +435,159 @@ describe('the agent-facing listener', () => {
       expect(received).toHaveLength(1);
     });
   });
+  describe('a hook the sessions hold', () => {
+    it('gets no reply until the core gives one, which is written as the body and ends the response', async () => {
+      const sessions = holdingSessions();
+      const listener = await open({ receive: sessions.receive });
+      const { token } = listener.hooks.grant('a');
+
+      const answer = post(listener, { token });
+      const { hook, closings } = await sessions.next();
+
+      expect(hook.reply({ hookSpecificOutput: { decision: { behavior: 'allow' } } })).toBe(
+        'written',
+      );
+      const response = await answer;
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toBe('application/json');
+      expect(await response.json()).toEqual({
+        hookSpecificOutput: { decision: { behavior: 'allow' } },
+      });
+      expect(hook.reply({})).toBe('closed');
+      hook.release();
+      expect(closings()).toBe(0);
+    });
+
+    it('is ended with the answer of nothing when released, once', async () => {
+      const sessions = holdingSessions();
+      const listener = await open({ receive: sessions.receive });
+      const { token } = listener.hooks.grant('a');
+
+      const answer = post(listener, { token });
+      const { hook, closings } = await sessions.next();
+      hook.release();
+
+      const response = await answer;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({});
+      hook.release();
+      expect(hook.reply({ decision: 'late' })).toBe('closed');
+      expect(closings()).toBe(0);
+    });
+
+    it.each([
+      ['closes', (socket: Socket) => socket.destroy()],
+      ['resets', (socket: Socket) => socket.resetAndDestroy()],
+    ])(
+      'is reported once when the agent %s its connection; a reply after it is not written, and nothing throws',
+      async (_, drop) => {
+        const sessions = holdingSessions();
+        const listener = await open({ receive: sessions.receive });
+        const { token } = listener.hooks.grant('a');
+        const socket = await connectTo(listener);
+        const received: Buffer[] = [];
+        socket.on('data', (chunk: Buffer) => received.push(chunk));
+        socket.on('error', () => {});
+
+        socket.write(rawHook(listener, token));
+        const { hook, closings, closed } = await sessions.next();
+        drop(socket);
+        await closed;
+
+        expect(hook.reply({ decision: 'late' })).toBe('closed');
+        hook.release();
+        expect(closings()).toBe(1);
+        expect(received).toEqual([]);
+        expect(failures).toEqual([]);
+      },
+    );
+
+    it('outlives the server’s request, headers and keep-alive timeouts, silent until its reply', async () => {
+      const sessions = holdingSessions();
+      const listener = await open({
+        receive: sessions.receive,
+        serverTimeouts: {
+          headersTimeout: 50,
+          requestTimeout: 100,
+          keepAliveTimeout: 100,
+          connectionsCheckingInterval: 10,
+        },
+      });
+      const { token } = listener.hooks.grant('a');
+      // The held hook follows an answered one on the kept-alive connection.
+      const kept = await connectTo(listener);
+      const responses = recordResponses(kept);
+      kept.write(rawHook(listener, token));
+      (await sessions.next()).hook.release();
+      await responses.ended(1);
+      const answered = responses.text();
+      expect(answered).toMatch(/^HTTP\/1\.1 200 /);
+      kept.write(rawHook(listener, token));
+      const { hook, closings } = await sessions.next();
+
+      // Each timeout seen cutting a connection of its own, opened after the hold.
+      const unfinished = await connectTo(listener);
+      const cut = once(unfinished, 'data');
+      unfinished.write(rawHook(listener, token).slice(0, -1));
+      const idle = await connectTo(listener);
+      const idleClosed = once(idle.resume(), 'close');
+      idle.write(rawHook(listener, token));
+      (await sessions.next()).hook.release();
+      expect(String((await cut)[0])).toMatch(/^HTTP\/1\.1 408 /);
+      await idleClosed;
+
+      expect(responses.text()).toBe(answered);
+      expect(hook.reply({ decision: 'late' })).toBe('written');
+      await responses.ended(2);
+      const reply = responses.text().slice(answered.length);
+      expect(reply).toMatch(/^HTTP\/1\.1 200 /);
+      expect(reply).toMatch(/\{"decision":"late"\}\r\n0\r\n\r\n$/);
+      expect(closings()).toBe(0);
+      kept.destroy();
+    });
+
+    it('is answered 500 when the sessions fail after holding it, and no longer held', async () => {
+      const broken = new Error('broken');
+      const sessions = holdingSessions();
+      const listener = await open({
+        receive: (request, hold) => {
+          sessions.receive(request, hold);
+          throw broken;
+        },
+      });
+      const { token } = listener.hooks.grant('a');
+
+      expect((await post(listener, { token })).status).toBe(500);
+      const { hook, closings } = await sessions.next();
+
+      expect(failures).toEqual([broken]);
+      expect(hook.reply({ decision: 'late' })).toBe('closed');
+      expect(closings()).toBe(0);
+    });
+
+    it('is dropped when the listener closes, reported to nobody', async () => {
+      const sessions = holdingSessions();
+      const listener = await open({ receive: sessions.receive });
+      const { token } = listener.hooks.grant('a');
+
+      const answers = [post(listener, { token }), post(listener, { token })].map((answer) =>
+        answer.then(
+          () => 'answered',
+          () => 'dropped',
+        ),
+      );
+      const held = [await sessions.next(), await sessions.next()];
+      await closeListener(listener);
+
+      expect(await Promise.all(answers)).toEqual(['dropped', 'dropped']);
+      expect(held.map(({ hook }) => hook.reply({ decision: 'late' }))).toEqual([
+        'closed',
+        'closed',
+      ]);
+      expect(held.map(({ closings }) => closings())).toEqual([0, 0]);
+    });
+  });
+
   describe('a request that looks like a browser’s', () => {
     it('passes what the hooks send: Host 127.0.0.1 and its port, no Origin', async () => {
       const listener = await open();
