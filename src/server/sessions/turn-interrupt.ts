@@ -115,7 +115,10 @@ export interface InterruptOptions {
  * the turn ended, the transcript recorded the interruption, or the screen
  * showed the prompt withdrawn, which is then cleared from the input box,
  * since the app asked to stop, when the target can clear it (an end's
- * interrupt leaves it). However the clearing ends — the box left
+ * interrupt leaves it). A turn stopped by the reply and not confirmed in
+ * time gets the busy plan's keys once, and the bound again, unless the
+ * session is being ended or was found gone: a Yes in the terminal leaves
+ * the hook the reply went to unread until the tool has run. However the clearing ends — the box left
  * holding text, none shown, the host failing — the interrupt resolves
  * `interrupted`: the turn did stop. A session that ends meanwhile had no
  * turn left to stop.
@@ -127,7 +130,8 @@ export interface InterruptOptions {
  * once the session ended.
  * @throws `CockpitError` `wrong-state` on a `starting` session;
  * `interrupt-unconfirmed` with the key and the last state when the session
- * was not `idle` within the bound: it is left as it is. What the host fails
+ * was not `idle` within the bound (or the second one, after the reply): it
+ * is left as it is. What the host fails
  * with as the keys are pressed. The refusal once the core is closed first.
  */
 export async function interruptTurn(
@@ -143,15 +147,14 @@ export async function interruptTurn(
 
 async function stopTheTurn(
   target: InterruptedSession,
-  { interrupting, closing, refusal }: InterruptOptions,
+  options: InterruptOptions,
 ): Promise<InterruptResult> {
+  const { closing, refusal } = options;
   // Listened to before the turn is stopped, which its end may answer at once.
   const rest = restingState(target);
   try {
-    await stopNow(target, interrupting);
-    const settled = await fulfilledWithin(rest.reached, interrupting.boundMs, closing);
-    // Confirmed or not, the agent reads no reply on them from now on.
-    target.releaseHooksLeftOpen();
+    const stoppedBy = await stopNow(target, options.interrupting);
+    const settled = await restedWithin(target, rest.reached, stoppedBy, options);
     if (closing.aborted) throw refusal();
     if (settled === undefined) throw unconfirmed(target);
     if (settled.state === 'ended') return nothingToInterrupt(settled);
@@ -166,15 +169,46 @@ async function stopTheTurn(
   }
 }
 
+/** How a turn was stopped: by the driver's reply on a held hook, or by keys. */
+type StoppedBy = 'reply' | 'keys';
+
+/**
+ * Waits the driver's bound for the session to rest. A turn stopped by a
+ * reply and not confirmed gets the busy plan's keys once, and the bound
+ * again: after a Yes in the terminal the agent no longer reads the hook
+ * the reply went to, though the ask is pending until the tool has run.
+ *
+ * @returns The session once it rested; `undefined` when it did not within
+ * the bound, or the core closed first.
+ */
+async function restedWithin(
+  target: InterruptedSession,
+  reached: Promise<Session>,
+  stoppedBy: StoppedBy,
+  { interrupting, closing }: InterruptOptions,
+): Promise<Session | undefined> {
+  const settled = await fulfilledWithin(reached, interrupting.boundMs, closing);
+  // Confirmed or not, the agent reads no reply on them from now on.
+  target.releaseHooksLeftOpen();
+  if (settled !== undefined || stoppedBy === 'keys' || closing.aborted) return settled;
+  const pressed = await pressKeys(target, interrupting.busy.keys);
+  // Not pressed, the session is being ended or was found gone: no wait, only what it came to.
+  return fulfilledWithin(reached, pressed ? interrupting.boundMs : 0, closing);
+}
+
 /**
  * Stops the turn by what the session waits on, as {@link interruptTurn}'s
  * table says, chosen in the step that carries it out: nothing the session
  * does in between can make it stale.
  */
-function stopNow(target: InterruptedSession, interrupting: SessionInterrupting): Promise<void> {
-  if (target.stopByReply(interrupting.appAsk.reply)) return Promise.resolve();
+async function stopNow(
+  target: InterruptedSession,
+  interrupting: SessionInterrupting,
+): Promise<StoppedBy> {
+  if (target.stopByReply(interrupting.appAsk.reply)) return 'reply';
   const { terminalAsk, busy } = interrupting;
-  return pressKeys(target, waitsOnATerminalAsk(target.session()) ? terminalAsk.keys : busy.keys);
+  await pressKeys(target, waitsOnATerminalAsk(target.session()) ? terminalAsk.keys : busy.keys);
+  return 'keys';
 }
 
 /** Whether a session waits on an ask answerable in the terminal only: an entry of kind `terminal` with an ask's id. */
@@ -188,14 +222,19 @@ function waitsOnATerminalAsk(session: Session | undefined): boolean {
 /**
  * Presses keys into a session the cockpit is not ending (the end tells
  * what becomes of it); one found gone is ended at once.
+ *
+ * @returns Whether the keys went in: false for a session the cockpit is
+ * ending, or found gone.
  */
-async function pressKeys(target: InterruptedSession, keys: readonly string[]): Promise<void> {
-  if (!target.takesKeys()) return;
+async function pressKeys(target: InterruptedSession, keys: readonly string[]): Promise<boolean> {
+  if (!target.takesKeys()) return false;
   try {
     await target.sendKeys(keys);
+    return true;
   } catch (error) {
     if (!(error instanceof SessionHostError && error.reason === 'no-session')) throw error;
     await target.gone();
+    return false;
   }
 }
 

@@ -358,8 +358,10 @@ export interface Sessions {
    * the app can answer, no key pressed, every ask of the turn settled
    * `cancelled`; else the driver's keys for an ask answerable in the
    * terminal only (one Esc); else the driver's keys for a `busy` turn (one
-   * Esc). Then the driver's bound for it to be `idle`; nothing pressed
-   * where no turn runs. A session the cockpit is
+   * Esc). Then the driver's bound for it to be `idle`; a reply not
+   * confirmed within it is followed by the busy plan's keys, once, and the
+   * bound again (a Yes in the terminal leaves its hook unread until the
+   * tool has run); nothing pressed where no turn runs. A session the cockpit is
    * ending is first awaited ended, then read again. Background tasks go
    * on: the `idle` session lists those it listed before the turn and the
    * subagents the turn started; a shell or a monitor the turn started

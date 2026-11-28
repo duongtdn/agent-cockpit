@@ -7,6 +7,7 @@ import {
   LIVENESS_INTERVAL_MS,
   SCREEN_INTERVAL_MS,
   type Sessions,
+  SessionsClosedError,
 } from '../../src/server/sessions/sessions.ts';
 import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/units-of-work.ts';
 import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
@@ -31,6 +32,7 @@ import {
   stubAsk,
   stubFolders,
   stubScreen,
+  TOOL_RAN_PATH,
   TYPING_PATIENCE_MS,
   withdrawnScreen,
 } from '../support/sessions-doubles.ts';
@@ -556,7 +558,8 @@ describe('a session while asks are pending', () => {
     await vi.advanceTimersByTimeAsync(2 * SCREEN_INTERVAL_MS + TYPING_PATIENCE_MS);
 
     await expect(typed).rejects.toMatchObject({ code: 'wrong-state' });
-    expect(host.writes).toEqual([]);
+    // The interrupt's one press, its reply unconfirmed: nothing of the prompt.
+    expect(writes()).toEqual([driver.interrupting.busy.keys.join(' ')]);
   });
 
   it('waits on its ask, not on a dialog read on screen while its first prompt waits for the box: the dialog is the ask’s', async () => {
@@ -727,12 +730,34 @@ describe('an interrupt of a session waiting on asks', () => {
     expect(writes()).toEqual([]);
   });
 
-  it('fails `interrupt-unconfirmed` when the marker does not come within the bound: the asks stay settled `cancelled`, the hooks left open let go, no key pressed', async () => {
+  it('in the window after a Yes in the terminal — its reply written to a hook the agent no longer reads, no marker within the bound — presses the busy plan’s keys once, then resolves `interrupted` at the marker: the ask stays settled `cancelled`, the call’s late finish changes nothing', async () => {
+    await busySession();
+    const { id, held } = asked('call-1');
+    const result = interrupting();
+    await settle();
+    expect(held.replies).toEqual([appAsk.reply]);
+    expect(writes()).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(boundMs);
+    expect(writes()).toEqual([busy.keys.join(' ')]);
+    hook(`${TOOL_RAN_PATH}call-1`);
+    recordInterruption();
+
+    await expect(result).resolves.toEqual({ action: 'interrupted', state: 'idle' });
+    expect(told).toEqual([{ id, key: KEY, by: 'cancelled' }]);
+    expect(asks.settled(KEY)).toEqual([{ id, key: KEY, by: 'cancelled' }]);
+    expect(sessionOf()?.state).toBe('idle');
+    expect(writes()).toEqual([busy.keys.join(' ')]);
+  });
+
+  it('fails `interrupt-unconfirmed` when no marker comes within the bound, nor within the bound again after its one press of the busy plan’s keys: the asks stay settled `cancelled`, the hooks left open let go', async () => {
     await busySession();
     const first = asked('call-1');
     const second = asked('call-2');
     const result = interrupting();
 
+    await vi.advanceTimersByTimeAsync(boundMs);
+    expect(second.held.end).toBe('released');
     await vi.advanceTimersByTimeAsync(boundMs);
 
     await expect(result).rejects.toMatchObject({
@@ -741,8 +766,33 @@ describe('an interrupt of a session waiting on asks', () => {
       state: 'busy',
     });
     expect(told).toEqual([first.id, second.id].map((id) => ({ id, key: KEY, by: 'cancelled' })));
-    expect(second.held.end).toBe('released');
     expect(asks.pending('*')).toEqual([]);
+    expect(writes()).toEqual([busy.keys.join(' ')]);
+  });
+
+  it('presses no key after its bound when the cockpit began ending the session meanwhile', async () => {
+    await busySession();
+    asked('call-1');
+    interrupting();
+    await settle();
+    const ended = sessions.end(KEY, 'app');
+    ended.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(boundMs);
+
+    expect(writes()).toEqual([]);
+  });
+
+  it('presses no key after its bound when the cockpit closed meanwhile: refused', async () => {
+    await busySession();
+    asked('call-1');
+    const result = interrupting();
+    await settle();
+
+    sessions.close();
+    await vi.advanceTimersByTimeAsync(2 * boundMs);
+
+    await expect(result).rejects.toBeInstanceOf(SessionsClosedError);
     expect(writes()).toEqual([]);
   });
 
@@ -867,11 +917,13 @@ describe('an interrupt of a session waiting on asks', () => {
     await expect(result).resolves.toEqual({ action: 'nothing-to-interrupt', state: 'ended' });
     expect(told).toEqual([first.id, second.id].map((id) => ({ id, key: KEY, by: 'cancelled' })));
     expect(second.held.end).toBe('released');
+    await vi.advanceTimersByTimeAsync(boundMs);
+    expect(writes()).toEqual([]);
   });
 });
 
 describe('an end of a session waiting on asks', () => {
-  const { appAsk, boundMs } = createStubDriver().interrupting;
+  const { appAsk, busy, boundMs } = createStubDriver().interrupting;
 
   beforeEach(tellTheKeysApart);
 
@@ -897,18 +949,38 @@ describe('an end of a session waiting on asks', () => {
     expect(writes()).toEqual([]);
   });
 
-  it('signals the agent anyway when the interrupt is not confirmed within its bound', async () => {
+  it('presses the busy plan’s keys once when the reply is not confirmed within its bound, then signals the agent once the marker comes', async () => {
     await busySession();
     asked('call-1');
     const result = ending();
 
+    await vi.advanceTimersByTimeAsync(boundMs);
+    expect(writes()).toEqual([busy.keys.join(' ')]);
+    expect(signals).toEqual([]);
+    recordInterruption();
+    await settle();
+    expect(signals).toHaveLength(1);
+    await exits();
+
+    await expect(result).resolves.toMatchObject({ action: 'ended' });
+    expect(told).toHaveLength(1);
+    expect(writes()).toEqual([busy.keys.join(' ')]);
+  });
+
+  it('signals the agent anyway when the interrupt is confirmed neither within its bound nor within the bound again after its one press', async () => {
+    await busySession();
+    asked('call-1');
+    const result = ending();
+
+    await vi.advanceTimersByTimeAsync(boundMs);
+    expect(signals).toEqual([]);
     await vi.advanceTimersByTimeAsync(boundMs);
     expect(signals).toHaveLength(1);
     await exits();
 
     await expect(result).resolves.toMatchObject({ action: 'ended' });
     expect(told).toHaveLength(1);
-    expect(writes()).toEqual([]);
+    expect(writes()).toEqual([busy.keys.join(' ')]);
   });
 
   it('settles each ask `cancelled` once when the agent exits during the interrupt: nothing signalled', async () => {

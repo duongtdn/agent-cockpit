@@ -20,7 +20,9 @@
  * until that interrupt is over), every answer resolved or refused for a
  * reason the app is told, an answer to an ask settled before refused
  * `already-settled` with what settled it, and no key pressed into a
- * session while an ask the app can answer is pending in it.
+ * session while an ask the app can answer is pending in it, but the one
+ * press of the interrupt's keys an interrupt makes once its reply went
+ * unconfirmed: a Yes in the terminal had left that hook unread.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -179,7 +181,10 @@ class World {
   readonly holds: FakeHolds = createFakeHolds();
   /** Each breach of the asks' properties, as it was seen: `<what> <id or key>`. */
   readonly askBreaches: string[] = [];
-  /** Each write into a session while an ask the app can answer was pending in it: `<key> <write>`. */
+  /**
+   * Each write into a session while an ask the app can answer was pending
+   * in it, but an interrupt's one press after its reply: `<key> <write>`.
+   */
   readonly writesWhileAsked: string[] = [];
   /** The id of each ask opened, by the call it is about. */
   readonly #askOfCall = new Map<string, string>();
@@ -193,6 +198,8 @@ class World {
    * may stay open, the agent closing them, until that interrupt is over.
    */
   readonly #settledByTheReply = new Map<string, Set<string>>();
+  /** The keys whose running interrupt stopped its turn by the reply. */
+  readonly #stoppedByTheReply = new Set<string>();
   /** The key one of whose hooks was given the interrupt's reply in the step running now. */
   #repliedToInterrupt: string | undefined;
   /** The calls each key's agent asked about, in order. */
@@ -536,6 +543,7 @@ class World {
         const outcome = hook.reply(body);
         if (outcome === 'written' && isDeepStrictEqual(body, INTERRUPT_REPLY)) {
           this.#repliedToInterrupt = key;
+          if (this.#interrupting.has(key)) this.#stoppedByTheReply.add(key);
           // The step ends with the synchronous code that wrote it.
           void Promise.resolve().then(() => {
             this.#repliedToInterrupt = undefined;
@@ -736,15 +744,20 @@ class World {
       if (outermost) {
         this.#interrupting.delete(key);
         this.#settledByTheReply.delete(key);
+        this.#stoppedByTheReply.delete(key);
       }
     }
   }
 
   #write(key: string, write: string): void {
+    const fallbackAfterTheReply =
+      write === INTERRUPT_KEYS &&
+      this.#stoppedByTheReply.has(key) &&
+      this.#interrupting.get(key) === 0;
     if (write === INTERRUPT_KEYS) this.#pressedToInterrupt(key, write);
     // A write to a session gone is refused by the host: nothing reaches an agent.
     if (this.host.pidOf(key) === undefined) return;
-    if (this.asks.pending(key).some((ask) => ask.answerable === 'app')) {
+    if (!fallbackAfterTheReply && this.asks.pending(key).some((ask) => ask.answerable === 'app')) {
       this.writesWhileAsked.push(`${key} ${write}`);
     }
     if (this.#ending.has(key)) this.writesAfterEnd.push(`${key} ${write}`);
@@ -1067,7 +1080,7 @@ afterEach(() => {
 });
 
 describe('the sessions, whatever the order of what happens to them', () => {
-  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known nor its record come back, no session held ended for idleness, every ask settled and told once, a session waiting exactly on its pending asks, no hook held past its ask, no key pressed while an ask the app can answer is pending, a late answer refused with what settled its ask', async () => {
+  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known nor its record come back, no session held ended for idleness, every ask settled and told once, a session waiting exactly on its pending asks, no hook held past its ask, no key pressed while an ask the app can answer is pending but an interrupt’s one press after its reply, a late answer refused with what settled its ask', async () => {
     const { parameters, replayPath } = replay();
     await fc.assert(
       fc.asyncProperty(
