@@ -34,7 +34,7 @@ const KINDS = {
 const UNKNOWN_KIND = {
   title: (ask) => `A ${ask.kind} ask this page cannot draw`,
   content: () => [],
-  summary: () => 'answer it in the terminal',
+  summary: () => 'its content not shown',
 };
 
 /**
