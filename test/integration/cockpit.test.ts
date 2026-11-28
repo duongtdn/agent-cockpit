@@ -32,6 +32,7 @@ import { eventually } from '../support/eventually.ts';
 import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import { release, writeScript } from '../support/fake-agent/script.ts';
 import { startNodeHttpApp } from '../support/node-http-app.ts';
+import { PATIENCE } from '../support/patience.ts';
 import {
   baseUrlOf,
   call,
@@ -295,6 +296,27 @@ describe('interrupting, ending and removing over the wire', () => {
     expect(JSON.parse(ended.body)).toEqual({ action: 'ended', stoppedTasks: [] });
     expect(JSON.parse(removed.body)).toEqual({ action: 'removed' });
     expect(cockpit.sessions.list()).toEqual([]);
+  });
+});
+
+describe('the idle timeout', () => {
+  /** Short, so that the session ends well within a condition's patience. */
+  const IDLE_TIMEOUT_MS = BigInt(Math.round(PATIENCE.condition / 5));
+
+  it("reaches the units of work from the cockpit's options: a session idle for the time the app gave ends `idle-timeout`", async () => {
+    const { cockpit, directory } = await newCockpit(undefined, {
+      port: APP_PORT,
+      idleTimeout: `${IDLE_TIMEOUT_MS}ms`,
+    });
+    writeScript(directory, [{ do: 'turn', reply: 'Explained.' }]);
+
+    await cockpit.run('explain', { file: 'README.md' });
+
+    await eventually(() =>
+      expect(cockpit.sessions.list()).toMatchObject([
+        { key: 'explain-readme-md', state: 'ended', reason: 'idle-timeout' },
+      ]),
+    );
   });
 });
 
