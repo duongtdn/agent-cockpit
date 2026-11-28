@@ -246,7 +246,8 @@ export interface SessionHost {
    */
   countAttached(name: string): Promise<number>;
   /**
-   * Ends a session at once, with its process.
+   * Ends a session at once, with its process: a process that outlives its
+   * session, one that ignores the hangup, is killed.
    *
    * @returns `'killed'`, or `'gone'` when the session did not live.
    * @throws `TypeError` for a name that cannot be a session's.

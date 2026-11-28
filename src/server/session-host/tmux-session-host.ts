@@ -232,7 +232,10 @@ class TmuxSessionHost implements SessionHost {
 
   kill(name: string): Promise<'killed' | 'gone'> {
     return whenAbsent('gone', async () => {
+      const { pid } = parseProcess(await this.#run(processArguments(name)));
       await this.#run(killArguments(name));
+      // tmux only hangs the pane up: a process that ignores the hangup outlives its session.
+      killProcess(pid);
       return 'killed' as const;
     });
   }
@@ -340,6 +343,15 @@ function isRunning(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Kills a process, if it is still alive. */
+function killProcess(pid: number): void {
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Gone already, with its session.
   }
 }
 

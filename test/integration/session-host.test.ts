@@ -25,6 +25,7 @@ import { SessionHostError } from '../../src/server/session-host/session-host-err
 import { connectionArguments, socketNameFor } from '../../src/server/session-host/tmux-commands.ts';
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
 import { eventually } from '../support/eventually.ts';
+import { PATIENCE } from '../support/patience.ts';
 
 /** A variable the tmux server inherits from this process, for a session to have removed. */
 const INHERITED = 'COCKPIT_HOST_TEST_INHERITED';
@@ -676,6 +677,23 @@ describe('the sessions of the host', () => {
     expect(await host.isLive('victim')).toBe(false);
     expect(await host.isLive('stays')).toBe(true);
     await eventually(() => expect(hasEnded(victim?.pid ?? 0)).toBe(true));
+  });
+
+  it('kill the process of a session it outlives, one that ignores the hangup and the terminate signal', async () => {
+    await startScript('stubborn', "trap '' TERM HUP; echo trapped; while :; do sleep 1; done");
+    await expectScreen('stubborn', 'trapped');
+    const stubborn = await host.processOf('stubborn');
+    const pid = stubborn?.pid ?? 0;
+
+    try {
+      expect(await host.kill('stubborn')).toBe('killed');
+
+      expect(await host.isLive('stubborn')).toBe(false);
+      await eventually(() => expect(hasEnded(pid)).toBe(true), undefined, PATIENCE.exit);
+    } finally {
+      // A host that left it running must not leave it to the machine.
+      if (isRunning(pid)) process.kill(pid, 'SIGKILL');
+    }
   });
 
   it('refuse to type into a session that is gone, others still living', async () => {
