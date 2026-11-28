@@ -5,7 +5,8 @@
  * every bound and every agent has exited: no session is left between two
  * phases, every call settled, each session's end was told once, nothing
  * was typed into a session after the cockpit asked it to end, and no
- * interrupt pressed its keys twice.
+ * interrupt pressed its keys twice or resolved `interrupted` on a session
+ * not `idle`.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -125,6 +126,8 @@ class World {
    * already, or that no interrupt pressed: `<key> <keys>`.
    */
   readonly keysPressedAgain: string[] = [];
+  /** Each interrupt that resolved `interrupted` on a session not `idle` as it settled: `<key> <state>`. */
+  readonly interruptedNotIdle: string[] = [];
   units: UnitsOfWork | undefined;
   closed = false;
   /** The keys whose agent the cockpit asked to end or killed, until their next start. */
@@ -287,7 +290,12 @@ class World {
     this.sessions.interrupt = async (key) => {
       this.#interrupting.set(key, 0);
       try {
-        return await interrupt(key);
+        const result = await interrupt(key);
+        const state = this.sessions.session(key)?.state;
+        if (result.action === 'interrupted' && state !== 'idle') {
+          this.interruptedNotIdle.push(`${key} ${state}`);
+        }
+        return result;
       } finally {
         this.#interrupting.delete(key);
       }
@@ -423,7 +431,7 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
   {
     weight: 8,
     arbitrary: fc
-      .tuple(file, fc.constantFrom('ready', 'start-and-take', 'prompt', 'turn-ended'))
+      .tuple(file, fc.constantFrom('ready', 'start-and-take', 'prompt', 'working', 'turn-ended'))
       .map(([file, hook]) =>
         command(`hook ${file} ${hook}`, (world) => {
           const key = keyOf(file);
@@ -491,7 +499,7 @@ afterEach(() => {
 });
 
 describe('the sessions, whatever the order of what happens to them', () => {
-  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice', async () => {
+  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle', async () => {
     const { parameters, replayPath } = replay();
     await fc.assert(
       fc.asyncProperty(
@@ -513,6 +521,7 @@ describe('the sessions, whatever the order of what happens to them', () => {
             expect(world.endsToldTwice).toEqual([]);
             expect(world.writesAfterEnd).toEqual([]);
             expect(world.keysPressedAgain).toEqual([]);
+            expect(world.interruptedNotIdle).toEqual([]);
             if (!world.closed) {
               expect(world.sessions.liveKeys()).toEqual([]);
               const notEnded = world.sessions.list().filter((each) => each.state !== 'ended');

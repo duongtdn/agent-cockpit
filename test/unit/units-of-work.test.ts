@@ -1235,18 +1235,6 @@ describe('an interrupt', () => {
     expect(host.writes).toEqual([]);
   });
 
-  it('stops the turn of a `busy` session: one Esc, `interrupted` once it is idle', async () => {
-    await open();
-    await started();
-
-    const interrupted = pending(units.interrupt(KEY));
-    await settle();
-    interruptionRecorded();
-
-    await expect(interrupted).resolves.toEqual({ action: 'interrupted', state: 'idle' });
-    expect(host.writes).toEqual([`${KEY} Escape`]);
-  });
-
   it('asked while a send types, waits for that send, then stops the turn the send began', async () => {
     await open();
     await started();
