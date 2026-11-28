@@ -244,14 +244,15 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   and `close`: 137 the app's allow, the dialog closed, the call run; 138 a
   deny with a message, then bare, the turn going on; 139 "remember" on
   `Bash`: an exact compound line, then `touch:*`, a compound line with
-  another command still asking; 140 on files: a `Write` remembered lets a
+  another command still asking, and, `touch:*` remembered first, the exact
+  compound line remembered then asked again; 140 on files: a `Write` remembered lets a
   `Write` and an `Edit` of the file run, a `Read` the file, siblings
-  asking, no settings file written; 141 a Yes by 1, 2 and 3 settled
-  `terminal` at `PostToolUse`, no hook left open (the agent's connections
-  to the listener, in `/proc/net/tcp`); 142 a Yes whose command fails, at
-  `PostToolUseFailure`; 143 a plain "No" and Esc `cancelled`, `idle`; 144
-  an amended "No" `terminal` at `PostToolBatch`, `busy`, then `idle`, no
-  hook left open; 145 `interrupt` on one held ask and on three, one marker
+  asking, no settings file written; 141 in one session, each settled
+  `terminal`: a Yes by 1, 2 and 3 at `PostToolUse`, a Yes whose command
+  fails (142's half) at `PostToolUseFailure`, an amended "No" (144's) at
+  `PostToolBatch`, `busy`, then `idle`; no hook left open (the
+  listener's side of the agent's connections, in `/proc/net/tcp`); 143 a
+  plain "No" and Esc `cancelled`, `idle`; 145 `interrupt` on one held ask and on three, one marker
   each, and `end` with one held, its marker before the signal; 146 three
   `Read`s answered out of order, each answer its own call's, and three
   identical, one remembered, all settled; 147 each mode: `default`

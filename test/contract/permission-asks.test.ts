@@ -165,14 +165,19 @@ function hooksPortOf(cockpit: ContractCockpit): number {
   return Number(new URL(url).port);
 }
 
-/** The state of a TCP connection that is open, in `/proc/net/tcp`. */
-const ESTABLISHED = '01';
+/**
+ * The states, in `/proc/net/tcp`, of a connection whose listener's side is
+ * still open: established, being opened, or closed by the agent alone
+ * (`CLOSE_WAIT`). Every other state but `LISTEN` follows the listener's own
+ * close, which ended the hook, whatever the agent does with its side.
+ */
+const OPEN_ON_THE_LISTENERS_SIDE: ReadonlySet<string> = new Set(['01', '03', '08']);
 
 /**
- * Counts the connections open to a port of the loopback, on its side: a
- * hook whose request the listener has not ended, or one ended and kept
- * alive, which the listener's server closes after its keep-alive timeout
- * (Node's 5 s) and the agent may close before.
+ * Counts the connections still open on the listener's side of a port of
+ * the loopback: a hook whose request the listener has not ended, or one
+ * ended and kept alive, which the listener's server closes after its
+ * keep-alive timeout (Node's 5 s) and the agent may close before.
  */
 function connectionsOpenTo(port: number): number {
   const local = `:${port.toString(16).toUpperCase().padStart(4, '0')}`;
@@ -180,7 +185,10 @@ function connectionsOpenTo(port: number): number {
     .split('\n')
     .slice(1)
     .map((line) => line.trim().split(/\s+/))
-    .filter(([, address, , state]) => address?.endsWith(local) && state === ESTABLISHED).length;
+    .filter(
+      ([, address, , state]) =>
+        address?.endsWith(local) && OPEN_ON_THE_LISTENERS_SIDE.has(state ?? ''),
+    ).length;
 }
 
 /**
@@ -221,6 +229,32 @@ function filesIn(folder: string, ...names: string[]): string[] {
     writeFileSync(file, `${name} read\n`);
     return file;
   });
+}
+
+/**
+ * Answers an ask in the terminal by an option's digit, once the dialog
+ * shows that option.
+ *
+ * @param index - The ask's place in the order the asks were told in.
+ * @returns The ask's settlement.
+ */
+async function yesByOption(asking: AskingCockpit, index: number, option: string) {
+  const ask = await askAt(asking, index);
+  const session = asking.terminal();
+  await untilShown(session, `${option}. Yes`);
+  await typeOnDialog(session, option, (screen) => !screen?.includes(PERMISSION_DIALOG));
+  return settlementOf(asking, ask.id);
+}
+
+/** Answers the permission dialog "No" with a text, as a person does: No selected, Tab, the text, Enter. */
+async function amendedNo(session: AgentSession, text: string): Promise<void> {
+  await untilShown(session, PERMISSION_DIALOG);
+  await selectOnDialog(session, /❯ \d\. No$/mu, 'Down', 4);
+  await session.press('Tab');
+  await untilShown(session, 'No, and tell Claude what to do differently');
+  await session.type(text);
+  await untilShown(session, `No, ${text}`);
+  await session.press('Enter');
 }
 
 it("137 — The app's allow, through cockpit.asks.answer, of a held Bash call: the agent closes its dialog and runs the call (PostToolUse), the turn going on; the ask settled app", async () => {
@@ -299,6 +333,29 @@ it('139 — Remembered Bash calls: a compound line remembered (its exact line) r
   }
 });
 
+it('139 — A compound line remembered (its exact line) once touch was remembered (Bash(touch:*)): the agent asks again for that same line, more than the rule would let run, never less', async () => {
+  const asking = await askingCockpit();
+  const { cockpit, seen } = asking;
+  const compound = 'touch c && rm -f d';
+  cockpit.api.script(
+    turn(bash('touch a')),
+    turn(bash(compound)),
+    turn(bash(compound)),
+    turn('Done.'),
+  );
+  await cockpit.say('make the files');
+
+  const prefix = await askAt(asking, 0);
+  await cockpit.cockpit.asks.answer(prefix.id, { allow: true, remember: 'session' });
+  const exact = await askAt(asking, 1);
+  await cockpit.cockpit.asks.answer(exact.id, { allow: true, remember: 'session' });
+  const again = await askAt(asking, 2);
+  await cockpit.cockpit.asks.answer(again.id, { allow: true });
+  await turnEnded(cockpit, 'Done.');
+
+  expect(seen.asks.map((ask) => ask.input.command)).toEqual(['touch a', compound, compound]);
+});
+
 it('140 — Remembered file calls: a Write remembered (Edit(//<path>)) lets a Write and an Edit of the file run unasked, a sibling still asking; a Read remembered (Read(//<path>)) lets the file be read again unasked, a sibling still asking; no settings file written', async () => {
   const asking = await askingCockpit();
   const { cockpit, seen } = asking;
@@ -343,52 +400,63 @@ it('140 — Remembered file calls: a Write remembered (Edit(//<path>)) lets a Wr
   expect(settingsFiles(cockpit)).toEqual(settingsBefore);
 });
 
-it('141 — A Yes in the terminal by 1, by 2 (the folder for the session) and by 3 (auto mode), the hook held: each ask settled terminal at its PostToolUse; no hook the agent left open stays open, the cockpit having ended each', async () => {
+it('141 — In one session, answers in the terminal with the hook held: a Yes by 1, by 2 (the folder for the session) settled terminal at PostToolUse; a Yes whose command fails (row 142) at PostToolUseFailure; an amended "No" (row 144), the agent going on, at PostToolBatch, the session busy, then idle; a Yes by 3 (auto mode) at PostToolUse; no hook the agent left open stays open, the cockpit having ended each', async () => {
   const asking = await askingCockpit();
   const { cockpit } = asking;
-  const options = ['1', '2', '3'];
+  const amendment = 'use mkdir instead';
   cockpit.api.script(
-    ...options.flatMap((option) => [
-      turn(bash(`touch yes-${option}.txt`)),
-      turn(`Done ${option}.`),
-    ]),
+    turn(bash('touch yes-1.txt')),
+    turn('Done 1.'),
+    turn(bash('touch yes-2.txt')),
+    turn('Done 2.'),
+    turn(bash('exit 3')),
+    turn('Failed.'),
+    turn(bash('touch refused.txt')),
+    turn('Understood.'),
+    turn(bash('touch yes-3.txt')),
+    turn('Done 3.'),
   );
+  const session = () => asking.terminal();
 
-  const settlements: Settlement[] = [];
-  for (const [index, option] of options.entries()) {
-    const prompt = `make file ${option}`;
-    if (index === 0) await cockpit.say(prompt);
-    else await cockpit.send(SAID_KEY, prompt);
-    const ask = await askAt(asking, index);
-    const session = asking.terminal();
-    await untilShown(session, `${option}. Yes`);
-    await typeOnDialog(session, option, (screen) => !screen?.includes(PERMISSION_DIALOG));
-    settlements.push(await settlementOf(asking, ask.id));
-    await turnEnded(cockpit, `Done ${option}.`);
-  }
+  await cockpit.say('make file 1');
+  const byOne = await yesByOption(asking, 0, '1');
+  await turnEnded(cockpit, 'Done 1.');
+  await cockpit.send(SAID_KEY, 'make file 2');
+  const byTwo = await yesByOption(asking, 1, '2');
+  await turnEnded(cockpit, 'Done 2.');
+
+  await cockpit.send(SAID_KEY, 'fail');
+  const failing = await askAt(asking, 2);
+  await answerDialog(session(), 'Enter');
+  const failed = await settlementOf(asking, failing.id);
+  await turnEnded(cockpit, 'Failed.');
+
+  await cockpit.send(SAID_KEY, 'make the refused file');
+  const refused = await askAt(asking, 3);
+  await amendedNo(session(), amendment);
+  const amended = await settlementOf(asking, refused.id);
+  await turnEnded(cockpit, 'Understood.');
+  const states = cockpit.states(SAID_KEY);
+
+  await cockpit.send(SAID_KEY, 'make file 3');
+  const byThree = await yesByOption(asking, 4, '3');
+  await turnEnded(cockpit, 'Done 3.');
   await noHookLeftOpen(cockpit);
 
-  expect(settlements).toEqual(
-    options.map(() => expect.objectContaining({ by: 'terminal', afterHook: 'PostToolUse' })),
+  expect([byOne, byTwo, byThree]).toEqual(
+    [1, 2, 3].map(() => expect.objectContaining({ by: 'terminal', afterHook: 'PostToolUse' })),
   );
-  for (const option of options) {
-    expect(existsSync(join(cockpit.workFolder, `yes-${option}.txt`))).toBe(true);
+  expect(failed).toMatchObject({ by: 'terminal', afterHook: 'PostToolUseFailure' });
+  expect(amended).toMatchObject({ by: 'terminal', afterHook: 'PostToolBatch' });
+  expect(states.slice(states.lastIndexOf('waiting'))).toEqual(['waiting', 'busy', 'idle']);
+  expect(toolResults(cockpit.api)).toContainEqual({
+    text: expect.stringMatching(new RegExp(`^${escaped(REFUSED_CALL)}[^]*${amendment}`)),
+    isError: true,
+  });
+  for (const made of ['yes-1.txt', 'yes-2.txt', 'yes-3.txt']) {
+    expect(existsSync(join(cockpit.workFolder, made))).toBe(true);
   }
-});
-
-it('142 — A Yes in the terminal whose command then fails: the ask settled terminal at the call’s PostToolUseFailure', async () => {
-  const asking = await askingCockpit();
-  const { cockpit } = asking;
-  cockpit.api.script(turn(bash('exit 3')), turn('Done.'));
-  await cockpit.say('fail');
-
-  const ask = await askAt(asking, 0);
-  await answerDialog(asking.terminal(), 'Enter');
-  const settled = await settlementOf(asking, ask.id);
-  await turnEnded(cockpit, 'Done.');
-
-  expect(settled).toMatchObject({ by: 'terminal', afterHook: 'PostToolUseFailure' });
-  expect(hooksOf(cockpit, 'PostToolUseFailure', 'Bash')).toHaveLength(1);
+  expect(existsSync(join(cockpit.workFolder, 'refused.txt'))).toBe(false);
 });
 
 it('143 — A plain "No" in the terminal, then Esc: the agent closes the held hook, each ask settled cancelled, the turn stopped (the marker for tool use) and the session idle', async () => {
@@ -418,35 +486,6 @@ it('143 — A plain "No" in the terminal, then Esc: the agent closes the held ho
   expect([idleAfterNo.state, idleAfterEsc.state]).toEqual(['idle', 'idle']);
   expect(markersIn(session)).toEqual([INTERRUPTED_FOR_TOOL_USE, INTERRUPTED_FOR_TOOL_USE]);
   expect(hooksOf(cockpit, 'PostToolUse', 'Bash')).toEqual([]);
-});
-
-it('144 — A "No" amended in the terminal: the agent leaves the hook open and goes on; the ask settled terminal at PostToolBatch, the session busy, then idle at the turn’s end; no hook left open', async () => {
-  const asking = await askingCockpit();
-  const { cockpit } = asking;
-  const amendment = 'use mkdir instead';
-  cockpit.api.script(turn(bash('touch refused.txt')), turn('Understood.'));
-  await cockpit.say('make the file');
-  const session = asking.terminal();
-
-  const ask = await askAt(asking, 0);
-  await untilShown(session, PERMISSION_DIALOG);
-  await selectOnDialog(session, /❯ \d\. No$/mu, 'Down', 4);
-  await session.press('Tab');
-  await untilShown(session, 'No, and tell Claude what to do differently');
-  await session.type(amendment);
-  await untilShown(session, `No, ${amendment}`);
-  await session.press('Enter');
-  const settled = await settlementOf(asking, ask.id);
-  await turnEnded(cockpit, 'Understood.');
-  await noHookLeftOpen(cockpit);
-
-  const states = cockpit.states(SAID_KEY);
-  expect(settled).toMatchObject({ by: 'terminal', afterHook: 'PostToolBatch' });
-  expect(states.slice(states.indexOf('waiting'))).toEqual(['waiting', 'busy', 'idle']);
-  expect(toolResults(cockpit.api)).toEqual([
-    { text: expect.stringMatching(new RegExp(`^${escaped(REFUSED_CALL)}`)), isError: true },
-  ]);
-  expect(existsSync(join(cockpit.workFolder, 'refused.txt'))).toBe(false);
 });
 
 it('145 — cockpit.interrupt on one held ask, then on three: the agent stops each turn on the interrupt reply, one marker for tool use each time; every ask settled cancelled; interrupted, idle', async () => {
@@ -526,7 +565,11 @@ it("146 — Three concurrent Reads of three files, answered out of the calls' or
 
   expect(readsOfThree.sort()).toEqual([r2, r3]);
   expect(toolResults(cockpit.api)).toContainEqual({ text: 'Not r1', isError: true });
-  expect(twinsSettled.map((settled) => settled.by)).toEqual(['terminal', 'app', 'terminal']);
+  expect(twinsSettled).toEqual([
+    expect.objectContaining({ by: 'terminal', afterHook: 'PostToolUse' }),
+    expect.objectContaining({ by: 'app' }),
+    expect.objectContaining({ by: 'terminal', afterHook: 'PostToolUse' }),
+  ]);
   expect(
     hooksOf(cockpit, 'PostToolUse', 'Read').filter(
       (hook) => (hook.tool_input as HookPayload).file_path === same,
@@ -646,7 +689,13 @@ async function listenerOn(port: number): Promise<HookPayload[]> {
       response.writeHead(200, { 'content-type': 'application/json' }).end('{}');
     });
   });
-  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
   onTestFinished(
     () =>
       new Promise<void>((resolve) => {

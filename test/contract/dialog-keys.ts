@@ -38,7 +38,12 @@ export function pressOnDialog(
 
 /**
  * Types a character on a dialog until it is taken, as {@link pressOnDialog}
- * presses a key: a digit that chooses an option, which no key name stands for.
+ * presses a key: a digit that chooses an option, which no key name stands
+ * for. It is typed again only once a whole `PATIENCE.dialogKey` passed with
+ * the dialog still not showing it taken. Unlike a second Enter, a second
+ * digit is not harmless: should the dialog take the first one late, the
+ * second lands in the input box. The caller waits for the option to show
+ * before typing, which leaves only the drop as the dialog draws itself.
  *
  * @param character - What is typed.
  * @param taken - Tells from the screen, or from its absence once the session is gone, that it was taken.
