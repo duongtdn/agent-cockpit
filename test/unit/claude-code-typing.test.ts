@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { claudeCode } from '../../src/claude-code/index.ts';
 import {
+  clearInputBoxAt,
   promptAsTaken,
   promptWrites,
   type TypingClock,
@@ -8,6 +10,7 @@ import {
   WRITE_GAP_MS,
   WRITE_LENGTH,
 } from '../../src/claude-code/typing.ts';
+import { TypingStoppedError } from '../../src/server/driver.ts';
 import { type InputBoxSetup, inputBoxModel } from '../support/input-box-model.ts';
 
 /** A clock that moves only when the typing waits, and remembers each wait. */
@@ -338,5 +341,101 @@ describe('a typing the core stopped', () => {
     };
 
     await expect(typePromptAt(testClock(), 'p', failing)).rejects.toThrow('The host failed.');
+  });
+});
+
+describe('clearing the input box', () => {
+  it('kills a one-line text with one Ctrl+U', async () => {
+    const box = inputBoxModel({ draft: 'withdraw me' });
+
+    expect(await clearInputBoxAt(testClock(), box.terminal)).toBe('cleared');
+    expect(box.writes).toEqual(['C-u']);
+    expect(box.text()).toBe('');
+  });
+
+  it('kills five lines a row then its line break at a time: nine Ctrl+U', async () => {
+    const box = inputBoxModel({ draft: 'p-one first line\np-two\np-three\np-four\np-five last' });
+
+    expect(await clearInputBoxAt(testClock(), box.terminal)).toBe('cleared');
+    expect(box.writes).toEqual(Array<string>(9).fill('C-u'));
+    expect(box.text()).toBe('');
+  });
+
+  it('kills a wrapped line a drawn row at a time', async () => {
+    const box = inputBoxModel({ draft: 'w'.repeat(340), width: 118 });
+
+    expect(await clearInputBoxAt(testClock(), box.terminal)).toBe('cleared');
+    expect(box.writes).toEqual(['C-u', 'C-u', 'C-u']);
+  });
+
+  it('presses nothing on a box already empty', async () => {
+    const box = inputBoxModel({});
+
+    expect(await clearInputBoxAt(testClock(), box.terminal)).toBe('cleared');
+    expect(box.writes).toEqual([]);
+  });
+
+  it('presses nothing where no input box shows', async () => {
+    const box = inputBoxModel({ draft: 'withdraw me' });
+    box.showDialog();
+
+    expect(await clearInputBoxAt(testClock(), box.terminal)).toBe('no-input-box');
+    expect(box.writes).toEqual([]);
+  });
+
+  it('stops once the box is gone after a kill: a dialog drawn in its place', async () => {
+    const box = inputBoxModel({ draft: 'line one\nline two' });
+    const terminal = {
+      ...box.terminal,
+      pressKeys: async (keys: readonly string[]) => {
+        await box.terminal.pressKeys(keys);
+        box.showDialog();
+      },
+    };
+
+    expect(await clearInputBoxAt(testClock(), terminal)).toBe('no-input-box');
+    expect(box.writes).toEqual(['C-u']);
+  });
+
+  it('stops, the text left, after two kills in a row that change nothing', async () => {
+    const box = inputBoxModel({ draft: 'withdraw me', lostKills: 5 });
+
+    expect(await clearInputBoxAt(testClock(), box.terminal)).toBe('not-emptied');
+    expect(box.writes).toEqual(['C-u', 'C-u']);
+    expect(box.text()).toBe('withdraw me');
+  });
+
+  it('stops after two kills for each row the box held, where every kill changes it and none empties it', async () => {
+    const box = inputBoxModel({ draft: 'line one\nline two' });
+    let typed = 0;
+    const terminal = {
+      ...box.terminal,
+      // Something types into the box after each kill, a new text each time.
+      pressKeys: async (keys: readonly string[]) => {
+        await box.terminal.pressKeys(keys);
+        typed += 1;
+        await box.terminal.typeText(`refilled ${typed}`);
+      },
+    };
+
+    expect(await clearInputBoxAt(testClock(), terminal)).toBe('not-emptied');
+    expect(box.writes.filter((write) => write === 'C-u')).toHaveLength(4);
+  });
+
+  it('lets through what the core refuses a kill with', async () => {
+    const box = inputBoxModel({ draft: 'withdraw me' });
+    const refusing = {
+      ...box.terminal,
+      pressKeys: () => Promise.reject(new TypingStoppedError('The core refuses the write.')),
+    };
+
+    await expect(clearInputBoxAt(testClock(), refusing)).rejects.toThrow(TypingStoppedError);
+  });
+
+  it("is the driver's, through the terminal the core gives it", async () => {
+    const box = inputBoxModel({ draft: 'withdraw me' });
+
+    expect(await claudeCode().clearInputBox(box.terminal)).toBe('cleared');
+    expect(box.text()).toBe('');
   });
 });

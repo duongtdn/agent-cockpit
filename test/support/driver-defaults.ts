@@ -3,7 +3,7 @@ import type { Driver } from '../../src/server/driver.ts';
 /**
  * The parts of a driver that a test double's tests do not exercise: no
  * agent found, every part and environment fitting, a confined network, a screen that tells
- * nothing and no sign on it, nothing told outside the hooks, no input box (nothing typed), every first prompt
+ * nothing and no sign on it, nothing told outside the hooks, no input box (nothing typed or cleared), every first prompt
  * fitting the launch, the same settings for every part, SIGTERM to end, Esc to interrupt. A double spreads them, then gives what its tests rest on.
  */
 export const DRIVER_DEFAULTS: Pick<
@@ -18,6 +18,7 @@ export const DRIVER_DEFAULTS: Pick<
   | 'follow'
   | 'readInputBox'
   | 'typePrompt'
+  | 'clearInputBox'
   | 'promptFitsLaunch'
   | 'launchSettings'
   | 'ending'
@@ -33,6 +34,7 @@ export const DRIVER_DEFAULTS: Pick<
   follow: () => () => {},
   readInputBox: () => undefined,
   typePrompt: async () => 'not-taken',
+  clearInputBox: async () => 'no-input-box',
   promptFitsLaunch: () => true,
   launchSettings: () => ({}),
   ending: { signal: 'SIGTERM', boundMs: 1_000 },

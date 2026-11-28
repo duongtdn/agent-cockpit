@@ -1,5 +1,7 @@
 import {
+  type ClearingTerminal,
   type DraftTerminal,
+  type InputBoxClearing,
   type TerminalScreen,
   type TypingOutcome,
   TypingStoppedError,
@@ -333,7 +335,7 @@ class PromptTyping {
    * Clears what was typed of the prompt: killed after the draft, it makes
    * the draft the kill ring's entry before the last.
    */
-  async #clearPrompt(): Promise<'empty' | 'gone' | 'stuck'> {
+  async #clearPrompt(): Promise<KillsOutcome> {
     const cleared = await this.#killUntilEmpty(() => {
       this.#draft.depth = 1;
     });
@@ -341,38 +343,8 @@ class PromptTyping {
     return cleared;
   }
 
-  /**
-   * Presses Ctrl+U at least once, then until the box is empty: each kills
-   * one row, then its line break, and successive kills are one entry of
-   * the kill ring.
-   *
-   * @param killed - Told after a kill that took something: the box changed,
-   * or is empty (a kill of the sentinel alone, which is never drawn, changes
-   * nothing on the screen), or is gone (the key reached the box last seen).
-   * A kill that changed nothing put nothing in the kill ring, whose last
-   * entry is then still an earlier kill of the person's.
-   * @returns `empty`; `gone` when the box is; `stuck` when two kills in a
-   * row changed nothing on the screen (the first may kill only the sentinel).
-   */
-  async #killUntilEmpty(killed: () => void): Promise<'empty' | 'gone' | 'stuck'> {
-    let unchanged = 0;
-    let seen = await this.#read();
-    do {
-      const before = drawn(seen.box);
-      const boundMs =
-        seen.box !== undefined && isEmptyBox(seen.box) ? QUIET_KILL_SETTLE_MS : SETTLE_MS;
-      await this.#writer.pressKeys(['C-u']);
-      seen = await this.#readUntil((now) => drawn(now.box) !== before, boundMs);
-      if (seen.box === undefined) {
-        killed();
-        return 'gone';
-      }
-      const changed = drawn(seen.box) !== before;
-      if (changed || isEmptyBox(seen.box)) killed();
-      unchanged = changed ? 0 : unchanged + 1;
-      if (unchanged === 2) return 'stuck';
-    } while (!isEmptyBox(seen.box));
-    return 'empty';
+  #killUntilEmpty(killed: () => void): Promise<KillsOutcome> {
+    return killUntilEmpty(this.#clock, this.#writer, killed);
   }
 
   /** Types the prompt's writes, {@link WRITE_GAP_MS} apart. */
@@ -466,21 +438,126 @@ class PromptTyping {
     return { draftLeft: whereTheDraftIs(this.#draft) };
   }
 
-  async #read(): Promise<Seen> {
-    const screen = await this.#writer.readScreen();
-    return { screen, box: readInputBoxView(screen.text) };
+  #read(): Promise<Seen> {
+    return read(this.#writer);
   }
 
-  /** Reads the screen until it shows what a key did, for `boundMs` at most. */
-  async #readUntil(done: (seen: Seen) => boolean, boundMs = SETTLE_MS): Promise<Seen> {
-    const deadline = this.#clock.now() + boundMs;
-    let seen = await this.#read();
-    while (!done(seen) && this.#clock.now() < deadline) {
-      await this.#clock.pause(POLL_MS);
-      seen = await this.#read();
-    }
-    return seen;
+  #readUntil(done: (seen: Seen) => boolean): Promise<Seen> {
+    return readUntil(this.#clock, this.#writer, done);
   }
+}
+
+/**
+ * Clears Claude Code's input box, the cursor at the end of its text: Ctrl+U
+ * until the box is empty, as the typing kills a draft. An early Esc leaves
+ * the cursor at the end of the prompt it put back, and the kills take
+ * exactly that prompt.
+ *
+ * @param terminal - The session's terminal, through the core.
+ * @returns `cleared`, also for a box already empty, where nothing is
+ * pressed; `no-input-box` when none shows, before a kill or after one;
+ * `not-emptied` when the kills stopped changing the box, or reached their
+ * bound with text left in it.
+ * @throws What the terminal rejects with.
+ */
+export function clearInputBox(terminal: ClearingTerminal): Promise<InputBoxClearing> {
+  return clearInputBoxAt(REAL_TIME, terminal);
+}
+
+/**
+ * {@link clearInputBox}, paced by a clock of the caller's.
+ *
+ * @param clock - What paces the reads of the screen.
+ * @param terminal - The session's terminal, through the core.
+ */
+export async function clearInputBoxAt(
+  clock: TypingClock,
+  terminal: ClearingTerminal,
+): Promise<InputBoxClearing> {
+  const { box } = await read(terminal);
+  if (box === undefined) return 'no-input-box';
+  if (isEmptyBox(box)) return 'cleared';
+  return CLEARING[await killUntilEmpty(clock, terminal, () => {})];
+}
+
+/** What the kills came to, for a clearing of the box. */
+const CLEARING: Readonly<Record<KillsOutcome, InputBoxClearing>> = {
+  empty: 'cleared',
+  gone: 'no-input-box',
+  stuck: 'not-emptied',
+};
+
+/** What a run of kills came to: the box empty, gone, or left with text. */
+type KillsOutcome = 'empty' | 'gone' | 'stuck';
+
+/**
+ * Presses Ctrl+U at least once, then until the box is empty: each kills
+ * one row, then its line break, and successive kills are one entry of
+ * the kill ring. A box takes at most two kills a row (one a wrapped row,
+ * two a line's last row and its line break); more means something else
+ * writes into it.
+ *
+ * @param clock - What paces the reads of the screen.
+ * @param terminal - Where the kills go.
+ * @param killed - Told after a kill that took something: the box changed,
+ * or is empty (a kill of the sentinel alone, which is never drawn, changes
+ * nothing on the screen), or is gone (the key reached the box last seen).
+ * A kill that changed nothing put nothing in the kill ring, whose last
+ * entry is then still an earlier kill of the person's.
+ * @returns `empty`; `gone` when the box is; `stuck` when two kills in a
+ * row changed nothing on the screen (the first may kill only the sentinel),
+ * or two kills for each row the box first held left text in it.
+ */
+async function killUntilEmpty(
+  clock: TypingClock,
+  terminal: ClearingTerminal,
+  killed: () => void,
+): Promise<KillsOutcome> {
+  let unchanged = 0;
+  let seen = await read(terminal);
+  const most = 2 * Math.max(1, rowsHeld(seen.box));
+  for (let kills = 1; ; kills++) {
+    const before = drawn(seen.box);
+    const boundMs =
+      seen.box !== undefined && isEmptyBox(seen.box) ? QUIET_KILL_SETTLE_MS : SETTLE_MS;
+    await terminal.pressKeys(['C-u']);
+    seen = await readUntil(clock, terminal, (now) => drawn(now.box) !== before, boundMs);
+    if (seen.box === undefined) {
+      killed();
+      return 'gone';
+    }
+    const changed = drawn(seen.box) !== before;
+    if (changed || isEmptyBox(seen.box)) killed();
+    if (isEmptyBox(seen.box)) return 'empty';
+    unchanged = changed ? 0 : unchanged + 1;
+    if (unchanged === 2 || kills === most) return 'stuck';
+  }
+}
+
+/** The rows a box holds, shown or scrolled out; none for no box. */
+function rowsHeld(box: InputBoxView | undefined): number {
+  return box === undefined ? 0 : box.lastRow - box.firstRow + 1 + box.hiddenAbove + box.hiddenBelow;
+}
+
+async function read(terminal: Pick<ClearingTerminal, 'readScreen'>): Promise<Seen> {
+  const screen = await terminal.readScreen();
+  return { screen, box: readInputBoxView(screen.text) };
+}
+
+/** Reads the screen until it shows what a key did, for `boundMs` at most. */
+async function readUntil(
+  clock: TypingClock,
+  terminal: Pick<ClearingTerminal, 'readScreen'>,
+  done: (seen: Seen) => boolean,
+  boundMs = SETTLE_MS,
+): Promise<Seen> {
+  const deadline = clock.now() + boundMs;
+  let seen = await read(terminal);
+  while (!done(seen) && clock.now() < deadline) {
+    await clock.pause(POLL_MS);
+    seen = await read(terminal);
+  }
+  return seen;
 }
 
 /** Where a draft left out of the box is, in the person's keys. */

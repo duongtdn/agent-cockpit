@@ -38,7 +38,7 @@ import { readInputBox, readScreen, SCREEN_STATE_SIGNS } from './screen-reading.j
 import { settingsDocument } from './settings-document.js';
 import { TESTED_RANGE } from './tested-range.js';
 import { followTranscript } from './transcript-watch.js';
-import { typePrompt } from './typing.js';
+import { clearInputBox, typePrompt } from './typing.js';
 
 /**
  * How a session is ended: SIGTERM, never `/exit`, which a person's draft
@@ -223,6 +223,7 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
     screenStateSigns: SCREEN_STATE_SIGNS,
     readInputBox,
     typePrompt,
+    clearInputBox,
     promptFitsLaunch: (prompt) => Buffer.byteLength(prompt) <= MAX_LAUNCH_PROMPT_BYTES,
     launchSettings: (part) => launchSettingsOf(checked, part),
     ending: ENDING,

@@ -532,6 +532,24 @@ export class TypingStoppedError extends Error {
 export type DraftTerminal = Pick<TypingTerminal, 'typeText' | 'pressKeys' | 'readScreen'>;
 
 /**
+ * The writes through which a driver clears the agent's input box, and the
+ * screen it reads meanwhile: each checked by the core, as a typing's are.
+ */
+export type ClearingTerminal = Pick<TypingTerminal, 'pressKeys' | 'readScreen'>;
+
+/** What became of an input box a driver cleared. */
+export type InputBoxClearing =
+  /** The box is empty. */
+  | 'cleared'
+  /** No input box showed, before a key or after one: a dialog drawn in its place, or none. */
+  | 'no-input-box'
+  /**
+   * The keys did not empty the box: two in a row changed nothing on it,
+   * or as many as its rows take changed it but left text in it.
+   */
+  | 'not-emptied';
+
+/**
  * A live session's terminal, as a driver types a prompt into it through the
  * core. The core holds the keys of the page's terminals for that session
  * while the driver types, and checks before every write that the session
@@ -676,6 +694,19 @@ export interface Driver {
    * @throws What the terminal rejects with, but {@link TypingStoppedError}.
    */
   typePrompt(prompt: string, terminal: TypingTerminal): Promise<TypingOutcome>;
+  /**
+   * Clears the agent's input box, the cursor at the end of its text: what
+   * an early Esc put back there once {@link ScreenStateSigns.promptWithdrawn}
+   * read it. It presses nothing on a box already empty, or where no box
+   * shows; it stops after a bounded number of keys, as many as the box's
+   * rows take, and says so. Each write goes through the terminal, which the
+   * core checks.
+   *
+   * @param terminal - The session's terminal, through the core.
+   * @returns Whether the box is empty, showed none, or was not emptied.
+   * @throws What the terminal rejects with, {@link TypingStoppedError} among it.
+   */
+  clearInputBox(terminal: ClearingTerminal): Promise<InputBoxClearing>;
   /**
    * Tells whether a first prompt can be passed at launch: else the core
    * launches the agent with none and types the prompt once it is ready.
