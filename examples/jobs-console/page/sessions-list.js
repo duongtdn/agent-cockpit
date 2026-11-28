@@ -1,20 +1,25 @@
 // The sessions, as the cockpit lists them: one card per unit of work, with
 // its state, the states the page saw it in, its last answer, its record's
 // history, and what the person can do with it — show its terminal, open it
-// (fresh or not), send it a prompt. A card is kept from one list to the
-// next, so that a prompt being typed, an open history or a result stays.
+// (fresh or not), send it a prompt, stop its turn, end its session, remove
+// it. A card is kept from one list to the next, so that a prompt being
+// typed, an open history, a removal being confirmed or a result stays.
 
-import { showError, showPending, showResult } from './results.js';
+import { showError, showPending, showResult, tasksNamed } from './results.js';
+
+/** The states a turn runs in, which Stop interrupts. */
+const STOPPABLE = new Set(['busy', 'waiting']);
 
 /**
  * Makes the list of sessions in a container.
  *
  * @param container - The element that holds the cards.
- * @param client - The cockpit client, for open and send.
+ * @param client - The cockpit client, for open, send, interrupt, end and remove.
  * @param showTerminal - Shows the terminal of a key.
+ * @param removals - The status element that says what a remove did, once its card is gone.
  * @returns `update(sessions)`, called with every list the cockpit gives.
  */
-export function createSessionsList(container, client, showTerminal) {
+export function createSessionsList(container, client, showTerminal, removals) {
   const cards = new Map();
   /** Every state the page has seen each session in, in order: a fast `busy` stays visible. */
   const statesSeen = new Map();
@@ -25,7 +30,7 @@ export function createSessionsList(container, client, showTerminal) {
       if (seen.at(-1) !== stateOf(session)) seen.push(stateOf(session));
       statesSeen.set(session.key, seen);
       if (!cards.has(session.key))
-        cards.set(session.key, drawCard(session.key, client, showTerminal));
+        cards.set(session.key, drawCard(session.key, client, showTerminal, removals));
       cards.get(session.key).show(session, seen);
     }
     const listed = new Set(sessions.map((session) => session.key));
@@ -43,7 +48,7 @@ function stateOf(session) {
   return session.state === 'ended' ? `ended · ${session.reason}` : session.state;
 }
 
-function drawCard(key, client, showTerminal) {
+function drawCard(key, client, showTerminal, removals) {
   const card = element('li', { className: 'session' });
   card.dataset.key = key;
   const state = element('span', { className: 'state' });
@@ -58,8 +63,12 @@ function drawCard(key, client, showTerminal) {
   terminal.addEventListener('click', () => showTerminal(key));
   const open = button('Open', `Open ${key}`);
   const fresh = button('Open fresh', `Open ${key} in a fresh conversation`);
+  const stop = button('Stop', `Stop the turn of ${key}`);
+  const end = button('End', `End the session of ${key}`);
+  const remove = button('Remove', `Remove ${key}`);
   const actions = element('div', { className: 'actions' });
-  actions.append(terminal, open, fresh);
+  actions.append(terminal, open, fresh, stop, end, remove);
+  const removal = drawRemovalConfirmation(key);
 
   const sendForm = element('form', { className: 'send' });
   const prompt = element('textarea', { rows: 2, required: true });
@@ -68,15 +77,22 @@ function drawCard(key, client, showTerminal) {
   send.setAttribute('aria-label', `Send to ${key}`);
   sendForm.append(prompt, send);
 
-  /** Runs one operation of the card, its buttons held until it settles. */
+  /**
+   * Runs one operation of the card, its buttons held until it settles.
+   *
+   * @returns What the operation gave; `undefined` when it failed, its error shown.
+   */
   async function operate(pending, operation) {
-    const buttons = [open, fresh, send];
+    const buttons = [open, fresh, send, stop, end, remove, removal.confirm];
     for (const each of buttons) each.disabled = true;
     showPending(result, pending);
     try {
-      showResult(result, await operation());
+      const outcome = await operation();
+      showResult(result, outcome);
+      return outcome;
     } catch (error) {
       showError(result, error);
+      return undefined;
     } finally {
       for (const each of buttons) each.disabled = false;
     }
@@ -86,6 +102,19 @@ function drawCard(key, client, showTerminal) {
   fresh.addEventListener('click', () =>
     operate(`Opening ${key} in a fresh conversation…`, () => client.open(key, { fresh: true })),
   );
+  stop.addEventListener('click', () =>
+    operate(`Stopping the turn of ${key}…`, () => client.interrupt(key)),
+  );
+  end.addEventListener('click', () =>
+    operate(`Ending the session of ${key}…`, () => client.end(key)),
+  );
+  remove.addEventListener('click', () => removal.ask());
+  removal.confirm.addEventListener('click', async () => {
+    removal.close();
+    const removed = await operate(`Removing ${key}…`, () => client.remove(key));
+    // Its card leaves the list once the cockpit lists the sessions again: the list says it.
+    if (removed !== undefined) showResult(removals, removed, key);
+  });
   sendForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const text = prompt.value;
@@ -98,13 +127,16 @@ function drawCard(key, client, showTerminal) {
 
   const head = element('div', { className: 'session-head' });
   head.append(element('h3', { textContent: key }), state, since);
-  card.append(head, seen, lastAnswer, actions, sendForm, result, history);
+  card.append(head, seen, lastAnswer, actions, removal.element, sendForm, result, history);
 
   return {
     card,
     show(session, statesSeen) {
       state.textContent = stateOf(session);
       state.dataset.state = session.state;
+      stop.hidden = !STOPPABLE.has(session.state);
+      end.hidden = session.state === 'ended';
+      removal.showTasks(session.backgroundTasks ?? []);
       since.dateTime = session.since;
       since.textContent = `since ${new Date(session.since).toLocaleTimeString()}`;
       seen.textContent = `States seen: ${statesSeen.join(' → ')}`;
@@ -112,6 +144,47 @@ function drawCard(key, client, showTerminal) {
       lastAnswer.textContent = answer;
       lastAnswer.title = answer;
       showHistory(history, session.record);
+    },
+  };
+}
+
+/**
+ * The confirmation a remove asks for, in the card: what removing deletes,
+ * and the background tasks it would stop, kept current while it shows.
+ *
+ * @returns Its element; `ask()` and `close()`, which show and hide it;
+ * `showTasks(tasks)`, the session's tasks as listed; `confirm`, the button
+ * that confirms.
+ */
+function drawRemovalConfirmation(key) {
+  const confirmation = element('div', { className: 'confirm-removal', hidden: true });
+  confirmation.setAttribute('role', 'group');
+  confirmation.setAttribute('aria-label', `Confirm the removal of ${key}`);
+  const question = element('p', {
+    textContent: `Remove ${key}? Its session ends if it is live, and its record and history are deleted; the agent’s transcripts are kept.`,
+  });
+  const tasks = element('p', { className: 'tasks-stopped', hidden: true });
+  const confirm = button('Remove for good', `Confirm: remove ${key}`);
+  const keep = button('Keep it', `Keep ${key}`);
+  const choices = element('div', { className: 'actions' });
+  choices.append(confirm, keep);
+  confirmation.append(question, tasks, choices);
+
+  const close = () => {
+    confirmation.hidden = true;
+  };
+  keep.addEventListener('click', close);
+  return {
+    element: confirmation,
+    confirm,
+    ask() {
+      confirmation.hidden = false;
+      keep.focus();
+    },
+    close,
+    showTasks(listed) {
+      tasks.hidden = listed.length === 0;
+      tasks.textContent = `It would stop the background tasks: ${tasksNamed(listed)}.`;
     },
   };
 }

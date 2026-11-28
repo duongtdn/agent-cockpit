@@ -1,6 +1,9 @@
 // What the page tells the person of an operation: its result, as the
 // cockpit gives it (action, reason, state) and in words, or its error.
 
+/** What a result with no state says: the key names no unit of work. */
+const NO_SUCH_KEY = 'no unit of work has that key.';
+
 /** Why a new conversation was started, by the result's reason. */
 const STARTED_BECAUSE = {
   fresh: 'the job starts each run afresh',
@@ -14,16 +17,19 @@ const STARTED_BECAUSE = {
  * as data too (`data-action`, `data-reason`, `data-state`).
  *
  * @param element - The status element.
- * @param result - What a run, a send or an open gave.
+ * @param result - What a run, a send, an open, an interrupt, an end or a remove gave.
+ * @param key - The unit of work it was about, named first: for a status
+ *   that is not the unit of work's own.
  */
-export function showResult(element, result) {
+export function showResult(element, result, key) {
   element.dataset.action = result.action;
   element.dataset.reason = result.reason ?? '';
   element.dataset.state = result.state ?? '';
   delete element.dataset.error;
   const terms = [result.action, result.reason].filter(Boolean).join(' · ');
   const state = result.state === undefined ? '' : ` → ${result.state}`;
-  element.textContent = `${terms}${state}: ${meaningOf(result)}`;
+  const about = key === undefined ? '' : `${key} — `;
+  element.textContent = `${about}${terms}${state}: ${meaningOf(result)}`;
 }
 
 /**
@@ -36,7 +42,16 @@ export function showResult(element, result) {
 export function showError(element, error) {
   for (const name of ['action', 'reason', 'state']) delete element.dataset[name];
   element.dataset.error = error.code ?? 'error';
-  element.textContent = explain(error);
+  element.textContent = error.code === 'unreachable' ? unreachableOperation(error) : explain(error);
+}
+
+/**
+ * An operation that met no cockpit: the server is down, or failed inside
+ * while doing it. Nothing tries the operation again, so the page never
+ * says it does; what came of it shows in the session's card.
+ */
+function unreachableOperation(error) {
+  return `The server could not be reached, or failed while doing this (${error.message}). The session’s card shows what came of it.`;
 }
 
 /** Shows that an operation is under way, until its result or error replaces it. */
@@ -46,7 +61,7 @@ export function showPending(element, text) {
 }
 
 function meaningOf(result) {
-  const tasks = stoppedTasksOf(result);
+  const tasks = stoppedTasksOf(result, 'the old session');
   switch (result.action) {
     case 'started':
       return result.reason === undefined
@@ -61,18 +76,52 @@ function meaningOf(result) {
     case 'nothing-to-send':
       return 'the job has no prompt and its session is live: type in its terminal.';
     case 'nothing-to-open':
-      return result.state === undefined
-        ? 'no unit of work has that key.'
-        : 'its session is live already.';
+      return result.state === undefined ? NO_SUCH_KEY : 'its session is live already.';
+    case 'interrupted':
+      return 'the turn was stopped; the agent waits for a prompt, its background tasks going on.';
+    case 'nothing-to-interrupt':
+      return nothingToInterrupt(result.state);
+    case 'ended':
+      return `the session ended; its conversation and record are kept for the next run or open.${stoppedTasksOf(result, 'it')}`;
+    case 'nothing-to-end':
+      return result.state === undefined ? NO_SUCH_KEY : 'its session has ended already.';
+    case 'removed':
+      return `its record and history are deleted, its session ended if it was live; the agent’s transcripts are kept.${stoppedTasksOf(result, 'its session')}`;
+    case 'nothing-to-remove':
+      return NO_SUCH_KEY;
     default:
       return '';
   }
 }
 
-function stoppedTasksOf(result) {
+/** Why there was no turn to stop, by the state the session is in. */
+function nothingToInterrupt(state) {
+  switch (state) {
+    case undefined:
+      return NO_SUCH_KEY;
+    case 'waiting':
+      return 'it waits in its terminal, where the cockpit sends no key: answer there.';
+    default:
+      return 'no turn was running.';
+  }
+}
+
+/** The background tasks a result says were stopped, with what they stopped with. */
+function stoppedTasksOf(result, stoppedWith) {
   const tasks = result.stoppedTasks ?? [];
   if (tasks.length === 0) return '';
-  return ` Stopped with the old session: ${tasks.map((task) => task.description ?? task.type).join(', ')}.`;
+  return ` Stopped with ${stoppedWith}: ${tasksNamed(tasks)}.`;
+}
+
+/**
+ * Background tasks as the person tells them apart: what each was given to
+ * do, or its kind when the agent does not say.
+ *
+ * @param tasks - The tasks, as a session or a result lists them.
+ * @returns Their names, joined.
+ */
+export function tasksNamed(tasks) {
+  return tasks.map((task) => task.description ?? task.type).join(', ');
 }
 
 /**
@@ -95,6 +144,8 @@ export function explain(error) {
       return `${JSON.stringify(error.value)} is not among the choices of ${error.field} any more: choose again.`;
     case 'prompt-not-taken':
       return `${error.key} did not take the prompt; it is ${error.state}. Your draft is back in its box.`;
+    case 'interrupt-unconfirmed':
+      return `${error.message} See its terminal, or press End.`;
     case 'prompt-too-long':
       return `The prompt has ${error.length} characters; at most ${error.max} are typed.`;
     case 'folder-changed':

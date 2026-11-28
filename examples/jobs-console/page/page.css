@@ -55,6 +55,11 @@ h3 {
   font-size: 0.9rem;
   min-height: 1.2em;
 }
+/* Kept in the page while empty, so that what a remove did is read out when it shows. */
+#removals:empty {
+  min-height: 0;
+  margin: 0;
+}
 .result[data-error] {
   color: #b3261e;
 }
@@ -108,6 +113,19 @@ h3 {
 .send textarea {
   flex: 1;
   font: inherit;
+}
+.confirm-removal {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #b3261e;
+  border-radius: 0.4rem;
+  font-size: 0.9rem;
+}
+.confirm-removal p {
+  margin: 0 0 0.25rem;
+}
+.confirm-removal .actions {
+  margin-top: 0.25rem;
 }
 .history {
   margin-top: 0.5rem;

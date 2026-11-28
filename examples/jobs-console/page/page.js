@@ -28,7 +28,12 @@ client.on('error', (error) => {
   connection.textContent = explain(error);
 });
 
-const sessions = createSessionsList(sessionsList, client, showTerminal);
+const sessions = createSessionsList(
+  sessionsList,
+  client,
+  showTerminal,
+  document.getElementById('removals'),
+);
 client.sessions.follow((listed) => {
   connection.textContent = 'Following the sessions.';
   noSessions.hidden = listed.length > 0;

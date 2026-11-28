@@ -19,6 +19,8 @@ import { PATIENCE } from '../support/patience.ts';
 const SCRIPTED_ANSWER = 'scripted answer of the fake API';
 /** The unit of work of the sample project's `src/greet.js`, which Explain and Review share. */
 const GREET = 'file-src-2f-greet-2e-js';
+/** The unit of work of the sample project's `notes/ideas.md`, which the journey of Stop, End and Remove takes. */
+const IDEAS = 'file-notes-2f-ideas-2e-md';
 /** The unit of work of "Work in a folder" on the sample project's `notes`. */
 const NOTES = 'folder-notes';
 /** Another site's name, which the browser resolves to the loopback address. */
@@ -72,12 +74,13 @@ async function runOnFile(
   title: string,
   folder: string,
   file: string,
-  { fresh = false } = {},
+  { fresh = false, detail = 'brief' } = {},
 ): Promise<Locator> {
   const form = launcher(title);
   await form.getByLabel('Folder').selectOption({ label: folder });
   await offers(form.getByLabel('File'), FILES[folder] ?? []);
   await form.getByLabel('File').selectOption({ label: file });
+  await form.getByLabel('Detail').selectOption({ label: detail });
   await form.getByLabel('Start a fresh conversation').setChecked(fresh);
   await form.getByRole('button', { name: 'Run' }).click();
   return form.getByRole('status');
@@ -405,6 +408,39 @@ describe('the jobs console, against the scripted API', () => {
       .getByText('topic: Name a topic: at least one letter or digit.', { exact: true })
       .waitFor();
     expect(await ask.getByRole('status').getAttribute('data-error')).toBe('invalid-arguments');
+  });
+
+  it('stops a turn at work, ends the session, then removes the unit of work once confirmed', async () => {
+    // A thorough answer: the scripted API writes it slowly, a turn long enough to stop.
+    const status = await runOnFile('Explain a file', 'notes', 'ideas.md', { detail: 'thorough' });
+    await settled(status, 'started');
+    await inState(IDEAS, 'busy');
+    const result = card(IDEAS).getByRole('status');
+
+    await page.getByRole('button', { name: `Stop the turn of ${IDEAS}` }).click();
+    await settled(result, 'interrupted');
+    await inState(IDEAS, 'idle');
+    expect(await page.getByRole('button', { name: `Stop the turn of ${IDEAS}` }).isHidden()).toBe(
+      true,
+    );
+
+    await page.getByRole('button', { name: `End the session of ${IDEAS}` }).click();
+    await result.getByText(/^ended: /).waitFor();
+    await inState(IDEAS, 'ended · app');
+    expect(await page.getByRole('button', { name: `End the session of ${IDEAS}` }).isHidden()).toBe(
+      true,
+    );
+
+    await page.getByRole('button', { name: `Remove ${IDEAS}`, exact: true }).click();
+    const confirmation = page.getByRole('group', { name: `Confirm the removal of ${IDEAS}` });
+    await confirmation.getByText('the agent’s transcripts are kept').waitFor();
+    await confirmation.getByRole('button', { name: `Confirm: remove ${IDEAS}` }).click();
+    await card(IDEAS).waitFor({ state: 'detached' });
+    await page
+      .locator('#removals')
+      .getByText(new RegExp(`^${IDEAS} — removed: `))
+      .waitFor();
+    await inState(GREET, 'idle');
   });
 
   it('works again when the page is reopened without the link’s fragment: the sessions, their records and the terminal', async () => {

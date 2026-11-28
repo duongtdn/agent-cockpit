@@ -2,19 +2,37 @@ import { execFileSync } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Driver } from '../../src/server/driver.ts';
-import { startFakeApi, turn } from './fake-api/index.ts';
+import { type FallbackRule, messageText, pacedTurn, startFakeApi, turn } from './fake-api/index.ts';
 import { tearDownRun } from './real-agent/run-root.ts';
 import { startRealAgentShim } from './real-agent/shim.ts';
 
-/** What the fake API answers to every question. */
+/** What the fake API answers to every question, at once, but one that asks for a thorough answer. */
 export const SCRIPTED_ANSWER =
   'This is the scripted answer of the fake API: no model ran. Start the example with --real to ask your own agent.';
+
+/** What a prompt says to be answered with {@link THOROUGH_ANSWER}. */
+const ASKS_FOR_A_THOROUGH_ANSWER = 'thoroughly';
+
+/**
+ * What the fake API answers to a prompt that asks for a thorough answer:
+ * a long text, written slowly ({@link THOROUGH_PACE}, about 40 seconds),
+ * so that a person has the time to watch a turn at work and to stop it.
+ */
+const THOROUGH_ANSWER = Array.from(
+  { length: 8 },
+  (_, part) =>
+    `Part ${part + 1} of 8 of the scripted thorough answer of the fake API: no model ran. It is written a few words at a time, as a model at work writes, so that you can stop it.`,
+).join('\n\n');
+
+/** How slowly {@link THOROUGH_ANSWER} is written: about 30 characters a second. */
+const THOROUGH_PACE = { pieceLength: 6, gapMs: 200 } as const;
 
 /**
  * An example app's stand-in for the agent's model: the Claude Code this
  * repository pins, against a scripted fake of Anthropic's API, so that a
  * person can try the example with no login, no network and no cost. Every
- * question gets {@link SCRIPTED_ANSWER}.
+ * question gets {@link SCRIPTED_ANSWER} at once, but one that asks for a
+ * thorough answer, which gets {@link THOROUGH_ANSWER}, written slowly.
  */
 export interface ScriptedAgent {
   /** The temporary folder that holds everything a session writes, removed by {@link close}. */
@@ -59,7 +77,7 @@ export interface ScriptedAgent {
  * @returns The scripted agent.
  */
 export async function startScriptedAgent(appName: string): Promise<ScriptedAgent> {
-  const api = await startFakeApi({ fallback: turn(SCRIPTED_ANSWER) });
+  const api = await startFakeApi({ fallback: scriptedAnswerTo });
   const shim = await startRealAgentShim(api.baseUrl).catch(async (error: unknown) => {
     await api.close();
     throw error;
@@ -99,6 +117,14 @@ export async function startScriptedAgent(appName: string): Promise<ScriptedAgent
     close,
   };
 }
+
+/** The fake API's answer to a prompt: {@link THOROUGH_ANSWER} to one that asks for it, else {@link SCRIPTED_ANSWER}. */
+const scriptedAnswerTo: FallbackRule = (request) => {
+  const prompt = messageText(request.body?.messages?.findLast(({ role }) => role === 'user'));
+  return prompt.includes(ASKS_FOR_A_THOROUGH_ANSWER)
+    ? pacedTurn(turn(THOROUGH_ANSWER), THOROUGH_PACE)
+    : turn(SCRIPTED_ANSWER);
+};
 
 /** Sets variables of this process; the function returned gives back what they were. */
 function setVariables(variables: Readonly<Record<string, string>>): () => void {

@@ -3,7 +3,8 @@
 A small app on Fastify that mounts the cockpit under `/cockpit`, offers four
 jobs, and serves a page that draws a launcher form for each job from what the
 cockpit says of it, follows the sessions and their records live, runs, sends,
-opens and starts afresh, and shows a session's terminal.
+opens and starts afresh, stops a turn, ends a session, removes a unit of
+work, and shows a session's terminal.
 
 - `server.js` — the app: the cockpit, the Fastify server, the page's files.
 - `jobs.js` — the jobs, each showing one thing a job can be:
@@ -29,7 +30,9 @@ opens and starts afresh, and shows a session's terminal.
   required fields, defaults) and reads a field's choices with
   `client.options(…)`, again whenever a field before it changes: a select
   for choices, a datalist for suggestions. `sessions-list.js` shows a card
-  per session; `results.js` says what an operation did. The browser loads
+  per session, with its buttons: _Stop_ while a turn runs (`busy` or
+  `waiting`), _End_ while the session is live, _Remove_ always, after a
+  confirmation in the card; `results.js` says what an operation did. The browser loads
   the package's `client` and `terminal` entries, as built, and xterm.js's
   ESM build through an import map; the app serves exactly those files. No
   bundler.
@@ -38,7 +41,9 @@ opens and starts afresh, and shows a session's terminal.
 - The default agent is the repository's `test/support/scripted-agent.ts`:
   the Claude Code this repository pins, against a scripted fake of
   Anthropic's API (no model, no login, no network). Every question gets the
-  same scripted answer. Each launch passes the contract suite's guard first
+  same scripted answer, at once, but one that asks for a thorough answer
+  (_Detail_ `thorough`): its answer is long and written a few words at a
+  time, for about 40 seconds, a turn at work long enough to stop. Each launch passes the contract suite's guard first
   (a settings file, a file of MCP servers, a variable that could take the
   agent elsewhere stops it). It is development support, not part of the
   package: an app runs the person's own `claude`.
@@ -50,7 +55,7 @@ job's settings, its conversation resumed.` An error shows the cockpit's
 message (a `wrong-state` says where your draft went when a send had to
 leave it aside, and which keys bring it back), or the field each issue of
 `invalid-arguments` is in: `topic: Name a topic: at least one letter or
-digit.`
+digit.` What a remove did shows above the cards, its card gone.
 
 The end-to-end tests (`test/e2e/jobs-console.test.ts`) follow these steps in
 a browser; `test/e2e/examples-end.test.ts` checks that it leaves
@@ -133,7 +138,34 @@ Open http://127.0.0.1:4310/#cockpit=…
     about `the-weather`: another session, `ask-the-2d-weather`, starts. A
     topic with no letter or digit, `?!`, is refused: `topic: Name a topic:
     at least one letter or digit.`
-11. **The cap**: stop the server and start it with `--max-sessions 2`. Run
+11. **Stop a turn**: in _Explain a file_, choose `notes`, `ideas.md` and
+    _Detail_ `thorough`, press _Run_: `started → busy`. The card
+    `file-notes-2f-ideas-2e-md` is `busy` and shows _Stop_; press
+    _Terminal_ on it to watch the answer written, part by part. Press
+    _Stop_ while it writes: the card says `Stopping the turn of …`, then
+    `interrupted → idle: the turn was stopped; …`. The card goes `idle`
+    and _Stop_ leaves it; the terminal shows the answer cut short, then
+    `Interrupted · What should Claude do instead?`, its input box empty.
+    A Stop that comes as the turn ends is no error: `nothing-to-interrupt
+    → idle: no turn was running.`
+12. **End the session**: press _End_ on the same card: `ended: the session
+    ended; its conversation and record are kept for the next run or open.`
+    The card goes `ended · app` (the app closed it, not the agent) and
+    _End_ leaves it; the terminal says `(ended)`. Press _Open_: its
+    conversation is resumed (`resumed → idle`), and _End_ is back.
+13. **Remove the unit of work**: press _Remove_ on the card. The card asks
+    first: "Remove file-notes-2f-ideas-2e-md? Its session ends if it is
+    live, and its record and history are deleted; the agent’s transcripts
+    are kept." When the session runs background tasks, it names those it
+    would stop. Press _Keep it_, and nothing changes; press _Remove_ again,
+    then _Remove for good_. The card leaves the list, and above the cards
+    the page says `file-notes-2f-ideas-2e-md — removed: its record and
+    history are deleted, …`. Run _Explain_ on `notes/ideas.md` again,
+    _Detail_ `brief`: it starts a new conversation (`started`), with a
+    history of one run. A session still `starting` cannot be ended or
+    removed yet: the card says so in the cockpit's words, `The session …
+    is starting.`
+14. **The cap**: stop the server and start it with `--max-sessions 2`. Run
     _Explain_ on `src/greet.js`, then on `src/farewell.js`, and let both go
     `idle` with no terminal shown (press _Terminal_ on neither, or reload
     the page without `?session=…`). Run it on `notes/todo.md`: the session
@@ -144,12 +176,12 @@ Open http://127.0.0.1:4310/#cockpit=…
     it. When no
     live session can be ended (each busy, or shown in a terminal), a start is
     refused, the cap and the live keys named.
-12. **Reload the page** (no link needed): the cards and their histories come
+15. **Reload the page** (no link needed): the cards and their histories come
     back, and the terminal of the session you chose (its key is in the
     address, `?session=…`) reconnects and shows the same screen. Edit the
     address to `?session=Not a key`: the terminal's place says "The terminal
     needs a session key."
-13. **Stop the server** with Ctrl+C (or close its terminal). It prints
+16. **Stop the server** with Ctrl+C (or close its terminal). It prints
     "Stopped.", ends the sessions and their tmux server, stops the fake API
     and removes its folder, the records with it; one that cannot start (its
     port taken) removes them too. The page says the server cannot be reached
