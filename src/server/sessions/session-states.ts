@@ -83,6 +83,19 @@ export function courseWithdrawn(course: SessionCourse, now: string): SessionCour
 }
 
 /**
+ * The background tasks known running in a session: those an `idle` session
+ * lists, or, in a turn, those it set aside as the turn began and the
+ * subagents the turn started, less those finished since.
+ *
+ * @param course - The course as it is.
+ * @returns The tasks, empty when none is known.
+ */
+export function tasksKnown(course: SessionCourse): readonly BackgroundTask[] {
+  const { session } = course;
+  return session.state === 'idle' ? (session.backgroundTasks ?? []) : tasksSetAside(course);
+}
+
+/**
  * Whether an event tells something of the open turn, past its prompt: the
  * prompt was no longer withdrawable by then. A background task's end is
  * not of the turn, nor an interruption recorded before the turn's prompt

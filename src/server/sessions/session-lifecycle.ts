@@ -212,6 +212,11 @@ export class SessionLifecycle {
     return this.#phase === 'ending' || this.#phase === 'killing';
   }
 
+  /** Whether an end is under way: the cockpit ending it, or its going from the host, not yet written. */
+  get hasEndUnderWay(): boolean {
+    return this.isBeingEnded || this.#phase === 'going';
+  }
+
   /** Whether its key is only taken: the launch is not listed yet. */
   get isReserved(): boolean {
     return this.#phase === 'reserved';

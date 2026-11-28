@@ -57,6 +57,17 @@ describe("a session's lifecycle", () => {
     expect(at('launching', 'live', 'going')).toEqual([false, false, false]);
   });
 
+  it('tells whether an end is under way: the cockpit ending the session, or its going from the host', () => {
+    const underWay = (...phases: Phase[]) => movedThrough(...phases).hasEndUnderWay;
+
+    expect(underWay('launching')).toBe(false);
+    expect(underWay('launching', 'live')).toBe(false);
+    expect(underWay('launching', 'live', 'ending')).toBe(true);
+    expect(underWay('launching', 'live', 'killing')).toBe(true);
+    expect(underWay('launching', 'live', 'going')).toBe(true);
+    expect(underWay('launching', 'live', 'going', 'ended')).toBe(false);
+  });
+
   it('goes from the host once, every caller awaiting the same end, told once the session is `ended`', async () => {
     const lifecycle = movedThrough('launching', 'live');
     const told: Phase[] = [];

@@ -42,7 +42,7 @@ import { LaunchPromptWatch } from './launch-prompt-watch.js';
 import { LivenessWatch } from './liveness-watch.js';
 import { typingFailure, wrongState } from './refusals.js';
 import { SessionLifecycle } from './session-lifecycle.js';
-import { courseAfter, courseWithdrawn, type SessionCourse } from './session-states.js';
+import { courseAfter, courseWithdrawn, type SessionCourse, tasksKnown } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
 import { type InterruptedSession, interruptTurn } from './turn-interrupt.js';
 import { SessionTypingTerminal } from './typing-terminal.js';
@@ -259,12 +259,14 @@ export interface Sessions {
    *
    * @param key - The session's key.
    * @param reason - Why the cockpit ends it.
-   * @returns The background tasks the `idle` session listed, stopped with
-   * it; none for a session in another state, or with no live session.
-   * Settles once the session ended, its end told, however its going was
-   * seen first. Asked of a session the cockpit is already ending, or whose
-   * going from the host began, it waits for that end, its reason kept, and
-   * gives no tasks; it settles too when that end's kill failed.
+   * @returns The background tasks known running as its process went,
+   * stopped with it: those an `idle` session listed, or those a session in
+   * a turn listed before it and the subagents the turn started; none with
+   * no live session. Settles once the session ended, its end told, however
+   * its going was seen first. Asked of a session the cockpit is already
+   * ending, or whose going from the host began, it waits for that end, its
+   * reason kept, and gives the tasks that end stopped; when that end's kill
+   * failed, it ends the session itself, for its own reason.
    * @throws `SessionHostError` when the host cannot kill a session that
    * outlived the bound: the session is live again, its agent heard, its
    * reason what it was, and a later end may kill it.
@@ -435,6 +437,8 @@ interface Entry {
   endedBecause?: EndReason;
   /** Why the agent said it was ending. */
   agentSaid?: AgentEndReason;
+  /** The background tasks known running as its process went: those its end stopped. */
+  stoppedTasks?: readonly BackgroundTask[];
   /**
    * Whether a hook of the agent's other than its end was heard: it can be
    * observed, and it is past its start-up dialogs.
@@ -519,31 +523,36 @@ class SessionRegistry implements Sessions {
     this.#refuseIfClosed(key);
     const entry = this.#entries.get(key);
     if (entry === undefined) return [];
-    if (!entry.lifecycle.isLive) return this.#endUnderWay(entry);
-    const { session } = entry;
-    const stopped = session.state === 'idle' ? (session.backgroundTasks ?? []) : [];
+    if (entry.lifecycle.isLive) return this.#endLive(entry, reason);
+    return entry.lifecycle.hasEndUnderWay ? this.#joinEnd(entry, reason) : [];
+  }
+
+  /** Ends a live session: its agent signalled, given the driver's bound, then killed. */
+  async #endLive(entry: Entry, reason: EndReason): Promise<readonly BackgroundTask[]> {
     const reasonBefore = entry.endedBecause;
     entry.endedBecause = reason;
     // From the moment it is asked, before the signal: no send types into it meanwhile.
     entry.lifecycle.move('ending');
     const { signal, boundMs } = this.#options.driver.ending;
-    await this.#signal(key, signal);
+    await this.#signal(entry.key, signal);
     const ended = entry.lifecycle.ended.then(() => true);
     const exited = (await fulfilledWithin(ended, boundMs, this.#closing.signal)) ?? false;
     // Closed, the core no longer watches the session: whether it is gone, nothing tells.
-    this.#refuseIfClosed(key);
+    this.#refuseIfClosed(entry.key);
     if (!exited) await this.#kill(entry, reasonBefore);
-    return stopped;
+    return entry.stoppedTasks ?? [];
   }
 
   /**
-   * Waits for the end under way of a session asked to end again: the one
-   * that began it gives the tasks it stopped.
+   * Waits for the end under way of a session asked to end again, and gives
+   * the tasks that end stopped. One whose kill failed left the session
+   * live: this end then ends it, for its own reason.
    */
-  async #endUnderWay(entry: Entry): Promise<readonly BackgroundTask[]> {
+  async #joinEnd(entry: Entry, reason: EndReason): Promise<readonly BackgroundTask[]> {
     await settlesBeforeAbort(entry.lifecycle.endUnderWay, this.#closing.signal);
     this.#refuseIfClosed(entry.key);
-    return [];
+    if (entry.lifecycle.isLive) return this.#endLive(entry, reason);
+    return entry.stoppedTasks ?? [];
   }
 
   /**
@@ -990,6 +999,7 @@ class SessionRegistry implements Sessions {
    */
   #gone(entry: Entry): Promise<void> {
     return entry.lifecycle.go(async () => {
+      entry.stoppedTasks = tasksKnown(courseOf(entry));
       entry.firstPrompt.stop();
       stopReadingTheScreen(entry);
       entry.withdrawal.stop();
