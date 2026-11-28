@@ -334,13 +334,16 @@ export interface Cockpit {
      * with `by` for an ask settled before; `terminal-only` for an ask
      * answerable in the terminal only; `invalid-answer` with `issues` for
      * an answer that does not fit the ask's kind.
+     * @throws An error with no code once `close()` began: nothing is
+     * written to the agent, nobody told.
      */
     answer(id: string, answer: AskAnswer): Promise<void>;
     /**
      * Tells each ask settled, once, the app's own answers included.
      *
      * @param event - `'settled'`.
-     * @param handler - Receives the ask's id, its key and what settled it.
+     * @param handler - Receives the ask's id, its key and what settled it;
+     * what it throws goes to `on('error')`.
      * @returns A function that removes the handler.
      * @throws `TypeError` for an event the asks do not have.
      */
@@ -372,7 +375,9 @@ export interface Cockpit {
    * Tells the app of a failure the browser or the agent is not told of: the
    * handler's own (it answered 500), an `authorize` that threw or rejected
    * (the request was refused), the agent-facing listener's (it answered
-   * 500). Each is an `internal-failure` whose `cause` is what was thrown.
+   * 500), what an `asks.follow` or `asks.on('settled')` handler threw (the
+   * others told all the same). Each is an `internal-failure` whose `cause`
+   * is what was thrown.
    * While the app has no handler, they go to `console.error`.
    *
    * @param event - `'error'`.
@@ -431,12 +436,15 @@ export interface Cockpit {
    * Closes the cockpit: refuses every later request and call from the
    * moment it is called (`run`, `send`, `open`, `interrupt`, `end` and
    * `remove` reject with `SessionsClosedError`; one under way makes no folder and writes no
-   * record from then on), answers 503 to each request whose admission is
-   * still pending (an `authorize` still out among them), settles every run
-   * still pending (it rejects), closes every WebSocket and detaches every
-   * terminal, waits for the records being written, stops the agent-facing
-   * listener and releases the app's lock. The sessions go on in tmux:
-   * nothing is killed, and no timer of the cockpit's is left.
+   * record from then on; `asks.answer` rejects with an error with no code,
+   * and no asks' handler is called again), answers 503 to each request
+   * whose admission is still pending (an `authorize` still out among them),
+   * settles every run still pending (it rejects), closes every WebSocket
+   * and detaches every terminal, waits for the records being written, stops
+   * the agent-facing listener, dropping every hook it held for a pending
+   * ask (settled by nobody: the agent keeps its dialog in the terminal),
+   * and releases the app's lock. The sessions go on in tmux: nothing is
+   * killed, and no timer of the cockpit's is left.
    */
   close(): Promise<void>;
 }
@@ -514,7 +522,7 @@ async function openCockpit(
     const holds = createTerminalHolds();
     const asks = new Asks({
       clock: () => new Date(),
-      handlerThrew: (thrown) => console.error(thrown),
+      handlerThrew: (thrown) => failures.report('asks', thrown),
     });
     const sessions = createSessions({
       host,
@@ -548,7 +556,6 @@ async function openCockpit(
       ...unitsOfWorkLimits(checked),
     });
     const descriptions = checked.jobs.map(describeJob);
-    const appAsks = asksNoneOpened();
     const operations = {
       run: (jobId: string, args: unknown, options?: RunOptions): Promise<RunResult> =>
         units.run(jobId, args, options),
@@ -569,11 +576,10 @@ async function openCockpit(
       // The handler's answer takes the body as parsed: the asks check its shape.
       operations: {
         ...operations,
-        answer: (id, answer) => appAsks.answer(id, answer as AskAnswer),
+        answer: (id, answer) => asks.answer(id, answer),
       },
       sessions: units,
-      // No settlement is remembered while the core opens no ask.
-      asks: { ...appAsks, settled: () => [] },
+      asks,
       terminals: {
         attach: (key, size) => sessions.attach(key, size),
         isLive: (key) => host.isLive(key),
@@ -595,7 +601,12 @@ async function openCockpit(
     return {
       ...operations,
       sessions: { list: () => units.list(), follow: (handler) => units.follow(handler) },
-      asks: appAsks,
+      // The app's three calls only: opening, settling and closing are the core's and the cockpit's.
+      asks: {
+        follow: (key, handler) => asks.follow(key, handler),
+        answer: (id, answer) => asks.answer(id, answer),
+        on: (event, handler) => asks.on(event, handler),
+      },
       link: (pageUrl) => linkTo(pageUrl, appToken.value),
       verify: (request) => carriesAppToken(request, appToken.matches),
       on: eventsOf(failures, agentStatus),
@@ -612,6 +623,7 @@ async function openCockpit(
         closing ??= (async () => {
           // Before any wait: nothing asked from now on begins while the rest closes.
           const unitsClosed = units.close();
+          asks.close();
           // A renewal under way writes the token's file: it ends before the lock is released.
           await renewing;
           await handler.close();
@@ -645,24 +657,6 @@ async function readAgentVersion(
   } catch {
     // Left unread: the first launch reads it, and rejects with the failure.
   }
-}
-
-/**
- * The cockpit's asks while the core opens none: nothing pending to follow,
- * nothing settled to tell, and every id unknown.
- */
-function asksNoneOpened(): Cockpit['asks'] {
-  return {
-    follow: () => () => {},
-    answer: async (id) => {
-      throw new CockpitError('unknown-id', `No ask has the id ${JSON.stringify(id)}.`, { id });
-    },
-    on: (event) => {
-      if (event !== 'settled')
-        throw new TypeError(`The asks have no event ${JSON.stringify(event)}.`);
-      return () => {};
-    },
-  };
 }
 
 /** The cockpit's `on`: each event's handlers to the part that tells it. */
