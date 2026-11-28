@@ -28,13 +28,39 @@ export async function screenOrNothing(session: AgentSession): Promise<string | u
  * @param taken - Tells from the screen, or from its absence once the session is gone, that the key was taken.
  * @throws Error when the key was not taken after a few presses.
  */
-export async function pressOnDialog(
+export function pressOnDialog(
   session: AgentSession,
   key: string,
   taken: (screen: string | undefined) => boolean,
 ): Promise<void> {
+  return untilTaken(session, key, () => session.press(key), taken);
+}
+
+/**
+ * Types a character on a dialog until it is taken, as {@link pressOnDialog}
+ * presses a key: a digit that chooses an option, which no key name stands for.
+ *
+ * @param character - What is typed.
+ * @param taken - Tells from the screen, or from its absence once the session is gone, that it was taken.
+ * @throws Error when it was not taken after a few tries.
+ */
+export function typeOnDialog(
+  session: AgentSession,
+  character: string,
+  taken: (screen: string | undefined) => boolean,
+): Promise<void> {
+  return untilTaken(session, character, () => session.type(character), taken);
+}
+
+/** Sends a key until the screen shows it taken, a few times at most. */
+async function untilTaken(
+  session: AgentSession,
+  key: string,
+  send: () => Promise<void>,
+  taken: (screen: string | undefined) => boolean,
+): Promise<void> {
   for (let presses = 1; presses <= DIALOG_KEY_PRESSES; presses++) {
-    if (await pressedOrGone(session, key, taken)) return;
+    if (await sentOrGone(session, send, taken)) return;
     const shown = async () => taken(await screenOrNothing(session));
     if (await cameTrue(shown, PATIENCE.dialogKey, POLL.screen)) return;
   }
@@ -42,20 +68,20 @@ export async function pressOnDialog(
 }
 
 /**
- * Presses a key, and tells whether the session went with the keys before:
+ * Sends a key, and tells whether the session went with the keys before:
  * an agent that took a key may act on it slower than a press is repeated,
  * and leave as that press reaches its terminal.
  *
  * @returns Whether the session is gone, as `taken` asked.
  * @throws The press's error when the session lives, or when its going is not what was asked.
  */
-async function pressedOrGone(
+async function sentOrGone(
   session: AgentSession,
-  key: string,
+  send: () => Promise<void>,
   taken: (screen: string | undefined) => boolean,
 ): Promise<boolean> {
   try {
-    await session.press(key);
+    await send();
     return false;
   } catch (error) {
     if (!(await session.isLive()) && taken(undefined)) return true;

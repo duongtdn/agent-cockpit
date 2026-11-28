@@ -229,8 +229,8 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   and reads as the box free, as idle), `permission-dialog` (127 keys typed
   as `PermissionRequest` arrives, before the dialog shows: they answer
   nothing; after Esc the box holds them or nothing), `permissions` (the
-  agent's half of 137, 138, 142, 144, 146, 147, through `startContractAgent`,
-  the cockpit's half to come: 137 a `PermissionRequest` of a `Bash` with a
+  agent's half of 137, 138, 142, 144, 146, 147, through `startContractAgent`:
+  137 a `PermissionRequest` of a `Bash` with a
   description, of a `Write`, of a background task's call, each after its
   `PreToolUse`, with no `tool_use_id`, the hook's `allow` running it; 138
   the hook's `deny`, with a message (the call's result) or bare
@@ -239,7 +239,27 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   amended "No": no hook for the call, then `PostToolBatch`; 146 three
   concurrent `Read`s, each ask after its own `PreToolUse`'s answer; 147
   `auto`'s ask in the terminal alone, told by `Notification`
-  `agent_needs_input` then `permission_prompt`).
+  `agent_needs_input` then `permission_prompt`), `permission-asks` (the
+  cockpit's half, 137–148, through the cockpit's `asks`, `interrupt`, `end`
+  and `close`: 137 the app's allow, the dialog closed, the call run; 138 a
+  deny with a message, then bare, the turn going on; 139 "remember" on
+  `Bash`: an exact compound line, then `touch:*`, a compound line with
+  another command still asking; 140 on files: a `Write` remembered lets a
+  `Write` and an `Edit` of the file run, a `Read` the file, siblings
+  asking, no settings file written; 141 a Yes by 1, 2 and 3 settled
+  `terminal` at `PostToolUse`, no hook left open (the agent's connections
+  to the listener, in `/proc/net/tcp`); 142 a Yes whose command fails, at
+  `PostToolUseFailure`; 143 a plain "No" and Esc `cancelled`, `idle`; 144
+  an amended "No" `terminal` at `PostToolBatch`, `busy`, then `idle`, no
+  hook left open; 145 `interrupt` on one held ask and on three, one marker
+  each, and `end` with one held, its marker before the signal; 146 three
+  `Read`s answered out of order, each answer its own call's, and three
+  identical, one remembered, all settled; 147 each mode: `default`
+  offered to the app, `acceptEdits` and `bypassPermissions` run,
+  `dontAsk` denied, `auto`'s `python3` and `plan`'s `touch` asked in the
+  terminal alone (from `Notification`), settled by a Yes or interrupted by
+  the cockpit's Esc; 148 a Yes after `close` reaching a new listener at the
+  same address as `PostToolUse`).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:
