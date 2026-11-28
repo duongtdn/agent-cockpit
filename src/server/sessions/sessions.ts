@@ -56,6 +56,7 @@ import {
   courseWithdrawn,
   type SessionCourse,
   tasksKnown,
+  waitsOnAnAsk,
 } from './session-states.js';
 import { type DialogShown, StartUpWatch } from './start-up-watch.js';
 import { type InterruptedSession, interruptTurn } from './turn-interrupt.js';
@@ -1202,10 +1203,12 @@ class SessionRegistry implements Sessions {
    * Makes the session wait for a person in the terminal, naming the dialog
    * when the driver knows it; a session already waiting for the same keeps
    * its `since`, and one whose dialog changed (onboarding, then login)
-   * keeps it too: it waits all along.
+   * keeps it too: it waits all along. One that waits on an ask of its
+   * agent's waits on it: the dialog shown is the ask's.
    */
   #waitInTerminal(entry: Entry, { dialog }: DialogShown): void {
     const { session } = entry;
+    if (waitsOnAnAsk(session)) return;
     if (session.state === 'waiting' && session.pending[0]?.dialog === dialog) return;
     this.#update(entry, {
       key: entry.key,

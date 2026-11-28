@@ -483,6 +483,25 @@ describe('a session while asks are pending', () => {
     expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'ask', id }] });
   });
 
+  it('waits on its ask, not on a dialog read on screen while its first prompt waits for the box: the dialog is the ask’s', async () => {
+    driver.promptFitsLaunch = () => false;
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: 'c-1',
+      prompt: PROMPT,
+    });
+    launched.catch(() => {});
+    await settle();
+    hook('/ready');
+    const { id } = asked('call-1');
+
+    host.show(KEY, stubScreen('onboarding'));
+    await vi.advanceTimersByTimeAsync(2 * SCREEN_INTERVAL_MS);
+
+    expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'ask', id }] });
+  });
+
   it('lists each in the order they opened, `waiting` since the first, through asks opening and settling', async () => {
     await busySession();
     await later();

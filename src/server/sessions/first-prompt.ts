@@ -3,6 +3,7 @@ import type { ScreenReading, TypingOutcome } from '../driver.js';
 import type { TerminalHold } from '../terminal-hold.js';
 import { InputBoxWait } from './input-box-wait.js';
 import { typingFailure, wrongState } from './refusals.js';
+import { waitsOnAnAsk } from './session-states.js';
 import type { DialogShown } from './start-up-watch.js';
 
 /** What a launch's first prompt works with: its session, as the sessions core keeps it. */
@@ -229,7 +230,7 @@ export class FirstPrompt {
  * stays so, and its first prompt is not typed.
  */
 function waitsOnlyInTheTerminal(session: Session): boolean {
-  return session.state === 'waiting' && session.pending.every((each) => each.id === undefined);
+  return session.state === 'waiting' && !waitsOnAnAsk(session);
 }
 
 /**

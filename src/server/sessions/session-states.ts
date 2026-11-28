@@ -311,8 +311,13 @@ function inTurn(course: SessionCourse, now: string): SessionCourse {
   return tasks === undefined ? turn : { ...turn, tasksDuringTurn: tasks };
 }
 
-/** Whether the session lists an ask of its agent's among what it waits for. */
-function waitsOnAnAsk(session: Session): boolean {
+/**
+ * Whether the session lists an ask of its agent's among what it waits for:
+ * then a dialog the screen shows is the ask's, never a start-up dialog.
+ *
+ * @param session - The session.
+ */
+export function waitsOnAnAsk(session: Session): boolean {
   return session.state === 'waiting' && session.pending.some(isAsk);
 }
 
