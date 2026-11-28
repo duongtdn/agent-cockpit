@@ -13,6 +13,7 @@ const NOW = '2026-11-26T10:05:00.000Z';
 
 const reviewer: BackgroundTask = { id: 'a1', type: 'general-purpose', description: 'Review a.ts' };
 const tests: BackgroundTask = { id: 'b2', type: 'shell', description: 'Run the tests' };
+const helper: BackgroundTask = { id: 'c3', type: 'general-purpose' };
 
 const starting: Session = { key: KEY, state: 'starting', since: BEFORE };
 const busy: Session = { key: KEY, state: 'busy', since: BEFORE };
@@ -146,6 +147,13 @@ describe('a session after an event of its agent', () => {
       { type: 'tasks', running: [] },
       true,
       idle,
+    ],
+    [
+      'a task started while idle',
+      idle,
+      { type: 'task-started', task: helper },
+      true,
+      { ...idle, backgroundTasks: [helper] },
     ],
     [
       'a task finished',
@@ -436,6 +444,7 @@ describe('the prompt an early Esc may withdraw', () => {
     ['a failed turn', overloaded],
     ['its interruption', { type: 'interrupted' }],
     ['a compaction', { type: 'compaction-began' }],
+    ['a background task started', { type: 'task-started', task: helper }],
     ['another conversation', { type: 'conversation', conversationId: 'c2' }],
     ['the agent ending', { type: 'ending', reason: 'agent-exit' }],
   ])('is forgotten at any later sign of the turn: %s', (_, event) => {
@@ -480,28 +489,6 @@ describe('a prompt withdrawn, as the screen shows it', () => {
 describe('the background tasks across a turn that ends with no list of them', () => {
   const taken: DriverEvent = { type: 'prompt-taken', prompt: 'Fix the tests.' };
 
-  it('are listed again by the idle session an interruption leaves', () => {
-    const course = afterEvents({ session: idleWithTasks }, [taken, { type: 'interrupted' }]);
-
-    expect(course.session).toEqual({
-      key: KEY,
-      state: 'idle',
-      since: NOW,
-      backgroundTasks: [reviewer, tests],
-    });
-  });
-
-  it('are listed again by the idle session a withdrawn prompt leaves', () => {
-    const course = courseWithdrawn(afterEvents({ session: idleWithTasks }, [taken]), NOW);
-
-    expect(course.session).toEqual({
-      key: KEY,
-      state: 'idle',
-      since: NOW,
-      backgroundTasks: [reviewer, tests],
-    });
-  });
-
   it('are kept while the turn goes on: a tool, another prompt', () => {
     const course = afterEvents({ session: idleWithTasks }, [
       taken,
@@ -511,6 +498,51 @@ describe('the background tasks across a turn that ends with no list of them', ()
     ]);
 
     expect(course.session).toMatchObject({ state: 'idle', backgroundTasks: [reviewer, tests] });
+  });
+
+  it('take in a task started during the turn', () => {
+    const course = afterEvents({ session: idleWithTasks }, [
+      taken,
+      { type: 'task-started', task: helper },
+      { type: 'interrupted' },
+    ]);
+
+    expect(course.session).toMatchObject({
+      state: 'idle',
+      backgroundTasks: [reviewer, tests, helper],
+    });
+  });
+
+  it('take in a task started during a turn begun with none listed', () => {
+    const course = afterEvents({ session: idle }, [
+      taken,
+      { type: 'task-started', task: helper },
+      { type: 'interrupted' },
+    ]);
+
+    expect(course.session).toMatchObject({ state: 'idle', backgroundTasks: [helper] });
+  });
+
+  it('take in a task started once only, however often it is told', () => {
+    const course = afterEvents({ session: idle }, [
+      taken,
+      { type: 'task-started', task: helper },
+      { type: 'task-started', task: helper },
+      { type: 'interrupted' },
+    ]);
+
+    expect(course.session).toMatchObject({ backgroundTasks: [helper] });
+  });
+
+  it('leave out a task started then finished during the turn', () => {
+    const course = afterEvents({ session: idle }, [
+      taken,
+      { type: 'task-started', task: helper },
+      { type: 'task-finished', id: helper.id },
+      { type: 'interrupted' },
+    ]);
+
+    expect(course.session).toEqual({ key: KEY, state: 'idle', since: NOW });
   });
 
   it('leave out a task that finished during the turn', () => {

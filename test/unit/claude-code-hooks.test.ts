@@ -195,8 +195,16 @@ describe("what Claude Code's hooks tell the core", () => {
     expect(eventsOfPayload(body)).toEqual([{ type: 'task-finished', id: body.agent_id }]);
   });
 
-  it('SubagentStart, and a SubagentStop that names no task, tell nothing', () => {
-    expect(eventsOfPayload(subagentStart())).toEqual([]);
+  it("SubagentStart: a background task started, named by its agent_id and its agent's type", () => {
+    const body = subagentStart();
+
+    expect(eventsOfPayload(body)).toEqual([
+      { type: 'task-started', task: { id: body.agent_id, type: body.agent_type } },
+    ]);
+  });
+
+  it('SubagentStart and SubagentStop that name no task tell nothing', () => {
+    expect(eventsOfPayload({ ...subagentStart(), agent_id: 7 })).toEqual([]);
     expect(eventsOfPayload({ ...subagentStop(), agent_id: 7 })).toEqual([]);
   });
 

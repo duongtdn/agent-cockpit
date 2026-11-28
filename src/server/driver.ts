@@ -293,6 +293,15 @@ export type DriverEvent =
       readonly running: readonly BackgroundTask[];
     }
   | {
+      /**
+       * One background task started: it joins the list, until a task
+       * finished or the next list at the end of a turn says otherwise.
+       */
+      readonly type: 'task-started';
+      /** The task. */
+      readonly task: BackgroundTask;
+    }
+  | {
       /** One background task finished: it leaves the list. */
       readonly type: 'task-finished';
       /** The task's id. */

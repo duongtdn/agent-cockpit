@@ -59,8 +59,9 @@ export type HookReader = (request: HookRequest) => HookOutcome;
  * `SubagentStart`, until the session's process ends.
  *
  * A background task's hooks carry its `agent_id`, and never move the
- * session's state: they tell nothing, but the task's `SubagentStop`, which
- * tells that the task finished. A compaction's own agent carries one too,
+ * session's state: they tell nothing, but the task's `SubagentStart`, which
+ * tells that the task started, and its `SubagentStop`, which tells that it
+ * finished. A compaction's own agent carries one too,
  * and starts with no `SubagentStart`: a `StopFailure` with an `agent_id` no
  * task of the session's has is the compaction's, which failed, and ended.
  *
@@ -77,7 +78,7 @@ export function createHookReader(): HookReader {
     const { hook_event_name: name, agent_id: agentId } = body;
     if (name === 'SubagentStart' && isText(agentId)) {
       tasksBySession.set(key, tasksOf(key).add(agentId));
-      return NOTHING;
+      return { events: [taskStarted(agentId, body.agent_type)] };
     }
     if (name === 'SubagentStop') return { events: taskFinished(agentId) };
     if (agentId !== undefined) {
@@ -172,6 +173,11 @@ function turnError(payload: Record<string, unknown>): TurnError {
   const kind = ERROR_KINDS.get(error) ?? 'other';
   const message = isText(text) ? text : typeof error === 'string' ? error : '';
   return { kind, message };
+}
+
+/** A background task started, named by its agent's type: its `SubagentStart` gives no description. */
+function taskStarted(id: string, agentType: unknown): DriverEvent {
+  return { type: 'task-started', task: { id, type: isText(agentType) ? agentType : '' } };
 }
 
 function taskFinished(id: unknown): DriverEvent[] {

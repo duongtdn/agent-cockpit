@@ -143,6 +143,10 @@ function nextCourse(
         : course;
     case 'tasks':
       return withIdle(course, (idle) => withTasks(idle, event.running));
+    case 'task-started':
+      return isInATurn(course)
+        ? withTaskDuringTurn(course, event.task)
+        : withIdle(course, (idle) => withTask(idle, event.task));
     case 'task-finished':
       return withIdle(withoutTaskDuringTurn(course, event.id), (idle) =>
         withoutTask(idle, event.id),
@@ -193,6 +197,25 @@ function inTurn(course: SessionCourse, now: string): SessionCourse {
 /** The background tasks the open turn set aside: those of the idle session a compaction began on, while it runs. */
 function tasksSetAside(course: SessionCourse): readonly BackgroundTask[] {
   return course.compactingFrom?.backgroundTasks ?? course.tasksDuringTurn ?? [];
+}
+
+/** Whether a turn runs that no compaction begun `idle` holds: what it starts, it sets aside. */
+function isInATurn({ session, compactingFrom }: SessionCourse): boolean {
+  return compactingFrom === undefined && (session.state === 'busy' || session.state === 'waiting');
+}
+
+/** The course with the task among those set aside for the turn, once. */
+function withTaskDuringTurn(course: SessionCourse, task: BackgroundTask): SessionCourse {
+  const tasks = course.tasksDuringTurn ?? [];
+  if (tasks.some((each) => each.id === task.id)) return course;
+  return { ...course, tasksDuringTurn: [...tasks, task] };
+}
+
+/** The idle session with the task listed, once; the same one when it lists it. */
+function withTask(idle: IdleSession, task: BackgroundTask): IdleSession {
+  const tasks = idle.backgroundTasks ?? [];
+  if (tasks.some((each) => each.id === task.id)) return idle;
+  return withTasks(idle, [...tasks, task]);
 }
 
 /** The course without the task among those set aside for the turn. */
