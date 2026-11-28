@@ -16,6 +16,7 @@ import {
   createRecordingHookAccess,
   createStubDriver,
   type FakeHost,
+  holdNoHook,
   PROMPT_PATH,
   type StubDriver,
   stubFolders,
@@ -75,7 +76,7 @@ afterEach(() => {
 });
 
 function hook(path: string): void {
-  sessions.receive({ key: KEY, path, body: {} });
+  sessions.receive({ key: KEY, path, body: {} }, holdNoHook);
 }
 
 /** Reports what the transcript records, as the driver does outside the hooks. */

@@ -844,12 +844,13 @@ export interface Driver {
    * session asking it again, or denied with the app's message for the
    * model.
    *
-   * @param content - The ask, as the driver's {@link AskOfCall} gave it.
+   * @param ask - The ask and its call, as the driver's
+   * {@link HookOutcome.ask} gave them.
    * @param answer - The app's answer, already checked against the ask's
    * kind.
    * @returns The reply, written as the held request's body.
    */
-  answerReply(content: AskContent, answer: AskAnswer): JsonValue;
+  answerReply(ask: AskOfCall, answer: AskAnswer): JsonValue;
   /**
    * Follows what the agent of a live session tells outside its hooks, such
    * as an interruption only its transcript records: from now on, or from

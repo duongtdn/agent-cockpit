@@ -24,6 +24,7 @@ import {
   startHookForwarder,
 } from '../support/fake-agent-driver.ts';
 import { PATIENCE } from '../support/patience.ts';
+import { holdNoHook } from '../support/sessions-doubles.ts';
 
 const appName = `sessions-test-${process.pid}-${Date.now()}`;
 
@@ -43,7 +44,7 @@ beforeEach(async () => {
   works += 1;
   directory = join(root, `work-${works}`);
   mkdirSync(directory);
-  forwarder = await startHookForwarder((request) => sessions.receive(request));
+  forwarder = await startHookForwarder((request) => sessions.receive(request, holdNoHook));
   sessions = sessionsWith(fakeAgentDriver(join(root, 'config')));
 });
 

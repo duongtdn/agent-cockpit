@@ -46,6 +46,7 @@ import {
   createRecordingHookAccess,
   createStubDriver,
   type FakeHost,
+  holdNoHook,
   type MemoryRecords,
   PROMPT_PATH,
   type StubDriver,
@@ -645,7 +646,7 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
           const key = keyOf(file);
           const prompt = world.lastPrompt.get(key) ?? '';
           const path = hook === 'prompt' ? `${PROMPT_PATH}${prompt}` : `/${hook}`;
-          world.sessions.receive({ key, path, body: {} });
+          world.sessions.receive({ key, path, body: {} }, holdNoHook);
         }),
       ),
   },

@@ -21,6 +21,7 @@ import {
   createRecordingHookAccess,
   createStubDriver,
   type FakeHost,
+  holdNoHook,
   PROMPT_PATH,
   type StubDriver,
   stubFolders,
@@ -78,7 +79,7 @@ afterEach(() => {
 });
 
 function hook(path: string, key = KEY): void {
-  sessions.receive({ key, path, body: {} });
+  sessions.receive({ key, path, body: {} }, holdNoHook);
 }
 
 const settle = () => vi.advanceTimersByTimeAsync(0);

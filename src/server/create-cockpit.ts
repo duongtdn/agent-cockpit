@@ -500,7 +500,7 @@ async function openCockpit(
     const listener = await openAgentListener({
       folder: folder.path,
       ...(checked.agentPort === undefined ? {} : { agentPort: checked.agentPort }),
-      receive: (request) => receiver.sessions?.receive(request),
+      receive: (request, hold) => receiver.sessions?.receive(request, hold),
       reportFailure: (cause) => failures.report('agent-listener', cause),
     });
     const appPorts = createAppPorts(checked.ports);

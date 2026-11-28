@@ -64,7 +64,7 @@ beforeEach(async () => {
   folder = await openStateFolder(statePath);
   listener = await openAgentListener({
     folder: folder.path,
-    receive: (request) => sessions.receive(request),
+    receive: (request, hold) => sessions.receive(request, hold),
     reportFailure: () => {},
   });
   driver = claudeCode();

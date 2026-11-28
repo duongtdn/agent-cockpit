@@ -19,6 +19,7 @@ import {
   isSessionKey,
   type Session,
 } from '../../shared/session.js';
+import type { HookHold } from '../agent-listener/agent-listener.js';
 import {
   type AgentEndReason,
   type Confinement,
@@ -386,8 +387,11 @@ export interface Sessions {
    * of a key with no live session changes nothing.
    *
    * @param request - The request.
+   * @param hold - Holds the request, for a reply given later, when called
+   * synchronously before `receive` returns; a request not held is
+   * answered `{}`.
    */
-  receive(request: HookRequest): void;
+  receive(request: HookRequest, hold: HookHold): void;
   /**
    * Attaches a terminal to a live session. Its end, when the session's is,
    * ends the session at once, without waiting for the next list of the host.

@@ -1,3 +1,4 @@
+import type { HeldHook } from '../../src/server/agent-listener/agent-listener.ts';
 import type {
   ClearingTerminal,
   Conversation,
@@ -24,6 +25,14 @@ import type { HookAccess, SessionFolders } from '../../src/server/sessions/sessi
 import type { RecordStore, UnitRecord } from '../../src/server/state/records.ts';
 import type { StartupDialog } from '../../src/shared/session.ts';
 import { DRIVER_DEFAULTS } from './driver-defaults.ts';
+
+/**
+ * The hold a test gives `receive` for a hook it does not hold: the core
+ * taking it fails the test.
+ */
+export function holdNoHook(): HeldHook {
+  throw new Error('This test holds no hook request.');
+}
 
 /** What a deferred host call waits for: the test settles it. */
 interface Gate {

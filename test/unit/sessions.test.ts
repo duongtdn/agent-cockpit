@@ -22,6 +22,7 @@ import {
   createRecordingHookAccess,
   createStubDriver,
   type FakeHost,
+  holdNoHook,
   type RecordingHookAccess,
   STUB_COMMAND,
   type StubDriver,
@@ -74,7 +75,7 @@ afterEach(() => {
 
 /** Sends a stub hook of a session: its path names the events. */
 function hook(path: string, key = KEY): void {
-  sessions.receive({ key, path, body: {} });
+  sessions.receive({ key, path, body: {} }, holdNoHook);
 }
 
 /** Launches a session, in a new conversation unless the test names one. */

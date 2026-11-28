@@ -31,16 +31,20 @@ export type HeldReplyOutcome = 'written' | 'closed';
 export interface HeldHook {
   /**
    * Writes the reply as the response's body (`200`, `application/json`)
-   * and ends the response.
+   * and ends the response. Once `onClosed` was called, or after a first
+   * reply or release, it writes nothing.
    *
    * @param body - The reply.
    * @returns `'written'` once it is handed to the connection; `'closed'`
-   * when the agent closed the connection first, nothing written.
+   * when nothing was written: the agent closed the connection first, or
+   * the request was already replied to or released.
    */
   reply(body: JsonValue): HeldReplyOutcome;
   /**
    * Ends the response with the answer of nothing (`{}`), as a request not
    * held is answered: for a request whose reply the agent no longer reads.
+   * Once `onClosed` was called, or after a first reply or release, it does
+   * nothing.
    */
   release(): void;
 }
@@ -62,8 +66,12 @@ export interface AgentListenerOptions {
   readonly folder: string;
   /** The port the app fixes, if it fixes one. */
   readonly agentPort?: number;
-  /** Takes a hook whose token was checked: the sessions' `receive`. */
-  readonly receive: (request: HookRequest) => void;
+  /**
+   * Takes a hook whose token was checked: the sessions' `receive`. It holds
+   * the request by calling `hold` synchronously, before it returns; a
+   * request not held is answered `{}` once it returns.
+   */
+  readonly receive: (request: HookRequest, hold: HookHold) => void;
   /** Gives the app what failed while a hook was served: the agent is answered 500, and no more. */
   readonly reportFailure: (cause: unknown) => void;
 }
@@ -199,13 +207,21 @@ async function serve(
     return answer(response, 400);
   }
   try {
-    receive({ key, path, body });
+    receive({ key, path, body }, holdNothing);
   } catch (error) {
     reportFailure(error);
     return answer(response, 500);
   }
   // A hook's answer of nothing: no decision of the cockpit's.
   response.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+}
+
+/**
+ * The hold the listener gives `receive`: the sessions hold no request, so
+ * none is ever taken.
+ */
+function holdNothing(): HeldHook {
+  throw new Error('The agent-facing listener holds no hook request.');
 }
 
 function bearerToken(header: string | undefined): string | undefined {

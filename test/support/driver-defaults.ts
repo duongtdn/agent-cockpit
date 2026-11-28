@@ -45,5 +45,5 @@ export const DRIVER_DEFAULTS: Pick<
     terminalAsk: { keys: ['Escape'] },
     boundMs: 1_000,
   },
-  answerReply: (_content, answer) => ({ answer }),
+  answerReply: (_ask, answer) => ({ answer }),
 };
