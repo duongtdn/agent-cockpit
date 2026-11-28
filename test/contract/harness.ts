@@ -423,6 +423,20 @@ export function userTexts(session: AgentSession): string[] {
 }
 
 /**
+ * Gives the texts a session's transcript records as the agent's: its
+ * answers, as far as each was written.
+ *
+ * @param session - The session whose transcript is read, as it is now.
+ * @returns The texts, in the order of the transcript.
+ */
+export function assistantTexts(session: AgentSession): string[] {
+  return session
+    .transcript()
+    .filter((entry) => entry.type === 'assistant')
+    .flatMap((entry) => textsOf((entry.message as { content: unknown }).content));
+}
+
+/**
  * Gives what a session's input box holds: the text between the two rules
  * above the footer, without the prompt sign and the blank after it. A prompt that was submitted
  * shows above the box, not in it.

@@ -101,6 +101,18 @@ export interface ContractCockpit {
    */
   open(...call: Parameters<Cockpit['open']>): ReturnType<Cockpit['open']>;
   /**
+   * Interrupts the turn of a unit of work's session through the cockpit, as an app does.
+   *
+   * @returns What the cockpit's interrupt resolved with.
+   */
+  interrupt(key: string): ReturnType<Cockpit['interrupt']>;
+  /**
+   * Ends a unit of work's session through the cockpit, as an app does.
+   *
+   * @returns What the cockpit's end resolved with.
+   */
+  end(key: string): ReturnType<Cockpit['end']>;
+  /**
    * Gives the conversation a session of a key was last launched with.
    *
    * @throws Error when no session of the key was launched.
@@ -371,6 +383,8 @@ export async function startContractCockpit(
     },
     send: (key, prompt) => launching(key, cockpit.send(key, prompt)),
     open: (key, openOptions) => launching(key, cockpit.open(key, openOptions)),
+    interrupt: (key) => cockpit.interrupt(key),
+    end: (key) => cockpit.end(key),
     conversationOf,
     async killAgent(key) {
       const running = await host.processOf(key);
