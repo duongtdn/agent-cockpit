@@ -111,7 +111,11 @@ for (const { prompt, end } of [
     const starts = cockpit.hooksRead
       .map((request) => request.body as HookPayload)
       .filter((hook) => hook.hook_event_name === 'SessionStart');
-    const named = String(starts.at(-1)?.session_id);
+    // The hooks arrive in no set order (a command hook forwards through a process of its own).
+    const named = String(
+      (prompt === '/clear' ? starts.find((hook) => hook.source === 'clear') : starts[0])
+        ?.session_id,
+    );
     const transcript = await eventually(() => {
       const entries = cockpit.terminal(SAID_KEY, named).transcript();
       expect(entries.map(entryText).some((text) => text !== undefined && end.test(text))).toBe(
@@ -122,8 +126,8 @@ for (const { prompt, end } of [
 
     expect(result).toEqual({ action: 'started', state: 'idle' });
     expect(cockpit.states(SAID_KEY)).toEqual(['starting', 'idle']);
-    expect(hookEvents(cockpit)).toEqual(
-      prompt === '/clear' ? ['SessionStart', 'SessionEnd', 'SessionStart'] : ['SessionStart'],
+    expect(hookEvents(cockpit).toSorted()).toEqual(
+      prompt === '/clear' ? ['SessionEnd', 'SessionStart', 'SessionStart'] : ['SessionStart'],
     );
     if (prompt === '/clear') expect(named).not.toBe(cockpit.conversationOf(SAID_KEY));
     expect(transcript.some((entry) => entry.promptSource !== undefined)).toBe(false);
