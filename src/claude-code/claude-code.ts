@@ -48,6 +48,15 @@ import { typePrompt } from './typing.js';
  */
 const ENDING = { signal: 'SIGTERM', boundMs: 5_000 } as const;
 
+/**
+ * How a busy session's turn is stopped: one Esc, never two, which on an
+ * empty box open the rewind menu, a dialog no hook reports. The agent
+ * records the interruption within 0.36 s on a loaded machine (an Esc
+ * before the model answered, within 0.17 s, puts the prompt back into an
+ * empty box); the bound leaves it about fourteen times that.
+ */
+const INTERRUPTING = { busy: { keys: ['Escape'] }, boundMs: 5_000 } as const;
+
 /** The session's settings, which carry the token in the HTTP hooks' header. */
 const SETTINGS_FILE = 'settings.json';
 
@@ -217,6 +226,7 @@ function createDriver(options?: ClaudeCodeOptions): Driver {
     promptFitsLaunch: (prompt) => Buffer.byteLength(prompt) <= MAX_LAUNCH_PROMPT_BYTES,
     launchSettings: (part) => launchSettingsOf(checked, part),
     ending: ENDING,
+    interrupting: INTERRUPTING,
     launch: async (launch) => {
       await refuseUnconfinableEnvironment(launch.environment);
       if (checked.sandbox !== undefined) await checkSandbox(launch.environment);

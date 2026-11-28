@@ -455,6 +455,30 @@ export interface SessionEnding {
   readonly boundMs: number;
 }
 
+/**
+ * How the core interrupts the turn of one of the driver's sessions, as
+ * data the core carries out: what stops the turn, by what the session
+ * waits on, and how long the core waits for the session to be `idle`
+ * after it. The core decides from the session's state whether there is a
+ * turn to stop; the driver says how its agent stops one.
+ */
+export interface SessionInterrupting {
+  /** What stops the turn of a `busy` session. */
+  readonly busy: KeysInterrupt;
+  /**
+   * How long the core waits, in milliseconds, for the session to be
+   * `idle` once it stopped the turn: past it, the interrupt fails
+   * `interrupt-unconfirmed`.
+   */
+  readonly boundMs: number;
+}
+
+/** A turn stopped by keys pressed in the session's terminal. */
+export interface KeysInterrupt {
+  /** The keys, by the names the session host takes, pressed in one write. */
+  readonly keys: readonly string[];
+}
+
 /** The agent's input box, as its screen shows it. */
 export interface InputBox {
   /** The text in the box, its lines joined by `\n`: empty when the box is. */
@@ -670,6 +694,8 @@ export interface Driver {
   launchSettings(part?: DriverPart): DriverSettings;
   /** How the core ends one of the driver's sessions gracefully. */
   readonly ending: SessionEnding;
+  /** How the core interrupts the turn of one of the driver's sessions. */
+  readonly interrupting: SessionInterrupting;
   /**
    * Prepares a launch: writes the files it needs in the session's folder and
    * says how to run the agent.

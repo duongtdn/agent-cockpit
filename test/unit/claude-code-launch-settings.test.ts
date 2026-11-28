@@ -80,3 +80,13 @@ describe('ending a Claude Code session', () => {
     expect(ending.boundMs).toBeLessThanOrEqual(10_000);
   });
 });
+
+describe('interrupting a Claude Code session', () => {
+  it('presses one Esc on a busy session, never a second, which would open the rewind menu', () => {
+    expect(claudeCode().interrupting.busy.keys).toEqual(['Escape']);
+  });
+
+  it('waits five seconds for the session to be idle, the bound the interrupt fails past', () => {
+    expect(claudeCode().interrupting.boundMs).toBe(5_000);
+  });
+});
