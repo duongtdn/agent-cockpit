@@ -6,15 +6,15 @@
  * @packageDocumentation
  */
 
+import type { SessionFolders } from '../sessions/sessions.js';
 import type { RecordStore } from './records.js';
-import type { RemovableSessionFolders } from './state-folder.js';
 
 /** Where a unit of work's files are kept. */
 export interface UnitFiles {
   /** The records of the units of work. */
   readonly records: Pick<RecordStore, 'remove'>;
   /** The sessions' folders. */
-  readonly folders: Pick<RemovableSessionFolders, 'remove'>;
+  readonly folders: Pick<SessionFolders, 'remove'>;
 }
 
 /**

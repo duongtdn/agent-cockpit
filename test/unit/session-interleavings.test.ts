@@ -37,6 +37,7 @@ import {
   createStubDriver,
   type FakeHost,
   PROMPT_PATH,
+  stubFolders,
   stubScreen,
   TYPING_PATIENCE_MS,
 } from '../support/sessions-doubles.ts';
@@ -133,7 +134,7 @@ class World {
       host: this.host,
       driver,
       hooks: createRecordingHookAccess(),
-      folders: { prepare: async (key) => `/state/sessions/${key}` },
+      folders: stubFolders(),
       environment: () => ({ PATH: '/usr/bin' }),
       admitAgent: async () => {},
       confinement: async () => ({

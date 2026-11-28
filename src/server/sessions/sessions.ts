@@ -109,6 +109,20 @@ export interface SessionFolders {
    * @returns The folder's absolute path.
    */
   prepare(key: string): Promise<string>;
+  /**
+   * Deletes the session's folder and all it holds — the files the driver
+   * wrote there, its hook token among them. A symbolic link in it, or in its
+   * place, is deleted as a link: what it leads to is left as it is. Nothing
+   * to do when the key has no folder. Callers serialize it with `prepare`
+   * for the same key, in the key's queue: a folder prepared while it is
+   * deleted could be lost under a launch.
+   *
+   * @param key - The session's key.
+   * @throws `TypeError` when the key is not of the form `[a-z0-9-]+`: its
+   * folder could lie outside the sessions' folder, and nothing is deleted.
+   * The file system's error when the folder cannot be deleted whole.
+   */
+  remove(key: string): Promise<void>;
 }
 
 /** What the sessions core works with. */

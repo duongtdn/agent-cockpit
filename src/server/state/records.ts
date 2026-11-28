@@ -73,8 +73,10 @@ export interface RecordStore {
   /**
    * Deletes a key's record, once the writes asked before it are done: the
    * key is unknown from then on, and a later put records it anew, last in
-   * the list. Nothing to do when the key has no record. Only the record is
-   * deleted: the key's other files are not the store's.
+   * the list. Nothing to do when the key has no record — a key not of the
+   * form `[a-z0-9-]+` included, which no record can have: a quiet no-op,
+   * where `SessionFolders.remove` throws `TypeError` for it. Only the record
+   * is deleted: the key's other files are not the store's.
    *
    * @param key - The key.
    * @throws The file system's error when its file cannot be deleted: the

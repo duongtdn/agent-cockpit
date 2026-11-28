@@ -467,9 +467,9 @@ export function createRecordingHookAccess(url = 'http://127.0.0.1:4000'): Record
   };
 }
 
-/** Session folders under a fixed root, created nowhere. */
+/** Session folders under a fixed root, created and deleted nowhere. */
 export function stubFolders(root = '/state/sessions'): SessionFolders {
-  return { prepare: async (key) => `${root}/${key}` };
+  return { prepare: async (key) => `${root}/${key}`, remove: async () => undefined };
 }
 
 /** A record store in memory: what was put, read back as a copy, in the order keys were first put. */

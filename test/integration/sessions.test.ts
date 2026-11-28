@@ -59,6 +59,9 @@ function sessionsWith(driver: Driver): Sessions {
         mkdirSync(folder, { recursive: true, mode: 0o700 });
         return folder;
       },
+      async remove(key) {
+        rmSync(join(root, 'state', `${works}`, key), { recursive: true, force: true });
+      },
     },
     environment: () => ({ PATH: process.env.PATH ?? '' }),
     admitAgent: async () => {},
