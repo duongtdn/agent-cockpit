@@ -6,15 +6,16 @@ import { describeAnswer, describeConversationRequest } from './describe.ts';
 import { type Message, messageEvents, turnMessage } from './message.ts';
 import {
   type LoggedRequest,
+  messageText,
   offersNoTools,
   parseBody,
-  type RequestMessage,
   requestKind,
   type SideRequestRule,
 } from './requests.ts';
 import {
   type CutStream,
   type HeldTurn,
+  type PacedTurn,
   type ScriptedAnswer,
   type StreamingTurn,
   type Turn,
@@ -31,13 +32,16 @@ export type FakeApiOptions = {
    */
   readonly isSideRequest?: SideRequestRule;
   /**
-   * The turn a conversation request gets when the script holds no answer
-   * left: a demo's one answer to whatever is asked, so that a person may run
-   * as many sessions as they like. Without it, such a request is refused
-   * and counts as unexpected.
+   * What a conversation request gets when the script holds no answer left:
+   * a demo's one turn to whatever is asked, or a rule that picks the answer
+   * by the request, so that a person may run as many sessions as they like.
+   * Without it, such a request is refused and counts as unexpected.
    */
-  readonly fallback?: Turn;
+  readonly fallback?: Turn | FallbackRule;
 };
+
+/** Picks the answer of a conversation request the script holds none for. */
+export type FallbackRule = (request: LoggedRequest) => ScriptedAnswer;
 
 /** How a held turn ended: the test released it, or the connection closed first. */
 export type HoldOutcome = 'released' | 'client-gone';
@@ -198,7 +202,10 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
       case 'conversation':
         conversationCount += 1;
         conversationRequests.add(exchange.request);
-        answerFromScript(exchange, scriptOf(exchange.request).shift() ?? options.fallback);
+        answerFromScript(
+          exchange,
+          scriptOf(exchange.request).shift() ?? fallbackFor(exchange.request),
+        );
         break;
     }
   }
@@ -221,14 +228,20 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
         hold(exchange, scripted);
         break;
       case 'streaming':
-        streamUntilReleased(exchange, scripted);
+      case 'paced':
+        streamInPieces(exchange, scripted);
         break;
     }
   }
 
+  function fallbackFor(request: LoggedRequest): ScriptedAnswer | undefined {
+    const { fallback } = options;
+    return typeof fallback === 'function' ? fallback(request) : fallback;
+  }
+
   /** The script a request answers from: its conversation's, when one was scripted apart. */
   function scriptOf(request: LoggedRequest): ScriptedAnswer[] {
-    const opening = textsOf(request.body?.messages?.[0]);
+    const opening = messageText(request.body?.messages?.[0]);
     const prompt = [...otherConversations.keys()].find((text) => opening.includes(text));
     return prompt === undefined ? script : (otherConversations.get(prompt) as ScriptedAnswer[]);
   }
@@ -288,13 +301,20 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
     heldRequests.add({ request, release, ended });
   }
 
-  function streamUntilReleased(exchange: Exchange, scripted: StreamingTurn): void {
+  /**
+   * Streams a turn's first text in pieces; a streaming turn then waits for
+   * its release, as a model that stalls, and a paced one ends. A request
+   * that asked for no stream gets a streaming turn held whole, a paced one
+   * at once.
+   */
+  function streamInPieces(exchange: Exchange, scripted: StreamingTurn | PacedTurn): void {
     const { request, response } = exchange;
-    const message = messageFor(exchange, scripted.turn);
     if (!asksForStream(exchange)) {
-      hold(exchange, { kind: 'held', turn: scripted.turn, afterEvents: 0 });
+      if (scripted.kind === 'paced') sendMessage(exchange, messageFor(exchange, scripted.turn));
+      else hold(exchange, { kind: 'held', turn: scripted.turn, afterEvents: 0 });
       return;
     }
+    const message = messageFor(exchange, scripted.turn);
     // The first text's events: the message's start, the block's start, its one delta.
     const [start, blockStart, textDelta, ...rest] = messageEvents(message) as [
       StreamEvent,
@@ -311,7 +331,11 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
     response.write(frames([start, blockStart]));
     let sent = 0;
     const pieces = setInterval(() => {
-      if (sent >= text.length) return clearInterval(pieces);
+      if (sent >= text.length) {
+        clearInterval(pieces);
+        if (scripted.kind === 'paced') release();
+        return;
+      }
       response.write(frames([piece(sent, sent + scripted.pieceLength)]));
       sent += scripted.pieceLength;
     }, scripted.gapMs);
@@ -329,7 +353,7 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
       const left = sent < text.length ? [piece(sent, text.length)] : [];
       response.end(frames([...left, ...rest]));
     };
-    heldRequests.add({ request, release, ended });
+    if (scripted.kind === 'streaming') heldRequests.add({ request, release, ended });
   }
 
   const server = createServer((incoming, response) => {
@@ -370,15 +394,6 @@ export async function startFakeApi(options: FakeApiOptions = {}): Promise<FakeAp
       return closed;
     },
   };
-}
-
-/** Every text of a message, its blocks' joined: what a test can name a conversation by. */
-function textsOf(message: RequestMessage | undefined): string {
-  if (message === undefined) return '';
-  if (typeof message.content === 'string') return message.content;
-  return message.content
-    .map((block) => (typeof block.text === 'string' ? block.text : ''))
-    .join('\n');
 }
 
 function asksForStream(exchange: Exchange): boolean {

@@ -92,3 +92,18 @@ export function parseBody(text: string): MessagesRequestBody | undefined {
     return undefined;
   }
 }
+
+/**
+ * Every text of a message, its blocks' joined by a line break: what a test
+ * can name a conversation or a prompt by.
+ *
+ * @param message - A message of a request; none gives an empty text.
+ * @returns The text.
+ */
+export function messageText(message: RequestMessage | undefined): string {
+  if (message === undefined) return '';
+  if (typeof message.content === 'string') return message.content;
+  return message.content
+    .map((block) => (typeof block.text === 'string' ? block.text : ''))
+    .join('\n');
+}

@@ -42,6 +42,8 @@ export function describeAnswer(answer: ScriptedAnswer): string {
       return `held ${describeTurn(answer.turn)}`;
     case 'streaming':
       return `streaming ${describeTurn(answer.turn)}`;
+    case 'paced':
+      return `paced ${describeTurn(answer.turn)}`;
   }
 }
 

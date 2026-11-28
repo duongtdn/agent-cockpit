@@ -59,8 +59,19 @@ export type StreamingTurn = {
   readonly gapMs: number;
 };
 
+/**
+ * A turn whose first text streams in small pieces, one every gap, then the
+ * rest of the turn: a model that writes slowly, and ends by itself.
+ */
+export type PacedTurn = {
+  readonly kind: 'paced';
+  readonly turn: Turn;
+  readonly pieceLength: number;
+  readonly gapMs: number;
+};
+
 /** What a test scripts for one conversation request. */
-export type ScriptedAnswer = Turn | ApiError | CutStream | HeldTurn | StreamingTurn;
+export type ScriptedAnswer = Turn | ApiError | CutStream | HeldTurn | StreamingTurn | PacedTurn;
 
 /** Small enough to never matter, and not zero, so that a display of them shows something. */
 const DEFAULT_USAGE: Usage = {
@@ -203,6 +214,24 @@ export function streamingTurn(
     pieceLength: pace.pieceLength ?? 24,
     gapMs: pace.gapMs ?? 20,
   };
+}
+
+/**
+ * Scripts a turn written slowly: the stream starts, its first text follows
+ * in pieces, one every gap, and the rest of the turn once the text is
+ * written. Unlike {@link streamingTurn}, it needs no release.
+ *
+ * @param scripted - The turn: its first block a text.
+ * @param pace - `pieceLength`, the characters of one piece (24 by
+ *   default), and `gapMs`, the time between two (20 ms by default).
+ * @returns The scripted paced turn.
+ * @throws Error when the turn's first block is no text.
+ */
+export function pacedTurn(
+  scripted: Turn,
+  pace: { readonly pieceLength?: number; readonly gapMs?: number } = {},
+): PacedTurn {
+  return { ...streamingTurn(scripted, pace), kind: 'paced' };
 }
 
 /**

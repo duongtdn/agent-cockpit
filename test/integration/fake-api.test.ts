@@ -5,6 +5,8 @@ import {
   type FakeApi,
   type FakeApiOptions,
   heldTurn,
+  messageText,
+  pacedTurn,
   startFakeApi,
   streamingTurn,
   TEXT_WRITTEN,
@@ -368,6 +370,24 @@ describe('a held turn', () => {
     await expect(held.ended).resolves.toBe('released');
   });
 
+  it('streams a paced turn’s text in pieces, one each gap, then ends it by itself', async () => {
+    const api = await start();
+    api.script(pacedTurn(turn('abcdefghij'.repeat(10)), { pieceLength: 10, gapMs: 20 }));
+
+    const response = await post(api, conversation('write slowly'));
+    const frames = parseFrames(await response.text());
+    const deltas = frames
+      .filter((frame) => frame.data.type === 'content_block_delta')
+      .map((frame) => (frame.data.delta as { text: string }).text);
+
+    expect(deltas).toEqual(Array.from({ length: 10 }, () => 'abcdefghij'));
+    expect(frames.slice(-3).map((frame) => frame.data.type)).toEqual([
+      'content_block_stop',
+      'message_delta',
+      'message_stop',
+    ]);
+  });
+
   it('lets a test await the second request held', async () => {
     const api = await start();
     api.script(heldTurn(), heldTurn());
@@ -579,6 +599,20 @@ describe('what the script did not foresee', () => {
     expect(second.content).toEqual([{ type: 'text', text: 'The one answer' }]);
     expect(third.content).toEqual([{ type: 'text', text: 'The one answer' }]);
     expect(third.id).not.toBe(second.id);
+    api.assertNothingUnexpected();
+  });
+
+  it('answers by a fallback rule of the request when the script holds none', async () => {
+    const api = await start({
+      fallback: (request) =>
+        turn(messageText(request.body?.messages?.at(-1)).includes('slowly') ? 'Slow' : 'Quick'),
+    });
+
+    const quick = await (await post(api, conversation('now', { stream: false }))).json();
+    const slow = await (await post(api, conversation('slowly', { stream: false }))).json();
+
+    expect(quick.content).toEqual([{ type: 'text', text: 'Quick' }]);
+    expect(slow.content).toEqual([{ type: 'text', text: 'Slow' }]);
     api.assertNothingUnexpected();
   });
 

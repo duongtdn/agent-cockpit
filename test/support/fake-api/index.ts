@@ -11,5 +11,5 @@ export type {
   RequestMessage,
   SideRequestRule,
 } from './requests.ts';
-export { offersNoTools } from './requests.ts';
+export { messageText, offersNoTools } from './requests.ts';
 export * from './script.ts';
