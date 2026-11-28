@@ -387,6 +387,7 @@ async function openCockpit(
       }),
       driver: checked.driver,
       environment,
+      folders: folder.sessions,
       ...(checked.maxSessions === undefined ? {} : { maxSessions: checked.maxSessions }),
     });
     const descriptions = checked.jobs.map(describeJob);

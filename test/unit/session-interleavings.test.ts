@@ -184,6 +184,7 @@ class World {
       jobs: JOBS,
       driver: { launchSettings: () => ({}), canResume: async () => true },
       environment: () => ({ PATH: '/usr/bin' }),
+      folders: stubFolders(),
       ...(maxSessions === undefined ? {} : { maxSessions }),
     });
   }

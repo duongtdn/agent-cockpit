@@ -85,6 +85,10 @@ let made: string[];
 /** Every signal sent, `<key> <signal>`; an agent exits on one when `exitOnSignal`. */
 let signals: string[];
 let exitOnSignal: boolean;
+/** The keys whose session folder was deleted, in order. */
+let foldersRemoved: string[];
+/** What the next deletion of a session folder fails with, when set. */
+let folderRemovalFailure: unknown;
 
 const jobs: JobRuns = {
   read(jobId, args) {
@@ -124,6 +128,8 @@ beforeEach(() => {
   made = [];
   signals = [];
   exitOnSignal = true;
+  foldersRemoved = [];
+  folderRemovalFailure = undefined;
   sessions = createSessions({
     host,
     driver,
@@ -161,6 +167,14 @@ async function open(
     jobs,
     driver,
     environment: () => ({ PATH: '/usr/bin' }),
+    folders: {
+      async remove(key) {
+        const failure = folderRemovalFailure;
+        folderRemovalFailure = undefined;
+        if (failure !== undefined) throw failure;
+        foldersRemoved.push(key);
+      },
+    },
     ...(options.maxSessions === undefined ? {} : { maxSessions: options.maxSessions }),
   });
   return units;
@@ -1383,6 +1397,313 @@ describe('an end', () => {
 
     await expect(units.end(KEY)).rejects.toBeInstanceOf(SessionsClosedError);
     expect(signals).toEqual([]);
+  });
+});
+
+describe('a remove', () => {
+  const RECORDED: UnitRecord = {
+    key: KEY,
+    conversationId: 'c-recorded',
+    earlierConversations: [],
+    history: [],
+    directory: '.',
+    launchSettings: { part: null },
+  };
+
+  /** Removes the key, its session ending as its agent exits on the signal. */
+  async function removed(): Promise<unknown> {
+    const removing = pending(units.remove(KEY));
+    await listHost();
+    return removing;
+  }
+
+  it('has nothing to remove on a key with no record: nothing signalled, nothing deleted', async () => {
+    await open();
+
+    await expect(units.remove(KEY)).resolves.toEqual({ action: 'nothing-to-remove' });
+    expect(signals).toEqual([]);
+    expect(foldersRemoved).toEqual([]);
+  });
+
+  it('removes a recorded key with no session in this process: its session folder and its record deleted, the key no longer listed', async () => {
+    await open({ records: [RECORDED] });
+
+    await expect(units.remove(KEY)).resolves.toEqual({ action: 'removed' });
+    expect(foldersRemoved).toEqual([KEY]);
+    expect(recordOf()).toBeUndefined();
+    expect(units.list()).toEqual([]);
+    expect(signals).toEqual([]);
+  });
+
+  it('removes a key whose session ended in this process: the sessions core no longer knows it either', async () => {
+    await open();
+    await started();
+    await exits();
+
+    await expect(units.remove(KEY)).resolves.toEqual({ action: 'removed' });
+    expect(units.list()).toEqual([]);
+    expect(sessions.list()).toEqual([]);
+    expect(sessions.session(KEY)).toBeUndefined();
+    expect(sessions.conversationOf(KEY)).toBeUndefined();
+  });
+
+  it('ends an `idle` session as the app asked, no key pressed, then removes it: no task stopped, none given', async () => {
+    await open();
+    await started();
+    idle();
+
+    await expect(removed()).resolves.toEqual({ action: 'removed' });
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+    expect(host.writes).toEqual([]);
+    expect(foldersRemoved).toEqual([KEY]);
+    expect(units.list()).toEqual([]);
+  });
+
+  it('gives the background tasks the end stopped', async () => {
+    await open();
+    await started();
+    hook('/turn-ended-with-a-task');
+
+    await expect(removed()).resolves.toEqual({
+      action: 'removed',
+      stoppedTasks: [{ id: 'a1', type: 'general-purpose' }],
+    });
+  });
+
+  it('interrupts a `busy` session’s turn before it ends it, then removes it', async () => {
+    await open();
+    await started();
+
+    const removing = pending(units.remove(KEY));
+    await settle();
+    expect(host.writes).toEqual([`${KEY} Escape`]);
+    expect(signals).toEqual([]);
+    driver.follows.at(-1)?.report([{ type: 'interrupted' }]);
+    await listHost();
+
+    await expect(removing).resolves.toEqual({ action: 'removed' });
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+    expect(units.list()).toEqual([]);
+  });
+
+  describe('a session parked behind a start-up dialog', () => {
+    async function parkedBehindADialog(): Promise<{ ran: Promise<RunResult> }> {
+      driver.promptFitsLaunch = () => false;
+      longPrompt = 'A long prompt.';
+      const ran = pending(units.run('long', { file: 'a' }));
+      await settle();
+      host.show(KEY, stubScreen('trust-folder'));
+      await vi.advanceTimersByTimeAsync(300);
+      // In an object: a promise returned as it is would be awaited with the run.
+      return { ran };
+    }
+
+    it('is ended at once on `waiting`, no key pressed, then removed: the parked run records nothing after', async () => {
+      await open();
+      const { ran } = await parkedBehindADialog();
+      expect(sessionOf()?.state).toBe('waiting');
+
+      await expect(removed()).resolves.toEqual({ action: 'removed' });
+      await expect(ran).resolves.toEqual({ action: 'started', state: 'ended' });
+      await settle();
+      expect(host.writes).toEqual([]);
+      expect(recordOf()).toBeUndefined();
+      expect(units.list()).toEqual([]);
+    });
+
+    it('is refused `wrong-state` while the prompt is typed past the dialog, `starting`: nothing ended or deleted', async () => {
+      await open();
+      const { ran } = await parkedBehindADialog();
+      host.show(KEY, stubScreen('input-box'));
+      hook('/ready');
+      await settle();
+
+      await expect(units.remove(KEY)).rejects.toMatchObject({
+        code: 'wrong-state',
+        state: 'starting',
+      });
+      expect(signals).toEqual([]);
+      expect(foldersRemoved).toEqual([]);
+      expect(recordOf()).toBeDefined();
+      hook(`${PROMPT_PATH}A long prompt.`);
+      await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+    });
+  });
+
+  it('tells its followers the session ended, then, once, that the key is gone', async () => {
+    await open();
+    await started();
+    idle();
+    const seen: string[][] = [];
+    units.follow((list) => seen.push(list.map((session) => `${session.key} ${session.state}`)));
+
+    await removed();
+
+    expect(seen).toEqual([[`${KEY} idle`], [`${KEY} ended`], []]);
+  });
+
+  it('makes a run asked after it start a new conversation: `started`, with no earlier one', async () => {
+    await open();
+    await started();
+    idle();
+    const first = driver.launches[0]?.conversationId;
+
+    const removing = pending(units.remove(KEY));
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await listHost();
+    await expect(removing).resolves.toEqual({ action: 'removed' });
+    await settle();
+    hook('/start-and-take');
+
+    await expect(ran).resolves.toEqual({ action: 'started', state: 'busy' });
+    expect(driver.launches[1]).not.toHaveProperty('resume');
+    expect(driver.launches[1]?.conversationId).not.toBe(first);
+    expect(recordOf()).toMatchObject({
+      conversationId: driver.launches[1]?.conversationId,
+      earlierConversations: [],
+      history: [{ operation: 'run', action: 'started' }],
+    });
+  });
+
+  it('writes no record for a hook of the removed session that comes late', async () => {
+    await open();
+    await started();
+    idle();
+    await removed();
+    const puts = records.puts;
+
+    hook('/turn-ended');
+    hook(`${CONVERSATION_PATH}c-late`);
+    await settle();
+
+    expect(records.puts).toBe(puts);
+    expect(recordOf()).toBeUndefined();
+    expect(units.list()).toEqual([]);
+  });
+
+  it('writes no record for an entry of the removed session’s transcript that comes late', async () => {
+    await open();
+    await started();
+    idle();
+    await removed();
+    const puts = records.puts;
+
+    driver.follows.at(-1)?.report([{ type: 'conversation', conversationId: 'c-late' }]);
+    driver.follows.at(-1)?.report([{ type: 'turn-ended', lastMessage: 'Late.' }]);
+    await settle();
+
+    expect(records.puts).toBe(puts);
+    expect(recordOf()).toBeUndefined();
+    expect(units.list()).toEqual([]);
+  });
+
+  it('writes no record for a conversation move told while it runs: the move, queued after it, finds no record', async () => {
+    await open();
+    await started();
+    const puts = records.puts;
+
+    const removing = pending(units.remove(KEY));
+    await settle();
+    hook(`${CONVERSATION_PATH}c-cleared`);
+    driver.follows.at(-1)?.report([{ type: 'interrupted' }]);
+    await listHost();
+    await expect(removing).resolves.toEqual({ action: 'removed' });
+    await settle();
+
+    expect(records.puts).toBe(puts);
+    expect(recordOf()).toBeUndefined();
+  });
+
+  it('leaves no record of a conversation move queued before it', async () => {
+    await open();
+    await started();
+    idle();
+    exitOnSignal = false;
+
+    const ended = pending(units.end(KEY));
+    await settle();
+    hook(`${CONVERSATION_PATH}c-cleared`);
+    const removing = pending(units.remove(KEY));
+    await exits();
+    await expect(ended).resolves.toMatchObject({ action: 'ended' });
+
+    await expect(removing).resolves.toEqual({ action: 'removed' });
+    await settle();
+    expect(recordOf()).toBeUndefined();
+    expect(units.list()).toEqual([]);
+  });
+
+  it('ends a session a terminal is attached to all the same: the terminal’s end comes with the session’s', async () => {
+    await open();
+    await started();
+    idle();
+    host.attachTerminals(KEY, 1);
+    expect(await sessions.attach(KEY, { columns: 80, rows: 24 })).toBeDefined();
+
+    await expect(removed()).resolves.toEqual({ action: 'removed' });
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+    await expect(host.isLive(KEY)).resolves.toBe(false);
+  });
+
+  it('rejects with the host’s own failure when the kill fails: the session left live, its record and folder kept', async () => {
+    await open();
+    await started();
+    idle();
+    exitOnSignal = false;
+    const failure = new SessionHostError('host-failed', 'tmux failed.');
+    host.failNextKill(failure);
+
+    const failed = pending(units.remove(KEY));
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+
+    await expect(failed).rejects.toBe(failure);
+    expect(sessionOf()?.state).toBe('idle');
+    expect(recordOf()).toBeDefined();
+    expect(foldersRemoved).toEqual([]);
+  });
+
+  it('rejects with the file system’s error when a deletion fails, the key kept `ended`; a remove asked again finishes', async () => {
+    await open();
+    await started();
+    idle();
+    const failure = Object.assign(new Error('Permission denied.'), { code: 'EACCES' });
+    folderRemovalFailure = failure;
+
+    await expect(removed()).rejects.toBe(failure);
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'app' });
+    expect(recordOf()).toBeDefined();
+
+    await expect(units.remove(KEY)).resolves.toEqual({ action: 'removed' });
+    expect(foldersRemoved).toEqual([KEY]);
+    expect(units.list()).toEqual([]);
+  });
+
+  it('is refused once the units of work are closed: nothing signalled or deleted', async () => {
+    await open();
+    await started();
+    idle();
+    void units.close();
+
+    await expect(units.remove(KEY)).rejects.toBeInstanceOf(SessionsClosedError);
+    expect(signals).toEqual([]);
+    expect(foldersRemoved).toEqual([]);
+  });
+
+  it('deletes nothing once the units of work are closed while it ends the session', async () => {
+    await open();
+    await started();
+    idle();
+    exitOnSignal = false;
+
+    const removing = pending(units.remove(KEY));
+    await settle();
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+    void units.close();
+    await exits();
+
+    await expect(removing).rejects.toBeInstanceOf(SessionsClosedError);
+    expect(foldersRemoved).toEqual([]);
+    expect(recordOf()).toBeDefined();
   });
 });
 

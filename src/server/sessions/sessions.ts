@@ -328,6 +328,18 @@ export interface Sessions {
    */
   interrupt(key: string): Promise<InterruptResult>;
   /**
+   * Forgets a key whose session ended, as a unit of work removed: it is no
+   * longer listed, and its conversation is unknown, so that its next launch
+   * replaces nothing and follows on from no conversation. Its followers are
+   * told when there was a session to forget.
+   *
+   * @param key - The key.
+   * @returns Whether the core had a session of the key to forget.
+   * @throws `CockpitError` `wrong-state` with the session's state when it
+   * has not ended: a live session is never forgotten while it runs.
+   */
+  forget(key: string): boolean;
+  /**
    * The session of a key, as it is now.
    *
    * @param key - The key.
@@ -668,6 +680,15 @@ class SessionRegistry implements Sessions {
 
   firstPrompt(key: string): Promise<Session> | undefined {
     return this.#entries.get(key)?.firstPrompt.typed;
+  }
+
+  forget(key: string): boolean {
+    const entry = this.#entries.get(key);
+    if (entry === undefined) return false;
+    if (!entry.lifecycle.isEnded) throw wrongState(entry.session);
+    this.#entries.delete(key);
+    this.#notify();
+    return true;
   }
 
   session(key: string): Session | undefined {

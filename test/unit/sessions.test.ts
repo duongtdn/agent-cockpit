@@ -1681,6 +1681,48 @@ describe('a terminal attached to a session', () => {
   });
 });
 
+describe('forgetting a key', () => {
+  async function ended(): Promise<void> {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+    host.exit(KEY);
+    await vi.advanceTimersByTimeAsync(LIVENESS_INTERVAL_MS);
+  }
+
+  it('drops an ended session: no longer listed, its conversation unknown, its followers told once', async () => {
+    await ended();
+    const seen: Session[][] = [];
+    sessions.follow((list) => seen.push([...list]));
+
+    expect(sessions.forget(KEY)).toBe(true);
+
+    expect(sessions.list()).toEqual([]);
+    expect(sessions.session(KEY)).toBeUndefined();
+    expect(sessions.conversationOf(KEY)).toBeUndefined();
+    expect(seen.slice(1)).toEqual([[]]);
+  });
+
+  it('has nothing to forget for a key it launched no session for: no follower told', () => {
+    const seen: Session[][] = [];
+    sessions.follow((list) => seen.push([...list]));
+
+    expect(sessions.forget(KEY)).toBe(false);
+    expect(seen).toEqual([[]]);
+  });
+
+  it('refuses a live session `wrong-state`: it stays listed', async () => {
+    const { result } = await launched();
+    hook('/prompt-taken');
+    await result;
+
+    expect(() => sessions.forget(KEY)).toThrow(
+      expect.objectContaining({ code: 'wrong-state', state: 'busy' }),
+    );
+    expect(sessionOf()?.state).toBe('busy');
+  });
+});
+
 describe('following the sessions', () => {
   it('gives the list at once, then the whole list at every change, until stopped', async () => {
     const seen: Session[][] = [];

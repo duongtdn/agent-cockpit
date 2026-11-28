@@ -1,9 +1,9 @@
 /**
- * The units of work: what a run, a send, an open, an interrupt and an end do in each state of a
- * key's session, on top of the sessions core — the conversation resumed
- * or started anew, a live session ended first, a prompt typed, the cap on
- * live sessions — and the records that keep each key's conversations,
- * history, folder and launch settings.
+ * The units of work: what a run, a send, an open, an interrupt, an end and
+ * a remove do in each state of a key's session, on top of the sessions
+ * core — the conversation resumed or started anew, a live session ended
+ * first, a prompt typed, the cap on live sessions — and the records that
+ * keep each key's conversations, history, folder and launch settings.
  *
  * @packageDocumentation
  */
@@ -20,6 +20,7 @@ import type {
   InterruptResult,
   OpenOptions,
   OpenResult,
+  RemoveResult,
   RunOptions,
   RunResult,
   SendResult,
@@ -30,10 +31,11 @@ import type { Driver, DriverSettings } from '../driver.js';
 import { checkRecordedFolder, type JobFolder } from '../job-folders.js';
 import { refuseUnfitPrompt } from '../prompt-length.js';
 import type { RecordStore, UnitRecord } from '../state/records.js';
+import { removeUnitFiles } from '../state/unit-files.js';
 import { Followers } from './followers.js';
 import type { JobRun, JobRuns } from './job-runs.js';
 import { type FreeTurn, KeyQueue } from './key-queue.js';
-import { type Sessions, SessionsClosedError, wrongState } from './sessions.js';
+import { type SessionFolders, type Sessions, SessionsClosedError, wrongState } from './sessions.js';
 
 /** What the units of work work with. */
 export interface UnitsOfWorkOptions {
@@ -50,6 +52,8 @@ export interface UnitsOfWorkOptions {
    * given it: where the agent keeps its conversations may follow from it.
    */
   readonly environment: () => Readonly<Record<string, string>>;
+  /** The sessions' folders, which a remove deletes with the key's record. */
+  readonly folders: Pick<SessionFolders, 'remove'>;
   /**
    * The most sessions live at once; no cap when left out. At the cap, a
    * start ends the `idle` session idle longest that has no background
@@ -183,6 +187,37 @@ export interface UnitsOfWork {
    */
   end(key: string): Promise<EndResult>;
   /**
+   * Removes a unit of work, once the operations asked before it on the key
+   * settled: what the cockpit wrote for it — its session's folder, then its
+   * record — deleted, and the key forgotten. The key is unknown from then
+   * on: it is no longer listed, and its next run starts a new
+   * conversation. The agent's own files, its transcripts, are left where
+   * the agent keeps them.
+   *
+   * | State | Remove |
+   * |---|---|
+   * | no record | Nothing to remove. |
+   * | `starting` | Refused `wrong-state`. |
+   * | `idle`, `busy`, `waiting` | Ended first as `end` ends it (`reason: 'app'`), then removed. |
+   * | `ended` | Removed. |
+   *
+   * A remove that fails keeps the key's record: the key stays known, and a
+   * remove asked again finishes.
+   *
+   * @param key - The unit of work's key.
+   * @returns `removed`, with the background tasks stopped with the session
+   * ended first, absent when none ran; `nothing-to-remove` for a key with
+   * no record.
+   * @throws `CockpitError` `wrong-state` on `starting`.
+   * @throws `SessionHostError` when the host cannot kill the session, as
+   * `end` throws it: the session is left live, its record kept.
+   * @throws The file system's error when a file cannot be deleted: the
+   * session ended, its record kept.
+   * @throws `SessionsClosedError` once the units of work or the core are
+   * closed first, or are closed before anything is deleted.
+   */
+  remove(key: string): Promise<RemoveResult>;
+  /**
    * Lists the units of work: each recorded key's session with its record,
    * `ended` when no session of this process lives, in the order the keys
    * were first recorded; then any session not recorded yet.
@@ -207,8 +242,9 @@ export interface UnitsOfWork {
    * and writes no record from now on. The sessions core is no longer
    * followed, and no follower is told anything more.
    *
-   * @returns A promise fulfilled once every record write under way is
-   * done, whatever its outcome: none is written after it.
+   * @returns A promise fulfilled once every write of a record, and every
+   * deletion of a key's files, under way is done, whatever its outcome:
+   * none is made after it.
    */
   close(): Promise<void>;
 }
@@ -315,7 +351,7 @@ class Units implements UnitsOfWork {
   readonly #admissions = new KeyQueue(this.#closing.signal, closedRefusal);
   readonly #followers = new Followers();
   readonly #stops: (() => void)[];
-  /** The record writes under way, each settled whatever its outcome: what the close waits for. */
+  /** The writes of the state folder under way, each settled whatever its outcome: what the close waits for. */
   readonly #writes = new Set<Promise<void>>();
 
   constructor(options: UnitsOfWorkOptions, loaded: Map<string, EndedSession>) {
@@ -375,6 +411,23 @@ class Units implements UnitsOfWork {
     return this.#sessions.interruptAndEnd(key, 'app');
   }
 
+  async remove(key: string): Promise<RemoveResult> {
+    return this.#queue.run(key, () => this.#remove(key));
+  }
+
+  async #remove(key: string): Promise<RemoveResult> {
+    if (this.#records.get(key) === undefined) return { action: 'nothing-to-remove' };
+    const end = await this.#sessions.interruptAndEnd(key, 'app');
+    await this.#tracked(key, () =>
+      removeUnitFiles(key, { records: this.#records, folders: this.#options.folders }),
+    );
+    this.#loaded.delete(key);
+    // The core tells its followers, these units of work among them, when it forgets a session.
+    if (!this.#sessions.forget(key)) this.#notify();
+    const stoppedTasks = end.action === 'ended' ? end.stoppedTasks : [];
+    return { action: 'removed', ...(stoppedTasks.length === 0 ? {} : { stoppedTasks }) };
+  }
+
   /** The state of a key with no session in this process: `ended` when it is recorded, none when not. */
   #recordedState(key: string): { state?: SessionState } {
     const record = this.#records.get(key);
@@ -401,14 +454,20 @@ class Units implements UnitsOfWork {
     return Promise.all(this.#writes).then(() => undefined);
   }
 
-  /**
-   * Writes a key's record, unless the units of work are closed: the app's
-   * lock is released once the close settles, and the records' folder may
-   * be another process's then.
-   */
+  /** Writes a key's record, as every write of the state folder is made: see {@link #tracked}. */
   async #write(record: UnitRecord): Promise<void> {
-    this.#refuseIfClosed(record.key);
-    const written = this.#records.put(record);
+    await this.#tracked(record.key, () => this.#records.put(record));
+  }
+
+  /**
+   * Makes a write of the key's files in the state folder — a record put,
+   * the key's files deleted — unless the units of work are closed, and keeps
+   * it for the close to wait for: the app's lock is released once the close
+   * settles, and the state folder may be another process's then.
+   */
+  async #tracked(key: string, write: () => Promise<void>): Promise<void> {
+    this.#refuseIfClosed(key);
+    const written = write();
     const settled = written.catch(() => undefined);
     this.#writes.add(settled);
     void settled.then(() => this.#writes.delete(settled));
