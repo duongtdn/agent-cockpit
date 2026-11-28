@@ -187,7 +187,8 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   prompt left in the box; 133 a draft kept exact, the marker; 134 `end`
   mid-reply keeping the partial answer and the marker, resumed with both;
   135 `end` at the trust dialog: no key, `app`, not `declined`; 136 a
-  permission dialog shown in the terminal interrupted, the tool not run),
+  permission dialog shown in the terminal alone, in `plan`, interrupted, the
+  tool not run),
   `clear` (93, `/clear`'s new
   conversation followed), `tasks` (15 a background
   subagent and its `<task-notification>` turn, 62 and 73 its hooks'

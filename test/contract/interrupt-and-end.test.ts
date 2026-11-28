@@ -255,9 +255,13 @@ it('135 — cockpit.end on a session waiting at the trust dialog: no key pressed
   expect(cockpit.hooksRead).toEqual([]);
 });
 
-it('136 — cockpit.interrupt while a permission dialog shows in the terminal (no PermissionRequest hook: the session busy): interrupted, the marker for tool use, the tool never run', async () => {
+// In default mode the dialog comes with a PermissionRequest, which the cockpit registers: an ask
+// held or answered through its hook is row 145's. Here, the dialog no hook holds: plan mode, behind
+// an endpoint that does not pass the agent's server-side check (the scripted API), asks the command
+// in the terminal alone. What the session shows meanwhile is the core's, not this row's.
+it('136 — cockpit.interrupt while a permission dialog shows in the terminal alone (plan mode behind an endpoint that does not pass the server-side check: no PermissionRequest): interrupted, the marker for tool use, the tool never run', async () => {
   const made = 'made-by-the-tool';
-  const cockpit = await startContractCockpit();
+  const cockpit = await startContractCockpit({ driver: { permissionMode: 'plan' } });
   cockpit.api.script(
     turn(toolUse('Bash', { command: `touch ${made}`, description: 'Make a file' })),
     NEXT_ANSWER,
@@ -265,7 +269,6 @@ it('136 — cockpit.interrupt while a permission dialog shows in the terminal (n
   await cockpit.say('make the file');
   const session = cockpit.terminal(SAID_KEY);
   await untilShown(session, (screen) => expect(screen).toContain(PERMISSION_DIALOG));
-  const before = cockpit.cockpit.sessions.list().find((listed) => listed.key === SAID_KEY);
 
   const interrupted = await cockpit.interrupt(SAID_KEY);
   const markers = markersIn(session);
@@ -278,7 +281,6 @@ it('136 — cockpit.interrupt while a permission dialog shows in the terminal (n
   await sentAndAnswered(cockpit, NEXT_PROMPT);
   const events = cockpit.hooksRead.map((request) => request.body as HookPayload);
 
-  expect(before?.state).toBe('busy');
   expect(interrupted).toEqual({ action: 'interrupted', state: 'idle' });
   expect(markers).toEqual([INTERRUPTED_FOR_TOOL_USE]);
   expect(events.filter((hook) => hook.hook_event_name === 'PermissionRequest')).toEqual([]);

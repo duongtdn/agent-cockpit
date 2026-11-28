@@ -84,6 +84,7 @@ it("72 — --setting-sources leaves out each omitted source's settings and, with
     'UserPromptSubmit',
     'PreToolUse',
     'PostToolUse',
+    'PostToolBatch',
     'Stop',
   ]);
   expect(both.cockpit.launches[0]?.args).toEqual(
