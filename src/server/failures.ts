@@ -29,7 +29,6 @@ const MESSAGES: Readonly<Record<FailureSite, string>> = {
   handler: "The cockpit's handler failed while serving a browser's request: it answered 500.",
   authorize: "The app's authorize threw or rejected: the request was refused.",
   'agent-listener': 'The agent-facing listener failed while serving a hook: it answered 500.',
-  asks: "An app's handler of the asks threw: the others were told all the same, and it stays subscribed.",
 };
 
 /**

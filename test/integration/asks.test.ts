@@ -161,11 +161,13 @@ describe("the agent's permission, through the assembled cockpit", () => {
     expect(await settled).toEqual({ id: ask.id, key: KEY, by });
   });
 
-  it("reaches the app's error handlers with what a follower or a settled handler threw", async () => {
+  it("sends what a follower or a settled handler threw to the console, as the sessions' followers' throws, not to the app's error handlers", async () => {
     const start = await started();
     const { cockpit } = start;
     const failures: unknown[] = [];
     cockpit.on('error', (error) => failures.push(error));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    cleanups.push(async () => consoleError.mockRestore());
     const followerBroke = new Error('the follower broke');
     const handlerBroke = new Error('the settled handler broke');
     cockpit.asks.follow(KEY, () => {
@@ -178,13 +180,11 @@ describe("the agent's permission, through the assembled cockpit", () => {
 
     await cockpit.asks.answer(ask.id, { allow: true });
 
-    expect(failures).toEqual([
-      expect.objectContaining({ code: 'internal-failure', where: 'asks', cause: followerBroke }),
-      expect.objectContaining({ code: 'internal-failure', where: 'asks', cause: handlerBroke }),
-    ]);
+    expect(consoleError.mock.calls).toEqual([[followerBroke], [handlerBroke]]);
+    expect(failures).toEqual([]);
   });
 
-  it('is let go as the cockpit closes: the held hook dropped, nobody told, a later answer refused', async () => {
+  it('is let go as the cockpit closes: the close not kept waiting by the held hook, which the listener dropped, nobody told, a later answer refused', async () => {
     const start = await started();
     const { cockpit } = start;
     const ask = await asking(start);

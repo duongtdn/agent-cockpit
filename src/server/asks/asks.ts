@@ -27,8 +27,11 @@ export type SettledByAgent = Exclude<AskSettled['by'], 'app'>;
 export interface AsksOptions {
   /** The time now: an ask's `since`. */
   readonly clock: () => Date;
-  /** Receives what a follower or a `settled` handler throws: the cockpit's `on('error')` path. */
-  readonly handlerThrew: (thrown: unknown) => void;
+  /**
+   * Receives what a follower or a `settled` handler throws: the console, by
+   * default, as what the sessions' followers throw.
+   */
+  readonly handlerThrew?: (thrown: unknown) => void;
 }
 
 /**
@@ -70,7 +73,8 @@ interface Follower {
  * {@link AnswerHandOff}.
  */
 export class Asks {
-  readonly #options: AsksOptions;
+  readonly #clock: () => Date;
+  readonly #handlerThrew: (thrown: unknown) => void;
   /** In the order the asks opened: a Map keeps its insertion order, and a replaced value its place. */
   readonly #pending = new Map<string, PendingAsk>();
   /** In the order the asks settled. */
@@ -83,7 +87,8 @@ export class Asks {
 
   /** @param options - The clock and the sink of what handlers throw. */
   constructor(options: AsksOptions) {
-    this.#options = options;
+    this.#clock = options.clock;
+    this.#handlerThrew = options.handlerThrew ?? ((thrown) => console.error(thrown));
   }
 
   /**
@@ -101,7 +106,7 @@ export class Asks {
       key,
       ...content,
       answerable: answering.answerable,
-      since: this.#options.clock().toISOString(),
+      since: this.#clock().toISOString(),
     };
     this.#pending.set(ask.id, { ask, answering });
     this.#tellFollowers(ask);
@@ -317,7 +322,7 @@ export class Asks {
     try {
       handler(value);
     } catch (thrown) {
-      this.#options.handlerThrew(thrown);
+      this.#handlerThrew(thrown);
     }
   }
 }

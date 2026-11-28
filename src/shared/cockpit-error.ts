@@ -197,17 +197,16 @@ export interface CockpitErrorFields {
   /** The server cannot be reached. */
   unreachable: Record<never, never>;
   /**
-   * A failure inside the cockpit, or in a function of the app's it calls:
-   * never sent on the wire, given to the app's `error` handlers. `cause` is
-   * what was thrown.
+   * A failure inside the cockpit, or in a function of the app's it calls,
+   * while it served a request: never sent on the wire, given to the app's
+   * `error` handlers. `cause` is what was thrown.
    */
   'internal-failure': {
     /**
-     * Where: the browser-facing handler, the app's `authorize`, the
-     * agent-facing listener, or an app's handler of the asks
-     * (`asks.follow`'s, `asks.on('settled')`'s).
+     * Where: the browser-facing handler, the app's `authorize`, or the
+     * agent-facing listener.
      */
-    where: 'handler' | 'authorize' | 'agent-listener' | 'asks';
+    where: 'handler' | 'authorize' | 'agent-listener';
   };
 }
 

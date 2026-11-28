@@ -317,7 +317,7 @@ export interface Cockpit {
      *
      * @param key - The unit of work's key, or `'*'` for every one.
      * @param handler - Receives each ask; what it throws goes to
-     * `on('error')`, and it stays subscribed.
+     * `console.error`, and it stays subscribed.
      * @returns A function that stops following.
      */
     follow(key: string, handler: (ask: Ask) => void): () => void;
@@ -343,7 +343,7 @@ export interface Cockpit {
      *
      * @param event - `'settled'`.
      * @param handler - Receives the ask's id, its key and what settled it;
-     * what it throws goes to `on('error')`.
+     * what it throws goes to `console.error`, and the others are still told.
      * @returns A function that removes the handler.
      * @throws `TypeError` for an event the asks do not have.
      */
@@ -375,9 +375,7 @@ export interface Cockpit {
    * Tells the app of a failure the browser or the agent is not told of: the
    * handler's own (it answered 500), an `authorize` that threw or rejected
    * (the request was refused), the agent-facing listener's (it answered
-   * 500), what an `asks.follow` or `asks.on('settled')` handler threw (the
-   * others told all the same). Each is an `internal-failure` whose `cause`
-   * is what was thrown.
+   * 500). Each is an `internal-failure` whose `cause` is what was thrown.
    * While the app has no handler, they go to `console.error`.
    *
    * @param event - `'error'`.
@@ -520,10 +518,7 @@ async function openCockpit(
     const appPorts = createAppPorts(checked.ports);
     // The core holds a key while it types a prompt; the pty bridge's terminals join it.
     const holds = createTerminalHolds();
-    const asks = new Asks({
-      clock: () => new Date(),
-      handlerThrew: (thrown) => failures.report('asks', thrown),
-    });
+    const asks = new Asks({ clock: () => new Date() });
     const sessions = createSessions({
       host,
       driver: checked.driver,
