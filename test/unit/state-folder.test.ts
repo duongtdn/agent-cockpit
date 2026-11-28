@@ -3,6 +3,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -12,7 +14,11 @@ import { homedir, tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UntrustedStateError } from '../../src/server/state/own-files.ts';
-import { openStateFolder, stateFolderPath } from '../../src/server/state/state-folder.ts';
+import {
+  openStateFolder,
+  type StateFolder,
+  stateFolderPath,
+} from '../../src/server/state/state-folder.ts';
 
 const modeOf = (path: string) => statSync(path).mode & 0o777;
 
@@ -444,5 +450,85 @@ describe('openStateFolder', () => {
         await expect(folder.sessions.prepare(key)).rejects.toThrow(TypeError);
       },
     );
+  });
+
+  describe('removing a session’s folder', () => {
+    /** A session's folder holding what the driver writes in it, both files carrying its hook token. */
+    async function preparedWithSettings(folder: StateFolder, key: string): Promise<string> {
+      const path = await folder.sessions.prepare(key);
+      writeFileSync(join(path, 'settings.json'), '{"token":"secret"}', { mode: 0o600 });
+      writeFileSync(join(path, 'hook-address.json'), '{"token":"secret"}', { mode: 0o600 });
+      return path;
+    }
+
+    it('deletes the key’s folder and all it holds, and nothing of another key or beside it', async () => {
+      const folder = await openStateFolder(join(root, 'my-app'));
+      const removed = await preparedWithSettings(folder, 'a');
+      mkdirSync(join(removed, 'nested'));
+      writeFileSync(join(removed, 'nested/file'), '');
+      const kept = await preparedWithSettings(folder, 'b');
+      const transcripts = join(root, 'claude-config/projects/p');
+      mkdirSync(transcripts, { recursive: true });
+      writeFileSync(join(transcripts, 'conversation.jsonl'), 'the agent’s');
+
+      await folder.sessions.remove('a');
+
+      expect(existsSync(removed)).toBe(false);
+      expect(readdirSync(kept).sort()).toEqual(['hook-address.json', 'settings.json']);
+      expect(readFileSync(join(transcripts, 'conversation.jsonl'), 'utf8')).toBe('the agent’s');
+      expect(statSync(join(root, 'my-app/sessions')).isDirectory()).toBe(true);
+    });
+
+    it('does nothing for a key that has no folder', async () => {
+      const folder = await openStateFolder(join(root, 'my-app'));
+      await folder.sessions.remove('never-prepared');
+      expect(readdirSync(join(root, 'my-app/sessions'))).toEqual([]);
+    });
+
+    it('removes a symbolic link planted in the folder, never what it leads to', async () => {
+      const folder = await openStateFolder(join(root, 'my-app'));
+      const path = await preparedWithSettings(folder, 'a');
+      const outside = outsideFolder();
+      symlinkSync(outside, join(path, 'to-a-folder'));
+      symlinkSync(join(outside, 'file'), join(path, 'to-a-file'));
+
+      await folder.sessions.remove('a');
+
+      expect(existsSync(path)).toBe(false);
+      expect(readFileSync(join(outside, 'file'), 'utf8')).toBe('not the cockpit’s');
+    });
+
+    it('removes a symbolic link put in place of the folder, never what it leads to', async () => {
+      const folder = await openStateFolder(join(root, 'my-app'));
+      const outside = outsideFolder();
+      const path = join(root, 'my-app/sessions/a');
+      symlinkSync(outside, path);
+
+      await folder.sessions.remove('a');
+
+      expect(existsSync(path)).toBe(false);
+      expect(readFileSync(join(outside, 'file'), 'utf8')).toBe('not the cockpit’s');
+    });
+
+    it.each(['', '.', '..', '../..', 'a/b', 'A', '.hidden'])(
+      'refuses %j, which is no session key, and deletes nothing',
+      async (key) => {
+        const folder = await openStateFolder(join(root, 'my-app'));
+        await preparedWithSettings(folder, 'a');
+        await expect(folder.sessions.remove(key)).rejects.toThrow(TypeError);
+        expect(readdirSync(join(root, 'my-app/sessions/a')).sort()).toEqual([
+          'hook-address.json',
+          'settings.json',
+        ]);
+      },
+    );
+
+    /** A folder outside the state folder holding a file of someone else's. */
+    function outsideFolder(): string {
+      const outside = join(root, 'outside');
+      mkdirSync(outside);
+      writeFileSync(join(outside, 'file'), 'not the cockpit’s');
+      return outside;
+    }
   });
 });

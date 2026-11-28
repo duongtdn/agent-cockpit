@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isSessionKey } from '../../shared/session.js';
@@ -12,12 +13,28 @@ const COCKPIT_FOLDER = 'agent-cockpit';
 /** The folder of the state folder that holds a folder per session. */
 const SESSIONS_FOLDER = 'sessions';
 
+/** The sessions' folders in the state folder, which the cockpit also deletes. */
+export interface RemovableSessionFolders extends SessionFolders {
+  /**
+   * Deletes a session's folder and all it holds — the files the driver
+   * wrote there, its hook token among them. A symbolic link in it, or in its
+   * place, is deleted as a link: what it leads to is left as it is. Nothing
+   * to do when the key has no folder.
+   *
+   * @param key - The session's key.
+   * @throws `TypeError` when the key is not of the form `[a-z0-9-]+`: its
+   * folder could lie outside the sessions' folder, and nothing is deleted.
+   * The file system's error when the folder cannot be deleted whole.
+   */
+  remove(key: string): Promise<void>;
+}
+
 /** The app's state folder, open. */
 export interface StateFolder {
   /** Its absolute path. */
   readonly path: string;
   /** The sessions' folders in it. */
-  readonly sessions: SessionFolders;
+  readonly sessions: RemovableSessionFolders;
 }
 
 /**
@@ -89,12 +106,25 @@ export async function openStateFolder(
     path,
     sessions: {
       async prepare(key) {
-        // A key holds no `/` or `.`, so its folder never leaves the sessions' folder.
-        if (!isSessionKey(key)) throw new TypeError(`${JSON.stringify(key)} is no session key.`);
-        const folder = join(sessions, key);
+        const folder = sessionFolderOf(sessions, key);
         await openOwnFolder(folder);
         return folder;
       },
+      async remove(key) {
+        // `rm` deletes a link as a link, at the top as below it: nothing is followed out.
+        await rm(sessionFolderOf(sessions, key), { recursive: true, force: true });
+      },
     },
   };
+}
+
+/**
+ * The folder of a session's key in the sessions' folder.
+ *
+ * @throws `TypeError` when the key is no session key.
+ */
+function sessionFolderOf(sessions: string, key: string): string {
+  // A key holds no `/` or `.`, so its folder never leaves the sessions' folder.
+  if (!isSessionKey(key)) throw new TypeError(`${JSON.stringify(key)} is no session key.`);
+  return join(sessions, key);
 }
