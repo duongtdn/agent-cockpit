@@ -2243,6 +2243,33 @@ describe('the idle timeout', () => {
 
     expect(signals).toEqual([`${KEY} SIGTERM`]);
   });
+
+  it('starts no session on the key while the kill of the one it ended is still out, though that one went: a fresh run’s prompt is typed only into the new one, once the kill settled', async () => {
+    await idleSession();
+    exitOnSignal = false;
+    const kill = host.holdNextKill();
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS + driver.ending.boundMs);
+    expect(host.kills).toEqual([]);
+    await exits();
+    driver.promptFitsLaunch = () => false;
+    longPrompt = 'A long prompt.';
+
+    const ran = pending(units.run('long', { file: 'a' }, { fresh: true }));
+    await settle();
+    hook('/ready');
+    await settle();
+
+    expect(host.starts).toHaveLength(1);
+    expect(host.writes.filter((write) => write.includes('A long prompt.'))).toEqual([]);
+    kill.open();
+    await settle();
+    expect(host.starts).toHaveLength(2);
+    host.show(KEY, stubScreen('input-box'));
+    hook('/ready');
+    await settle();
+    hook(`${PROMPT_PATH}A long prompt.`);
+    await expect(ran).resolves.toMatchObject({ action: 'started', state: 'busy' });
+  });
 });
 
 describe('the records of the units of work', () => {

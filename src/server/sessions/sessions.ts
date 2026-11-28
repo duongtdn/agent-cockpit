@@ -528,6 +528,8 @@ interface Entry {
   readonly stopFollowingLeft: (() => void)[];
   /** Its agent's asks still pending, by id: the call each is about, and its held hook. */
   readonly asks: Map<string, OpenAsk>;
+  /** The host's kill of the session while it is out: settled, whether it killed or failed. */
+  killOut?: Promise<unknown>;
 }
 
 /** An ask of a session's agent, pending, as the core keeps it. */
@@ -711,7 +713,7 @@ class SessionRegistry implements Sessions {
     if (!lifecycle.can('killing')) return lifecycle.ended;
     lifecycle.move('killing');
     try {
-      await this.#options.host.kill(entry.key);
+      await this.#killOnHost(entry);
     } catch (error) {
       // Gone meanwhile, the session ends all the same: the end did what it was asked.
       if (!lifecycle.can('live')) return lifecycle.ended;
@@ -721,6 +723,13 @@ class SessionRegistry implements Sessions {
       throw error;
     }
     await this.#gone(entry);
+  }
+
+  /** Kills the session on the host, the kill kept while it is out for the session's going to await. */
+  #killOnHost(entry: Entry): Promise<unknown> {
+    const killing = this.#options.host.kill(entry.key);
+    entry.killOut = killing.catch(() => undefined);
+    return killing;
   }
 
   async interrupt(key: string): Promise<InterruptResult> {
@@ -1246,7 +1255,7 @@ class SessionRegistry implements Sessions {
     // From here the run's outcome is `unobservable`: a late hook changes nothing.
     lifecycle.move('killing');
     try {
-      await this.#options.host.kill(entry.key);
+      await this.#killOnHost(entry);
     } catch (error) {
       // Still on the host, perhaps: the watch ends it when it goes.
       if (lifecycle.can('live')) lifecycle.move('live');
@@ -1276,6 +1285,8 @@ class SessionRegistry implements Sessions {
    */
   #gone(entry: Entry): Promise<void> {
     return entry.lifecycle.go(async () => {
+      // A kill still out acts on the key's name: a session launched before it settled could be the one it kills.
+      await entry.killOut;
       entry.stoppedTasks = tasksKnown(courseOf(entry));
       entry.firstPrompt.stop();
       stopReadingTheScreen(entry);
