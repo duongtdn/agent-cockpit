@@ -7,24 +7,27 @@ import {
   type AgentListener,
   openAgentListener,
 } from '../../src/server/agent-listener/agent-listener.ts';
+import type { Driver } from '../../src/server/driver.ts';
 import type { SessionHost } from '../../src/server/session-host/session-host.ts';
 import { createTmuxSessionHost } from '../../src/server/session-host/tmux-session-host.ts';
 import type { JobRun, JobRuns } from '../../src/server/sessions/job-runs.ts';
 import { createSessions, type Sessions } from '../../src/server/sessions/sessions.ts';
 import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/units-of-work.ts';
-import { openRecordStore } from '../../src/server/state/records.ts';
-import { openStateFolder } from '../../src/server/state/state-folder.ts';
+import { openRecordStore, type RecordStore } from '../../src/server/state/records.ts';
+import { openStateFolder, type StateFolder } from '../../src/server/state/state-folder.ts';
 import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
 import { writeAgentShim } from '../support/agent-shim.ts';
 import { eventually } from '../support/eventually.ts';
 import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
 import { writeScript } from '../support/fake-agent/script.ts';
 import { transcriptPathFor } from '../support/fake-agent/transcript.ts';
+import { PATIENCE } from '../support/patience.ts';
 
 /**
- * What only real files show of a remove, through the units of work, the
+ * What only real files and real tmux show of the units of work, through the
  * Claude Code driver and the fake agent in tmux: what the cockpit wrote for
- * the key deleted from disk, the agent's transcript left where it wrote it.
+ * a removed key deleted from disk, the agent's transcript left where it
+ * wrote it; a real tmux client holding an idle session past its timeout.
  */
 
 const KEY = 'explain-a';
@@ -35,7 +38,10 @@ let directory: string;
 let statePath: string;
 let host: SessionHost;
 let listener: AgentListener;
+let driver: Driver;
 let sessions: Sessions;
+let folder: StateFolder;
+let records: RecordStore;
 let units: UnitsOfWork;
 
 beforeAll(() => {
@@ -55,13 +61,13 @@ beforeEach(async () => {
   mkdirSync(directory, { recursive: true });
   statePath = join(root, 'state');
   host = createTmuxSessionHost({ appName: `units-${process.pid}-${Date.now()}` });
-  const folder = await openStateFolder(statePath);
+  folder = await openStateFolder(statePath);
   listener = await openAgentListener({
     folder: folder.path,
     receive: (request) => sessions.receive(request),
     reportFailure: () => {},
   });
-  const driver = claudeCode();
+  driver = claudeCode();
   sessions = createSessions({
     host,
     driver,
@@ -76,15 +82,22 @@ beforeEach(async () => {
     }),
     holds: createTerminalHolds(),
   });
-  units = await openUnitsOfWork({
+  records = await openRecordStore(folder.path);
+  units = await openUnits();
+});
+
+/** Opens the units of work on this test's core, records and folders. */
+function openUnits(options: { idleTimeoutMs?: number } = {}): Promise<UnitsOfWork> {
+  return openUnitsOfWork({
     sessions,
-    records: await openRecordStore(folder.path),
+    records,
     jobs: JOBS,
     driver,
     environment: serverEnvironment,
     folders: folder.sessions,
+    ...options,
   });
-});
+}
 
 afterEach(async () => {
   await units.close();
@@ -144,5 +157,36 @@ describe('a remove, on disk', () => {
     expect(existsSync(sessionFolder)).toBe(false);
     expect(existsSync(transcript)).toBe(true);
     expect(await host.list()).toEqual([]);
+  });
+});
+
+describe('the idle timeout, with a real tmux client attached', () => {
+  /** Short, so that the test waits two timeouts well within a condition's patience. */
+  const IDLE_TIMEOUT_MS = Math.round(PATIENCE.condition / 5);
+
+  it('holds the session while the client is attached, and ends it `idle-timeout` at the check after it detached', async () => {
+    await units.close();
+    units = await openUnits({ idleTimeoutMs: IDLE_TIMEOUT_MS });
+    const counts: number[] = [];
+    const countAttached = host.countAttached.bind(host);
+    host.countAttached = async (name) => {
+      const count = await countAttached(name);
+      counts.push(count);
+      return count;
+    };
+    writeScript(directory, [{ do: 'turn', reply: 'Done.' }]);
+    await units.run('explain', { file: 'a' });
+    const client = await host.attach(KEY, { columns: 80, rows: 24 });
+
+    await eventually(() => expect(counts).toContain(1));
+    expect(units.list()).toMatchObject([{ key: KEY, state: 'idle' }]);
+    await client.detach();
+
+    await eventually(() =>
+      expect(units.list()).toMatchObject([{ key: KEY, state: 'ended', reason: 'idle-timeout' }]),
+    );
+    // Each check that counted the client left the session; the one that ended it counted none.
+    expect(counts.length).toBeGreaterThan(1);
+    expect(counts.indexOf(0)).toBe(counts.length - 1);
   });
 });
