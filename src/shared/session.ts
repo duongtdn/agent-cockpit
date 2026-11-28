@@ -290,7 +290,10 @@ export type InterruptResult =
   | {
       /** The turn was stopped, and the session seen `idle`. */
       readonly action: 'interrupted';
-      /** The state the session is in. */
+      /**
+       * The `idle` the interrupt confirmed. A turn may have begun since:
+       * the sessions' list tells the state now.
+       */
       readonly state: 'idle';
     }
   | {

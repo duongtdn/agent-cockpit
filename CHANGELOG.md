@@ -377,7 +377,11 @@ Nothing is published yet.
   `'<n>h'` (at most 2,147,483,647 ms), or `false`; `'30m'` by default. A
   session `idle` that long is ended (`reason: 'idle-timeout'`), unless a
   background task runs, a terminal is attached or a call of its key is
-  under way: it is then looked at again a full timeout later.
+  under way: it is then checked again one timeout later, and ended at the
+  first check that finds it `idle` and held by nothing, so within one
+  timeout of the hold going. An end that fails is written to
+  `console.error` (not to `on('error')`) and tried again one timeout
+  later.
 - An Esc pressed in the terminal that withdraws a prompt the agent had
   not begun on (the prompt back in the input box, no spinner) now reads as
   `idle`; the prompt is left in the box.

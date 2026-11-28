@@ -99,7 +99,9 @@ export interface CockpitClient {
    * overlapped it.
    *
    * @param key - The unit of work's key.
-   * @returns What the interrupt did and the state it left the session in.
+   * @returns What the interrupt did; `interrupted` with the `idle` it
+   * confirmed (a turn may have begun since: the sessions' list tells the
+   * state now).
    * @throws `CockpitError` `wrong-state` (with `key` and `state`) on a
    * `starting` session; `interrupt-unconfirmed` (with `key` and the last
    * `state` known) when the session was not seen `idle` in time; and as

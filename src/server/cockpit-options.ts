@@ -113,11 +113,14 @@ export interface CockpitOptions {
    * (about 24.8 days); `false` ends no session for idleness. 30 minutes
    * (`'30m'`) when left out. The time counts from when the session became
    * `idle`; any other state, and every new `idle`, starts it again. A
-   * session with a background task running, a terminal attached or a call
-   * of the app's under way on its key is not ended then, and is looked at
-   * again one full timeout after each look that found it so: it is ended
-   * within one timeout of what held it going, so up to about twice the
-   * timeout after it became `idle`.
+   * session held when its timeout passes (a background task running, a
+   * terminal attached or a call of the app's under way on its key) is not
+   * ended then: it is checked again one timeout later, and again after
+   * each check that finds it held, and ended at the first check that finds
+   * it `idle` and held by nothing: within one timeout of the hold going,
+   * however long the hold lasted. An end that fails is written to
+   * `console.error`, not to `on('error')` (which carries only the failures
+   * answered with a bare 500), and is tried again one timeout later.
    */
   readonly idleTimeout?: `${bigint}${'ms' | 's' | 'm' | 'h'}` | false;
 }

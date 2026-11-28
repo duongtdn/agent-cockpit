@@ -161,7 +161,7 @@ export interface Cockpit {
    *
    * | State | Interrupt |
    * |---|---|
-   * | `busy` | The turn stopped: `interrupted` once the driver confirms the session `idle`. |
+   * | `busy`, `waiting` on an ask or a channel request (from features that add them) | The turn stopped: `interrupted` once the driver confirms the session `idle`. |
    * | `waiting` in the terminal (a start-up dialog, a panel, a screen the driver cannot read) | Nothing to interrupt, no key pressed: a person must act there. |
    * | `idle`, `ended`, no record | Nothing to interrupt. |
    * | `starting` | Refused `wrong-state`. |
@@ -171,7 +171,8 @@ export interface Cockpit {
    * background tasks go on.
    *
    * @param key - The unit of work's key.
-   * @returns `interrupted` with the state `idle`; `nothing-to-interrupt`
+   * @returns `interrupted` with the state `idle` it confirmed (a turn may
+   * have begun since: the list tells the state now); `nothing-to-interrupt`
    * with the session's state (none for a key with no record), also when
    * the session ended meanwhile.
    * @throws `CockpitError` `wrong-state` on `starting`;
