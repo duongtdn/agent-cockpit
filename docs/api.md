@@ -6,8 +6,9 @@ them, read the [guide](guide.md).
 
 **Status:** the first operations are built: creating and mounting a cockpit,
 the units of work (running a job in every state of its key's session,
-sending, opening, starting over, their records, the cap, the jobs'
-descriptions and choices), following the sessions, the
+sending, opening, starting over, interrupting, ending, removing, their
+records, the cap, the idle timeout, the jobs' descriptions and choices),
+following the sessions, the
 browser's client and terminal, and access: opening beyond loopback, the
 app's token on its own routes and its renewal, and the failures the app is
 told of, and the Claude Code driver, complete: its options, a job's
@@ -416,7 +417,7 @@ become `idle`. A run's arguments, key and prompt are checked as it
 is asked, before it waits.
 
 A session the cockpit is ending (the cap making room for another key's
-launch) takes no send and no run until it is gone: `wrong-state`, its
+launch, the idle timeout) takes no send and no run until it is gone: `wrong-state`, its
 state as it was, the message saying the cockpit is ending it. Its agent
 is still heard meanwhile.
 
@@ -566,8 +567,14 @@ turn may have begun since: the sessions' list tells the state now). Not
 confirmed within the driver's bound (5 seconds for Claude Code), it rejects
 `interrupt-unconfirmed` (`key`, the last state known), nothing more
 pressed. A prompt the agent had taken but not begun on, withdrawn by the
-interrupt into an empty input box, is cleared from the box; a draft the
-person had there is never touched. The background tasks go on. A host
+interrupt into an empty input box, is cleared from the box, and so is one
+a person's Esc in the terminal withdrew while the interrupt waited (the
+two cannot be told apart); a draft the person had there is never touched.
+The background tasks go on: the `idle` session lists those it listed
+before the turn and the subagents the turn started; a shell or a monitor
+the turn started fires no hook as it starts, and is listed only from the
+next end of a turn (until then the idle timeout and the cap do not see
+it). A host
 that fails while the keys are pressed makes the interrupt reject with the
 host's error, which has no code (a 500 with no body on the wire,
 `internal-failure` to `on('error')`).
@@ -613,7 +620,13 @@ remove that fails (a kill, as `end`'s; a file that cannot be deleted)
 keeps the key's record, and a remove asked again finishes.
 
 The cockpit ends a session `idle` for the app's `idleTimeout` (30 minutes
-by default; see [Options](#options)), `reason: 'idle-timeout'`.
+by default; see [Options](#options)), `reason: 'idle-timeout'`, as `end`
+ends an `idle` one: no key pressed, its conversation and record kept. A
+session held when its timeout passes is checked again one timeout later
+(see the option). Once its end has begun, a turn that begins in the
+moment its agent takes to go ends with it, still `idle-timeout`; a send or
+a run asked meanwhile is refused `wrong-state`, and an `end` or a `remove`
+joins that end, its reason kept.
 
 `cockpit.sessions.list()` gives each session's key, state, `since`, what
 its state carries and its `record` (`conversationId`,

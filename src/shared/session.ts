@@ -324,7 +324,8 @@ export type EndResult =
 
 /**
  * What a remove did: everything the cockpit wrote for the key deleted, a
- * live session ended first (`removed`), or no record (`nothing-to-remove`).
+ * live session ended first (`removed`), or neither a record nor a session
+ * (`nothing-to-remove`).
  * The agent's transcripts are left where the agent keeps them.
  */
 export type RemoveResult =

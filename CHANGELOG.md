@@ -355,24 +355,34 @@ Nothing is published yet.
   drawn anew, and the lines that scrolled past meanwhile are missing from
   its scrollback.
 
-- `cockpit.interrupt(key)`, `end(key)` and `remove(key)`, the client's
-  too (`POST /interrupt`, `/end`, `/remove`, each `{ key }`), with the
-  types `InterruptResult`, `EndResult` and `RemoveResult` from `.` and
+- `cockpit.interrupt(key)`, `end(key)` and `remove(key)`, the client's too
+  (`POST /interrupt`, `/end`, `/remove`, each `{ key }`), with the types
+  `InterruptResult`, `EndResult` and `RemoveResult` from `.` and
   `./client`. Each runs on its key's queue after the calls asked before
   it, and refuses `starting` with `wrong-state`. An interrupt presses the
   driver's keys once on a `busy` session (one Esc) and resolves
   `interrupted` once `idle` is confirmed, else rejects
   `interrupt-unconfirmed` after 5 seconds; a prompt withdrawn by it into
-  an empty input box is cleared. An end interrupts a `busy` turn first
-  (a prompt that interrupt withdraws is left in the box: no key is
-  pressed once an end was asked but its interrupt's own), then ends the
-  session (`reason: 'app'`), resolving with the background
-  tasks it stopped; the conversation and record are kept. A remove ends a
-  live session the same way, then deletes the key's record and session
-  folder (the agent's transcripts are left) and forgets the key. A kill
-  that fails leaves the session live: `end` and `remove` reject with the
-  host's error (500 with no body on the wire, `internal-failure` to
-  `on('error')`).
+  an empty input box is cleared, as is one a person's Esc in the terminal
+  withdrew while the interrupt waited; a draft is never touched. The
+  `idle` an interrupt reaches lists the background tasks listed before the
+  turn and the subagents the turn started; a shell or a monitor the turn
+  started is listed from the next end of a turn. An end interrupts a
+  `busy` turn first (a prompt that interrupt withdraws is left in the box:
+  no key is pressed once an end was asked but its interrupt's own), then
+  ends the session (`reason: 'app'`), resolving with the background tasks
+  it stopped; the conversation and record are kept. A remove ends a live
+  session the same way, then deletes the key's record and session folder
+  (the agent's transcripts are left) and forgets the key; a key listed
+  with no record (a first launch that failed) is removed too, and only a
+  key with neither a record nor a session has `nothing-to-remove`. An end
+  or a remove asked while the cockpit ends the session already (the cap, a
+  restart, the idle timeout) joins that end, its reason kept; when that
+  end's kill fails, it then ends the session by its state then, a `busy`
+  turn interrupted first. A kill that fails leaves the session live: `end`
+  and `remove` reject with the host's error (500 with no body on the wire,
+  `internal-failure` to `on('error')`), and a remove that fails keeps the
+  key's record.
 - `createCockpit({ idleTimeout })`: `'<n>ms'`, `'<n>s'`, `'<n>m'` or
   `'<n>h'` (at most 2,147,483,647 ms), or `false`; `'30m'` by default. A
   session `idle` that long is ended (`reason: 'idle-timeout'`), unless a

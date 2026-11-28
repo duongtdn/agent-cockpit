@@ -168,8 +168,13 @@ export interface Cockpit {
    * | `starting` | Refused `wrong-state`. |
    *
    * A prompt the agent took but had not begun on, withdrawn by the
-   * interrupt into an empty input box, is cleared from the box. The
-   * background tasks go on.
+   * interrupt into an empty input box, is cleared from the box; so is one
+   * a person's Esc in the terminal withdrew while the interrupt waited,
+   * which cannot be told from the cockpit's. A draft the person had in the
+   * box is never touched. The background tasks go on: the `idle` session
+   * lists those it listed before the turn and the subagents the turn
+   * started; a shell or a monitor the turn started is listed only from the
+   * next end of a turn.
    *
    * @param key - The unit of work's key.
    * @returns `interrupted` with the state `idle` it confirmed (a turn may

@@ -5,8 +5,9 @@ exact names and types, read the [API reference](api.md).
 
 **Status:** built so far: a cockpit mounted in the app's server, the units
 of work (a job run in every state of its key's session, sending, opening,
-starting over, their records, the cap on live sessions, a launcher form
-from the jobs' descriptions and choices), the sessions followed live, a
+starting over, interrupting, ending and removing, their records, the cap
+on live sessions, the idle timeout, a launcher form from the jobs'
+descriptions and choices), the sessions followed live, a
 session's terminal in the page, access (the app's own API routes, opening
 beyond loopback, and renewing the token), and the Claude Code driver: its
 options, a job's driver part, the sandbox and the agent's version. The sections after "Getting started" are
@@ -519,7 +520,117 @@ reference](api.md#units-of-work) has the tables.
 
 ## Interrupt, end and remove
 
-Stopping a turn, ending a session, and removing a unit of work.
+Stopping a turn, ending a session, and removing a unit of work: what a
+page's Stop, End and Remove buttons call (`interrupt(key)`, `end(key)`,
+`remove(key)`, on the server's cockpit and the browser's client alike).
+Each takes its place among its key's calls, after those asked before it,
+as run, send and open do: a Stop clicked while a send types waits for the
+send, then stops the turn it began. None of them fails for nothing to
+do: each says so in its result, with the session's state, so that a
+button clicked just as the turn ended, or twice, is no error. Each is
+refused on a `starting` session (`wrong-state`): the agent has not yet
+taken its first prompt.
+
+| State                     | Interrupt                       | End                                         | Remove                                          |
+| ------------------------- | ------------------------------- | ------------------------------------------- | ----------------------------------------------- |
+| `busy`                    | The turn stopped: `interrupted` | The turn stopped first, then ended: `ended` | Ended as `end` ends it, then removed: `removed` |
+| `waiting` in the terminal | `nothing-to-interrupt`, no key  | Ended, no key: `ended`                      | Ended, then removed: `removed`                  |
+| `idle`                    | `nothing-to-interrupt`          | Ended: `ended`                              | Ended, then removed: `removed`                  |
+| `ended`                   | `nothing-to-interrupt`          | `nothing-to-end`                            | Removed: `removed`                              |
+| no record                 | `nothing-to-interrupt`          | `nothing-to-end`                            | `nothing-to-remove` (when no session either)    |
+| `starting`                | `wrong-state`                   | `wrong-state`                               | `wrong-state`                                   |
+
+Asks and channel requests, still to come, will make a session `waiting`
+whose turn Stop and End stop as on `busy`.
+
+**Stop** (`interrupt`) does what the person's Esc does in the terminal:
+it stops the agent's turn, and resolves once the session is `idle` again,
+confirmed by the driver, never guessed (`interrupted`; a turn may have
+begun since, which the sessions' list tells). For Claude Code that is one
+Esc, never a second, whatever follows: two would open the agent's rewind
+menu. The answer written so far stays in the conversation, marked as
+interrupted, and the next prompt carries on from it. When the session is
+not seen `idle` within the driver's bound (5 seconds for Claude Code), the
+call rejects `interrupt-unconfirmed` with the last state known, nothing
+more pressed: the page shows the state the list gives and lets the person
+try again or end the session. A session `waiting` in the terminal (a
+start-up dialog, a panel, a screen the driver cannot read) runs no turn,
+and a key there could answer a dialog nobody saw: Stop presses nothing and
+resolves `nothing-to-interrupt` with the state, which tells the page that
+a person must act in the terminal. The agent's background tasks go on;
+the `idle` session lists them (a shell or a monitor the stopped turn
+started is listed only once a later turn ends).
+
+**The withdrawn prompt.** An Esc that lands before the agent began on a
+prompt (the model has not answered yet) does not interrupt: the agent
+takes the prompt back into its input box, out of the conversation, as if
+it had not been sent. No hook tells it; the cockpit reads it on the
+agent's screen (the box holding exactly the prompt, no sign of work
+above it) and the session is `idle`. After the cockpit's own Stop it then
+clears the prompt from the box, the page's terminals held meanwhile, since
+the person asked to stop; an Esc a person presses in the terminal while
+that Stop waits cannot be told from the cockpit's, and its prompt is
+cleared too. An Esc a person presses at any other time leaves the prompt
+in the box, theirs to edit or send. Over a draft in the box the same Esc
+interrupts instead, and the draft is kept as it was: the cockpit never
+clears a box that holds anything but the prompt.
+
+**End** (`end`) stops the agent's process: the session is `ended`
+(`reason: 'app'`), and keeps its conversation and record, which the next
+run, send or open resumes. On a `busy` session the turn is stopped first,
+as Stop stops it, so that the answer written so far stays in the
+conversation, then the process is ended whether or not that was
+confirmed: the person asked to end it. A prompt that Esc withdraws (it
+landed before the agent began) is left in the box, out of the
+conversation: no key is pressed once an end was asked but that one Esc. An `idle` session, or one
+waiting in the terminal, is ended at once, no key pressed: an End clicked
+behind a start-up dialog nobody answers closes it, and its `reason` is
+`app`, not `declined`. For Claude Code the process is sent SIGTERM; one
+still there after 5 seconds has its tmux session killed, then whatever of
+its process group is left. The call resolves once the process is gone,
+with the background tasks that stopped with it (`stoppedTasks`, empty when
+none ran): an `idle` session lists them beforehand in `backgroundTasks`,
+so a page that wants the person to confirm stopping them asks before it
+calls `end`. A session the cockpit is ending already (the cap, a restart,
+the idle timeout) has that end awaited, and its reason stays.
+
+**Remove** (`remove`) ends a live session as End does, then deletes
+everything the cockpit wrote for the key (its record, the session's
+folder with its settings and hook token) and forgets the key: it leaves
+the sessions' list, followers are told, and its next run starts a new
+conversation. It resolves `removed`, with the background tasks it stopped
+when it ended a session. The agent's own transcripts are left where the
+agent keeps them: they are the person's, who may still resume them in
+their own terminal. A key listed with no record (a first launch that
+failed) is removed as any other; one with neither a record nor a session
+has `nothing-to-remove`. The cockpit expires no record by itself: Remove
+is how an app lets a unit of work go.
+
+**Failures.** A session that outlives the bound and cannot be killed is
+left live: `end` and `remove` reject with the machine's error, which is no
+`CockpitError` (a 500 with no body on the wire, which the client reports
+as `unreachable`; `internal-failure` to `cockpit.on('error')`), and a later
+End may kill it. A remove that fails, there or deleting a file, keeps the
+key's record, so the key stays listed and a Remove clicked again finishes:
+a page shows the failure and lets the person click again.
+
+**Idle sessions end by themselves.** A session left `idle` for the app's
+`idleTimeout` (30 minutes by default; `false` turns it off) is ended as
+End ends it, with `reason: 'idle-timeout'`, so that agents nobody uses do
+not pile up; the next run resumes the conversation after a start of a
+second or two. The time counts from when the session became `idle`; a
+turn, and each new `idle`, starts it again. Three things hold a session:
+a background task running, a terminal attached (a page's mounted terminal
+or a person's own `tmux attach`), and a call of the app's under way on its
+key. A session held when its time is up is not ended then: it is checked
+again one timeout later, and again after each check that finds it held,
+then ended at the first check that finds it `idle` and held by nothing. So
+a reload of the page never ends a session, and a session whose terminal
+closed lives on for up to one more timeout; an app that wants it gone
+sooner calls `end`. Once its end has begun, a prompt sent meanwhile is
+refused (`wrong-state`), and an End or a Remove joins it, the reason kept.
+An idle end that fails is written to `console.error` and tried again one
+timeout later.
 
 ## Asks
 

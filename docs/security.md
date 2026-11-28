@@ -7,7 +7,7 @@ and the app's opening beyond loopback, the link's token and its renewal, the
 agent-facing listener, the lines that keep the agent away from the
 cockpit's own files, the app's port and the files it can name that would
 start code at the agent's next launch, the sandbox an app asks for, the variables an app hides, the state
-folder's trust, and the terminal's clipboard. Each limit is stated where it applies, and the last
+folder's trust, ending and removing sessions, and the terminal's clipboard. Each limit is stated where it applies, and the last
 section gathers them.
 
 ## Whom the cockpit defends against
@@ -240,6 +240,10 @@ the state folder (`agentPort` fixes it).
   line or in the environment, where any process of the user could read it.
   The command hook that starts a session is given the path of its file and
   reads it itself.
+- A session's token is revoked when the session ends: the listener refuses
+  it from then on, and each launch, a resume among them, mints a new one.
+  The files that held it stay in the session's folder until the app
+  removes the key (`remove`), which deletes the folder with them.
 - A failure while it serves a hook is answered 500 and goes to
   `cockpit.on('error')` as `internal-failure` (`where: 'agent-listener'`).
 
@@ -490,12 +494,41 @@ person.
   error's message says too: stop the app's servers, delete
   `<state folder>/lock-id`, and start again.
 
+## Ending and removing
+
+- **A session that will not end is killed, with its process group.** The
+  cockpit ends a session by the driver's signal (for Claude Code,
+  SIGTERM); one whose agent has not exited within the bound (5 seconds)
+  has its tmux session killed, then whatever is left of the process group
+  its agent leads: a process that ignores the hangup tmux sends does not
+  outlive the session. A process that left the group (`setsid`, a daemon)
+  is out of the cockpit's reach, as it would be from the person's own
+  terminal.
+  A kill that fails leaves the session live and listed, and the app is
+  told (see below); a later `end` may kill it.
+- **Idle sessions end.** A session left `idle` for the app's
+  `idleTimeout` (30 minutes by default) is ended, unless a background
+  task runs, a terminal is attached or a call of its key is under way, so
+  that an agent with its tools and permissions does not stay running
+  unwatched. An app that turns the timeout off (`false`) keeps them until
+  it ends them.
+- **A remove deletes what the cockpit wrote for the key**: its record
+  (conversations, folder, launch settings, the history of runs with their
+  arguments) and its session's folder (the driver's settings files and
+  the session's hook token). The agent's own transcripts are the
+  person's, and stay where the agent keeps them, with whatever the
+  conversation held: an app that must erase a conversation deletes them
+  itself, as the agent lets it. Until a remove, an ended key keeps its
+  record and folder in the state folder, under the protections above;
+  the cockpit expires nothing by itself.
+
 ## Failures the app is told of
 
 A failure the cockpit cannot tell a page or the agent of goes to
 `cockpit.on('error', handler)` as `internal-failure`, with `where` and the
 `cause` that was thrown: the handler's own (it answered 500, with no body,
-so nothing of the server's inside reaches the wire), an `authorize` that
+so nothing of the server's inside reaches the wire; a kill that failed
+under an app's `end` or `remove` among them), an `authorize` that
 threw or rejected (the request was refused), and the agent-facing
 listener's (it answered 500). While the app has no handler, they go to
 `console.error`.

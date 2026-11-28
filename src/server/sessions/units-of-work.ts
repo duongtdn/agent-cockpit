@@ -188,10 +188,13 @@ export interface UnitsOfWork {
    * | no record, `ended` | Nothing to end. |
    * | `starting` | Refused `wrong-state`. |
    * | `idle`, `waiting` in the terminal only (a start-up dialog, a panel) | Ended at once, no key pressed. |
-   * | `busy`, `waiting` on anything else | Its turn interrupted first, as `interrupt` does, then ended whether or not the interrupt was confirmed. |
+   * | `busy`, `waiting` on anything else | Its turn interrupted first, as `interrupt` does, then ended whether or not the interrupt was confirmed. A prompt the interrupt withdraws is left in the box: no key is pressed once the end was asked but the interrupt's own. |
    *
-   * A session being ended already (the cap's end, a restart's) has that
-   * end awaited, its reason kept.
+   * A session being ended already (the cap's end, a restart's, the idle
+   * timeout's) has that end awaited, its reason kept. If that end's kill
+   * fails, the session is live again, and this end then ends it as the
+   * table says for its state then: a `busy` one has its turn interrupted
+   * first.
    *
    * @param key - The unit of work's key.
    * @returns `ended` once the session's process is gone, with the
