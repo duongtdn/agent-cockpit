@@ -310,8 +310,7 @@ export interface Cockpit {
     /**
      * Follows the asks of one unit of work, or of every one: the handler
      * gets each pending ask of the scope at once, in the order they
-     * opened, then each new one, and an ask again when its `answerable`
-     * changes under the same id; never a settled one. A key with no
+     * opened, then each new one; never a settled one. A key with no
      * session is followed all the same. Whether anyone follows never
      * changes what the agent is answered.
      *

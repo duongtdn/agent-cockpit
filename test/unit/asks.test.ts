@@ -298,22 +298,6 @@ describe('following the asks', () => {
     expect(laterKey.seen).toEqual([third]);
   });
 
-  it('gives an ask again, under its id, when who can answer it changes; not when it stays the same', async () => {
-    const { asks } = registry();
-    const ask = asks.open('k1', LIST, TERMINAL_ONLY);
-    const followed = collector<Ask>();
-    asks.follow('k1', followed.handler);
-
-    const held = connection();
-    asks.changeAnswering(ask.id, held.answering);
-    asks.changeAnswering(ask.id, connection().answering);
-
-    expect(followed.seen).toEqual([ask, { ...ask, answerable: 'app' }]);
-    expect(asks.pending('k1')).toEqual([{ ...ask, answerable: 'app' }]);
-    await asks.answer(ask.id, { allow: true });
-    expect(held.handed).toEqual([]);
-  });
-
   it('never gives a settled ask, nor one settled while the pending ones are given', () => {
     const { asks } = registry();
     const first = asks.open('k1', LIST, connection().answering);
@@ -324,7 +308,6 @@ describe('following the asks', () => {
       followed.handler(ask);
       asks.settle(second.id, 'cancelled');
     });
-    asks.changeAnswering(second.id, TERMINAL_ONLY);
 
     expect(followed.seen).toEqual([first]);
   });

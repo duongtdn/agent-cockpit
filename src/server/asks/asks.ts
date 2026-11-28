@@ -114,23 +114,6 @@ export class Asks {
   }
 
   /**
-   * Changes who can answer a pending ask. Its followers are given it again,
-   * under the same id, when its `answerable` changes; a new hand-off alone
-   * replaces the old one unseen. Does nothing to an ask not pending.
-   *
-   * @param id - The ask's id.
-   * @param answering - Who can answer it from now on.
-   */
-  changeAnswering(id: string, answering: Answering): void {
-    const pending = this.#pending.get(id);
-    if (pending === undefined) return;
-    const changed = pending.ask.answerable !== answering.answerable;
-    const ask = changed ? { ...pending.ask, answerable: answering.answerable } : pending.ask;
-    this.#pending.set(id, { ask, answering });
-    if (changed) this.#tellFollowers(ask);
-  }
-
-  /**
    * Settles a pending ask from what the agent told, and tells it to the
    * `settled` handlers. The held connection is the core's to let go.
    *
@@ -183,8 +166,7 @@ export class Asks {
   /**
    * Follows the asks of a key, or of every key: the handler gets each
    * pending ask of the scope at once, in the order they opened, then each
-   * new one, and an ask again when its `answerable` changes; never a
-   * settled one. Whether anyone follows never changes what the agent is
+   * new one; never a settled one. Whether anyone follows never changes what the agent is
    * answered.
    *
    * @param key - The unit of work's key, or `'*'` for every one.
@@ -197,9 +179,9 @@ export class Asks {
     const follower: Follower = { scope: key, handler };
     this.#followers.add(follower);
     for (const ask of this.#pendingIn(key)) {
-      // A handler may stop, or settle or change an ask the snapshot still holds.
+      // A handler may stop, or settle an ask the snapshot still holds.
       if (!this.#followers.has(follower)) break;
-      if (this.#pending.get(ask.id)?.ask === ask) this.#tellOne(handler, ask);
+      if (this.#pending.has(ask.id)) this.#tellOne(handler, ask);
     }
     return () => void this.#followers.delete(follower);
   }
