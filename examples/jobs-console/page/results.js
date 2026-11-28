@@ -28,8 +28,7 @@ export function showResult(element, result, key) {
   delete element.dataset.error;
   const terms = [result.action, result.reason].filter(Boolean).join(' · ');
   const state = result.state === undefined ? '' : ` → ${result.state}`;
-  const about = key === undefined ? '' : `${key} — `;
-  element.textContent = `${about}${terms}${state}: ${meaningOf(result)}`;
+  element.textContent = `${about(key)}${terms}${state}: ${meaningOf(result)}`;
 }
 
 /**
@@ -38,11 +37,19 @@ export function showResult(element, result, key) {
  *
  * @param element - The status element.
  * @param error - What the operation threw.
+ * @param key - The unit of work it was about, named first: for a status
+ *   that is not the unit of work's own.
  */
-export function showError(element, error) {
+export function showError(element, error, key) {
   for (const name of ['action', 'reason', 'state']) delete element.dataset[name];
   element.dataset.error = error.code ?? 'error';
-  element.textContent = error.code === 'unreachable' ? unreachableOperation(error) : explain(error);
+  const words = error.code === 'unreachable' ? unreachableOperation(error) : explain(error);
+  element.textContent = `${about(key)}${words}`;
+}
+
+/** The unit of work a status names first, when it is not the unit of work's own. */
+function about(key) {
+  return key === undefined ? '' : `${key} — `;
 }
 
 /**

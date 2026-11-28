@@ -32,21 +32,22 @@ work, and shows a session's terminal.
   for choices, a datalist for suggestions. `sessions-list.js` shows a card
   per session, with its buttons: _Stop_ while a turn runs (`busy` or
   `waiting`), _End_ while the session is live, _Remove_ always, after a
-  confirmation in the card; `results.js` says what an operation did. The browser loads
-  the package's `client` and `terminal` entries, as built, and xterm.js's
-  ESM build through an import map; the app serves exactly those files. No
-  bundler.
+  confirmation in the card; `results.js` says what an operation did. The
+  browser loads the package's `client` and `terminal` entries, as built,
+  and xterm.js's ESM build through an import map; the app serves exactly
+  those files. No bundler.
 - `sample-project/` — what the scripted agent works in: a copy of it is made
   at each start, so that the forms have folders and files to offer.
 - The default agent is the repository's `test/support/scripted-agent.ts`:
   the Claude Code this repository pins, against a scripted fake of
   Anthropic's API (no model, no login, no network). Every question gets the
-  same scripted answer, at once, but one that asks for a thorough answer
+  same scripted answer, at once, except one that asks for a thorough answer
   (_Detail_ `thorough`): its answer is long and written a few words at a
-  time, for about 40 seconds, a turn at work long enough to stop. Each launch passes the contract suite's guard first
-  (a settings file, a file of MCP servers, a variable that could take the
-  agent elsewhere stops it). It is development support, not part of the
-  package: an app runs the person's own `claude`.
+  time, for about 40 seconds, a turn at work long enough to stop. Each
+  launch passes the contract suite's guard first (a settings file, a file
+  of MCP servers, a variable that could take the agent elsewhere stops
+  it). It is development support, not part of the package: an app runs
+  the person's own `claude`.
 
 Every operation's result shows the cockpit's own words, then what they mean:
 `action · reason → state: …`, such as

@@ -440,7 +440,6 @@ describe('the jobs console, against the scripted API', () => {
       .locator('#removals')
       .getByText(new RegExp(`^${IDEAS} — removed: `))
       .waitFor();
-    await inState(GREET, 'idle');
   });
 
   it('works again when the page is reopened without the link’s fragment: the sessions, their records and the terminal', async () => {

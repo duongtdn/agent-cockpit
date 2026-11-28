@@ -16,26 +16,48 @@ const STOPPABLE = new Set(['busy', 'waiting']);
  * @param container - The element that holds the cards.
  * @param client - The cockpit client, for open, send, interrupt, end and remove.
  * @param showTerminal - Shows the terminal of a key.
- * @param removals - The status element that says what a remove did, once its card is gone.
+ * @param removals - The status element that says what a remove did, or why it failed: its card may be gone.
  * @returns `update(sessions)`, called with every list the cockpit gives.
  */
 export function createSessionsList(container, client, showTerminal, removals) {
   const cards = new Map();
   /** Every state the page has seen each session in, in order: a fast `busy` stays visible. */
   const statesSeen = new Map();
+  /** Says what a remove did, or why it failed, above the cards: its card may be gone. */
+  const removalStatus = {
+    showResult(key, removed) {
+      showResult(removals, removed, key);
+      removals.dataset.key = key;
+    },
+    showError(key, error) {
+      showError(removals, error, key);
+      removals.dataset.key = key;
+    },
+    /** Clears what it says of a key that has a session again: the removal is past. */
+    forget(key) {
+      if (removals.dataset.key !== key) return;
+      showPending(removals, '');
+      delete removals.dataset.key;
+    },
+  };
 
   function update(sessions) {
     for (const session of sessions) {
       const seen = statesSeen.get(session.key) ?? [];
       if (seen.at(-1) !== stateOf(session)) seen.push(stateOf(session));
       statesSeen.set(session.key, seen);
-      if (!cards.has(session.key))
-        cards.set(session.key, drawCard(session.key, client, showTerminal, removals));
+      if (!cards.has(session.key)) {
+        removalStatus.forget(session.key);
+        cards.set(session.key, drawCard(session.key, client, showTerminal, removalStatus));
+      }
       cards.get(session.key).show(session, seen);
     }
     const listed = new Set(sessions.map((session) => session.key));
     for (const key of cards.keys()) {
-      if (!listed.has(key)) cards.delete(key);
+      if (listed.has(key)) continue;
+      cards.delete(key);
+      // A key run again after a remove is a new unit of work: its states start afresh.
+      statesSeen.delete(key);
     }
     container.replaceChildren(...sessions.map((session) => cards.get(session.key).card));
   }
@@ -48,7 +70,7 @@ function stateOf(session) {
   return session.state === 'ended' ? `ended · ${session.reason}` : session.state;
 }
 
-function drawCard(key, client, showTerminal, removals) {
+function drawCard(key, client, showTerminal, removalStatus) {
   const card = element('li', { className: 'session' });
   card.dataset.key = key;
   const state = element('span', { className: 'state' });
@@ -68,7 +90,7 @@ function drawCard(key, client, showTerminal, removals) {
   const remove = button('Remove', `Remove ${key}`);
   const actions = element('div', { className: 'actions' });
   actions.append(terminal, open, fresh, stop, end, remove);
-  const removal = drawRemovalConfirmation(key);
+  const removal = drawRemovalConfirmation(key, remove);
 
   const sendForm = element('form', { className: 'send' });
   const prompt = element('textarea', { rows: 2, required: true });
@@ -77,22 +99,15 @@ function drawCard(key, client, showTerminal, removals) {
   send.setAttribute('aria-label', `Send to ${key}`);
   sendForm.append(prompt, send);
 
-  /**
-   * Runs one operation of the card, its buttons held until it settles.
-   *
-   * @returns What the operation gave; `undefined` when it failed, its error shown.
-   */
+  /** Runs one operation of the card, its buttons held until it settles. */
   async function operate(pending, operation) {
     const buttons = [open, fresh, send, stop, end, remove, removal.confirm];
     for (const each of buttons) each.disabled = true;
     showPending(result, pending);
     try {
-      const outcome = await operation();
-      showResult(result, outcome);
-      return outcome;
+      showResult(result, await operation());
     } catch (error) {
       showError(result, error);
-      return undefined;
     } finally {
       for (const each of buttons) each.disabled = false;
     }
@@ -109,11 +124,19 @@ function drawCard(key, client, showTerminal, removals) {
     operate(`Ending the session of ${key}…`, () => client.end(key)),
   );
   remove.addEventListener('click', () => removal.ask());
-  removal.confirm.addEventListener('click', async () => {
+  removal.confirm.addEventListener('click', () => {
     removal.close();
-    const removed = await operate(`Removing ${key}…`, () => client.remove(key));
-    // Its card leaves the list once the cockpit lists the sessions again: the list says it.
-    if (removed !== undefined) showResult(removals, removed, key);
+    operate(`Removing ${key}…`, async () => {
+      // The card leaves the list once the cockpit lists the sessions again: the list says it too.
+      try {
+        const removed = await client.remove(key);
+        removalStatus.showResult(key, removed);
+        return removed;
+      } catch (error) {
+        removalStatus.showError(key, error);
+        throw error;
+      }
+    });
   });
   sendForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -152,11 +175,13 @@ function drawCard(key, client, showTerminal, removals) {
  * The confirmation a remove asks for, in the card: what removing deletes,
  * and the background tasks it would stop, kept current while it shows.
  *
- * @returns Its element; `ask()` and `close()`, which show and hide it;
- * `showTasks(tasks)`, the session's tasks as listed; `confirm`, the button
- * that confirms.
+ * @param key - The unit of work's key.
+ * @param remove - The card's Remove button, which the keyboard goes back to once it closes.
+ * @returns Its element; `ask()` and `close()`, which show and hide it
+ * (Escape closes it too); `showTasks(tasks)`, the session's tasks as
+ * listed; `confirm`, the button that confirms.
  */
-function drawRemovalConfirmation(key) {
+function drawRemovalConfirmation(key, remove) {
   const confirmation = element('div', { className: 'confirm-removal', hidden: true });
   confirmation.setAttribute('role', 'group');
   confirmation.setAttribute('aria-label', `Confirm the removal of ${key}`);
@@ -172,8 +197,12 @@ function drawRemovalConfirmation(key) {
 
   const close = () => {
     confirmation.hidden = true;
+    remove.focus();
   };
   keep.addEventListener('click', close);
+  confirmation.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') close();
+  });
   return {
     element: confirmation,
     confirm,

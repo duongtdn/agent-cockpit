@@ -6,7 +6,7 @@ import { type FallbackRule, messageText, pacedTurn, startFakeApi, turn } from '.
 import { tearDownRun } from './real-agent/run-root.ts';
 import { startRealAgentShim } from './real-agent/shim.ts';
 
-/** What the fake API answers to every question, at once, but one that asks for a thorough answer. */
+/** What the fake API answers to every question, at once, except one that asks for a thorough answer. */
 export const SCRIPTED_ANSWER =
   'This is the scripted answer of the fake API: no model ran. Start the example with --real to ask your own agent.';
 
@@ -31,8 +31,8 @@ const THOROUGH_PACE = { pieceLength: 6, gapMs: 200 } as const;
  * An example app's stand-in for the agent's model: the Claude Code this
  * repository pins, against a scripted fake of Anthropic's API, so that a
  * person can try the example with no login, no network and no cost. Every
- * question gets {@link SCRIPTED_ANSWER} at once, but one that asks for a
- * thorough answer, which gets {@link THOROUGH_ANSWER}, written slowly.
+ * question gets {@link SCRIPTED_ANSWER} at once, except one that asks for
+ * a thorough answer, which gets {@link THOROUGH_ANSWER}, written slowly.
  */
 export interface ScriptedAgent {
   /** The temporary folder that holds everything a session writes, removed by {@link close}. */
