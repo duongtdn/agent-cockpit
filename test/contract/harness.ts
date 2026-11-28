@@ -1,6 +1,6 @@
 import { setTimeout as pause } from 'node:timers/promises';
 import { expect, onTestFinished, type RunnerTestCase, type TaskMeta, TestRunner } from 'vitest';
-import { readInputBoxView } from '../../src/claude-code/screen-reading.ts';
+import { type InputBoxView, readInputBoxView } from '../../src/claude-code/screen-reading.ts';
 import { eventually } from '../support/eventually.ts';
 import { type FakeApi, type LoggedRequest, startFakeApi } from '../support/fake-api/index.ts';
 import {
@@ -384,7 +384,7 @@ function failFastWaits({
 }
 
 /** Gives the texts of a list of content blocks, or the content itself when it is a text. */
-function textsOf(content: unknown): string[] {
+function contentTexts(content: unknown): string[] {
   if (typeof content === 'string') return [content];
   if (!Array.isArray(content)) return [];
   return content.flatMap((block: { type?: unknown; text?: unknown }) =>
@@ -399,7 +399,7 @@ function textsOf(content: unknown): string[] {
  * @param request - A request the API's double logged.
  */
 export function conversationTexts(request: LoggedRequest): string[] {
-  return (request.body?.messages ?? []).flatMap((message) => textsOf(message.content));
+  return (request.body?.messages ?? []).flatMap((message) => contentTexts(message.content));
 }
 
 /** What the agent records in the user's name when a turn is interrupted while it writes. */
@@ -409,31 +409,65 @@ export const INTERRUPTED = '[Request interrupted by user]';
 export const INTERRUPTED_FOR_TOOL_USE = '[Request interrupted by user for tool use]';
 
 /**
- * Gives the texts a session's transcript records as the user's: the prompts
- * and the markers the agent writes in the user's name.
+ * Gives the texts a session's transcript records in one side's name: the
+ * user's (the prompts, and the markers the agent writes in the user's
+ * name) or the assistant's (its answers, as far as each was written).
+ *
+ * @param session - The session whose transcript is read, as it is now.
+ * @param type - Whose texts: `user` or `assistant`.
+ * @returns The texts, in the order of the transcript.
+ */
+export function textsOf(session: AgentSession, type: 'user' | 'assistant'): string[] {
+  return session
+    .transcript()
+    .filter((entry) => entry.type === type)
+    .flatMap((entry) => contentTexts((entry.message as { content: unknown }).content));
+}
+
+/**
+ * Gives the texts a session's transcript records as the user's, as
+ * {@link textsOf} does: the prompts and the markers.
  *
  * @param session - The session whose transcript is read, as it is now.
  * @returns The texts, in the order of the transcript.
  */
 export function userTexts(session: AgentSession): string[] {
-  return session
-    .transcript()
-    .filter((entry) => entry.type === 'user')
-    .flatMap((entry) => textsOf((entry.message as { content: unknown }).content));
+  return textsOf(session, 'user');
 }
 
 /**
- * Gives the texts a session's transcript records as the agent's: its
- * answers, as far as each was written.
+ * Reads a session's input box as the driver reads it.
  *
- * @param session - The session whose transcript is read, as it is now.
- * @returns The texts, in the order of the transcript.
+ * @param session - The session whose screen is read, as it is now.
+ * @returns The box; `undefined` when the screen shows none.
  */
-export function assistantTexts(session: AgentSession): string[] {
-  return session
-    .transcript()
-    .filter((entry) => entry.type === 'assistant')
-    .flatMap((entry) => textsOf((entry.message as { content: unknown }).content));
+export async function boxOf(session: AgentSession): Promise<InputBoxView | undefined> {
+  return readInputBoxView(await session.screen());
+}
+
+/**
+ * Types a draft into a session's input box as a person does, a line break
+ * as Alt+Enter, and waits until the box shows its end (a line wider than
+ * the box shows on several rows: its end is what the box ends with).
+ *
+ * @param session - The session, its input box showing.
+ * @param draft - The draft, its lines apart by `\n`.
+ * @throws Error when the box does not show it within the bound of the agent's step.
+ */
+export async function typeDraft(session: AgentSession, draft: string): Promise<void> {
+  for (const [index, line] of draft.split('\n').entries()) {
+    if (index > 0) await session.press('M-Enter');
+    if (line !== '') await session.type(line);
+  }
+  const bare = (text: string) => text.replace(/\s+/gu, '');
+  const end = bare(draft).slice(-100);
+  await eventually(
+    async () => {
+      expect(bare((await boxOf(session))?.text ?? '').endsWith(end)).toBe(true);
+    },
+    undefined,
+    PATIENCE.agentStep,
+  );
 }
 
 /**

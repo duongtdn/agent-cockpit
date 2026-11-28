@@ -29,6 +29,7 @@ import {
 import { runAll } from '../support/run-all.ts';
 import { noteHook, noteState } from '../support/timeline.ts';
 import { assertNoUnexpectedPath, inputBoxText } from './harness.ts';
+import { type KeyLog, startKeyLog } from './key-log.ts';
 
 /**
  * A cockpit as an app makes one, with the Claude Code driver, running the
@@ -63,6 +64,12 @@ export interface ContractCockpit {
    * session's token in its `Authorization` header.
    */
   readonly hooksRead: readonly HookRequest[];
+  /**
+   * Every write the cockpit made into its sessions' terminals so far, in
+   * order: the arguments of each tmux `send-keys` it ran, keys, text and
+   * bytes alike. The test's own, through {@link terminal}, are not among them.
+   */
+  keysSent(): string[][];
   /** Every command the driver gave the cockpit to launch. */
   readonly launches: readonly LaunchCommand[];
   /** Every conversation the cockpit had the driver follow, in order. */
@@ -276,7 +283,8 @@ export async function startContractCockpit(
       throw new Error(`The agent left folders outside its root: ${left.join(', ')}`);
   });
   closers.push(async () => void vi.unstubAllEnvs());
-  serveFrom(shim);
+  const keyLog = startKeyLog(shim.root);
+  serveFrom(shim, keyLog);
   if (options.personsSettings !== undefined) {
     writeFileSync(
       join(shim.configFolder, 'settings.json'),
@@ -292,7 +300,8 @@ export async function startContractCockpit(
   const conversations = new Map<string, string>();
   const timeline: Moment[] = [];
   const name = `contract-cockpit-${randomUUID()}`;
-  const host = createTmuxSessionHost({ appName: name });
+  // The test's own keys go through the real tmux, so that the log holds only the cockpit's.
+  const host = createTmuxSessionHost({ appName: name, executable: keyLog.realTmux });
   const processIds: number[] = [];
   // The app's browser-facing server, on the neutral handler: it listens
   // first, then gives the cockpit its port, as an app does.
@@ -362,7 +371,7 @@ export async function startContractCockpit(
     workFolder: directory,
     root: shim.root,
     configFolder: shim.configFolder,
-    serverPath: shim.serverVariables.PATH as string,
+    serverPath: process.env.PATH ?? '',
     stateFolder: shim.stateFolder,
     home: shim.home,
     appPort: app.port,
@@ -383,6 +392,7 @@ export async function startContractCockpit(
     },
     send: (key, prompt) => launching(key, cockpit.send(key, prompt)),
     open: (key, openOptions) => launching(key, cockpit.open(key, openOptions)),
+    keysSent: () => keyLog.writes(),
     interrupt: (key) => cockpit.interrupt(key),
     end: (key) => cockpit.end(key),
     conversationOf,
@@ -453,9 +463,31 @@ export async function sessionAfter(
   );
 }
 
-/** Gives the server's process the shim's variables, for the test: the driver reads them there. */
-function serveFrom(shim: RealAgentShim): void {
+/**
+ * Gives the prompts the agent took since a point of the hooks the driver
+ * read: what each `UserPromptSubmit` carried.
+ *
+ * @param cockpit - The contract cockpit.
+ * @param from - How many of {@link ContractCockpit.hooksRead} to pass over.
+ * @returns The prompts, in order.
+ */
+export function promptsSince(cockpit: ContractCockpit, from: number): unknown[] {
+  return cockpit.hooksRead
+    .slice(from)
+    .map((request) => request.body as HookPayload)
+    .filter((payload) => payload.hook_event_name === 'UserPromptSubmit')
+    .map((payload) => payload.prompt);
+}
+
+/**
+ * Gives the server's process the shim's variables, for the test: the driver
+ * reads them there. The key log's `tmux` comes second on the `PATH`, after
+ * the shim's folder, which holds the `claude` the driver must find first.
+ */
+function serveFrom(shim: RealAgentShim, keyLog: KeyLog): void {
   for (const [name, value] of Object.entries(shim.serverVariables)) vi.stubEnv(name, value);
+  const [shimFolder = '', ...rest] = (shim.serverVariables.PATH as string).split(':');
+  vi.stubEnv('PATH', [shimFolder, keyLog.folder, ...rest].join(':'));
 }
 
 /** What a recorded driver keeps. */

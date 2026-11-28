@@ -15,15 +15,19 @@ import { PATIENCE } from '../support/patience.ts';
 import {
   type ContractCockpit,
   type HookPayload,
+  promptsSince,
   SAID_KEY,
   sessionAfter,
   startContractCockpit,
 } from './cockpit-harness.ts';
 import {
-  assistantTexts,
+  boxOf,
   conversationTexts,
   INTERRUPTED,
   INTERRUPTED_FOR_TOOL_USE,
+  spinnerRow,
+  textsOf,
+  typeDraft,
   userTexts,
 } from './harness.ts';
 
@@ -34,11 +38,17 @@ import {
  * leaves.
  */
 
-/** A reply long enough to be still streaming whenever the test acts on it. */
 const REPLY = Array.from(
   { length: 300 },
   (_, index) => `Line ${index + 1} of the reply: some words to wrap and stream, item ${index + 1}.`,
 ).join('\n');
+
+/**
+ * A reply that streams for over a minute and a half (a piece of 24
+ * characters every 100 ms), longer than a whole test at any slowness: the
+ * test always acts on it mid-reply.
+ */
+const streamingReply = () => streamingTurn(turn(REPLY), { gapMs: 100 });
 
 /** The prompt given once a turn was stopped, and the scripted answer that ends its turn. */
 const NEXT_PROMPT = 'go on';
@@ -60,24 +70,9 @@ async function idleCockpit(
   return { cockpit, session: cockpit.terminal(SAID_KEY) };
 }
 
-/**
- * The spinner's row: a sign, words that end in `…`, as the last row of the
- * conversation above the box (the rows under it, a tip or the effort's,
- * are indented).
- */
-function spinnerRow(screen: string): string | undefined {
-  const box = readInputBoxView(screen);
-  if (box === undefined) return undefined;
-  const last = screen
-    .split('\n')
-    .slice(0, box.firstRow - 1)
-    .findLast((row) => row.trim() !== '' && !row.startsWith(' '));
-  return last !== undefined && /^\S \S[^…]*…/u.test(last) ? last : undefined;
-}
-
-/** What the input box holds, its trailing blanks left out; `undefined` when none shows. */
-async function boxOf(session: AgentSession): Promise<string | undefined> {
-  return readInputBoxView(await session.screen())?.text.trimEnd();
+/** Waits until the agent's screen shows something, within the agent's step. */
+async function untilShown(session: AgentSession, check: (screen: string) => void): Promise<void> {
+  await eventually(async () => check(await session.screen()), undefined, PATIENCE.agentStep);
 }
 
 /**
@@ -85,24 +80,10 @@ async function boxOf(session: AgentSession): Promise<string | undefined> {
  * the spinner's row above the box, the box holding what is given.
  */
 async function awaitsTheModel(session: AgentSession, box: string): Promise<void> {
-  await eventually(
-    async () => {
-      const screen = await session.screen();
-      expect(readInputBoxView(screen)?.text.trimEnd()).toBe(box);
-      expect(spinnerRow(screen)).toBeDefined();
-    },
-    undefined,
-    PATIENCE.agentStep,
-  );
-}
-
-/** Types a draft as a person does, a line break as Alt+Enter, and waits until the box shows it. */
-async function typeDraft(session: AgentSession, lines: readonly string[]): Promise<void> {
-  for (const [index, line] of lines.entries()) {
-    if (index > 0) await session.press('M-Enter');
-    await session.type(line);
-  }
-  await eventually(async () => expect(await boxOf(session)).toBe(lines.join('\n')));
+  await untilShown(session, (screen) => {
+    expect(readInputBoxView(screen)?.text).toBe(box);
+    expect(spinnerRow(screen)).toBeDefined();
+  });
 }
 
 /** The markers of an interruption the transcript records in the user's name. */
@@ -110,20 +91,11 @@ function markersIn(session: AgentSession): string[] {
   return userTexts(session).filter((text) => text.startsWith('[Request interrupted'));
 }
 
-/** The prompts the agent took since a point of the hooks read. */
-function promptsSince(cockpit: ContractCockpit, from: number): unknown[] {
-  return cockpit.hooksRead
-    .slice(from)
-    .map((request) => request.body as HookPayload)
-    .filter((payload) => payload.hook_event_name === 'UserPromptSubmit')
-    .map((payload) => payload.prompt);
-}
-
 /**
  * Sends a prompt through the cockpit, and waits for the turn it began to
  * end: the barrier after which nothing of an earlier turn can come.
  *
- * @returns The prompts the agent took meanwhile, and the session once idle.
+ * @returns What the send gave, the prompts the agent took meanwhile, and the session once idle.
  */
 async function sentAndAnswered(cockpit: ContractCockpit, prompt: string) {
   const hooksFrom = cockpit.hooksRead.length;
@@ -135,17 +107,20 @@ async function sentAndAnswered(cockpit: ContractCockpit, prompt: string) {
 
 it('130 — cockpit.interrupt on a session whose reply streams: one Esc, the transcript’s marker, interrupted and idle; the next send is taken', async () => {
   const cockpit = await startContractCockpit();
-  cockpit.api.script(streamingTurn(turn(REPLY)), NEXT_ANSWER);
+  cockpit.api.script(streamingReply(), NEXT_ANSWER);
   await cockpit.say('stream it');
   const held = await cockpit.api.heldRequest();
   const session = cockpit.terminal(SAID_KEY);
-  await eventually(async () => expect(await session.screen()).toMatch(STREAMING));
+  await untilShown(session, (screen) => expect(screen).toMatch(STREAMING));
+  const keysBefore = cockpit.keysSent().length;
 
   const interrupted = await cockpit.interrupt(SAID_KEY);
+  const pressed = cockpit.keysSent().slice(keysBefore);
   const markers = markersIn(session);
   const next = await sentAndAnswered(cockpit, NEXT_PROMPT);
 
   expect(interrupted).toEqual({ action: 'interrupted', state: 'idle' });
+  expect(pressed.map((write) => write.at(-1))).toEqual(['Escape']);
   expect(markers).toEqual([INTERRUPTED]);
   expect(await held.ended).toBe('client-gone');
   expect(next.sent).toEqual({ action: 'sent', state: expect.stringMatching(/^(busy|idle)$/) });
@@ -172,14 +147,14 @@ for (const [shape, prompt] of [
     await awaitsTheModel(session, '');
 
     const interrupted = await cockpit.interrupt(SAID_KEY);
-    const box = readInputBoxView(await session.screen());
+    const box = await boxOf(session);
     const markers = markersIn(session);
     const next = await sentAndAnswered(cockpit, NEXT_PROMPT);
 
     expect(interrupted).toEqual({ action: 'interrupted', state: 'idle' });
     expect(markers).toEqual([]);
     expect(await held.ended).toBe('client-gone');
-    expect({ text: box?.text.trimEnd(), hiddenAbove: box?.hiddenAbove }).toEqual({
+    expect({ text: box?.text, hiddenAbove: box?.hiddenAbove }).toEqual({
       text: '',
       hiddenAbove: 0,
     });
@@ -198,7 +173,7 @@ it('132 — An Esc pressed in the terminal before any output: the session goes i
 
   await session.press('Escape');
   const idle = await sessionAfter(cockpit, 'idle', from);
-  const box = await boxOf(session);
+  const box = (await boxOf(session))?.text;
   const markers = markersIn(session);
   const resubmitted = await cockpit.submitInputBoxInTerminal(SAID_KEY, prompt);
 
@@ -210,36 +185,38 @@ it('132 — An Esc pressed in the terminal before any output: the session goes i
 });
 
 it('133 — cockpit.interrupt while the box holds the person’s draft, put back by the send once its prompt was taken: interrupted, confirmed by the marker; the draft stays in the box, exact', async () => {
-  const draft = ['my draft, line one', 'and line two'];
+  const draft = 'my draft, line one\nand line two';
   const { cockpit, session } = await idleCockpit(heldTurn(), NEXT_ANSWER);
   await typeDraft(session, draft);
   await cockpit.send(SAID_KEY, 'the sent prompt');
   const held = await cockpit.api.heldRequest();
-  await awaitsTheModel(session, draft.join('\n'));
+  await awaitsTheModel(session, draft);
 
   const interrupted = await cockpit.interrupt(SAID_KEY);
   const markers = markersIn(session);
-  const box = await boxOf(session);
-  const resubmitted = await cockpit.submitInputBoxInTerminal(SAID_KEY, draft.join('\n'));
+  const box = (await boxOf(session))?.text;
+  const resubmitted = await cockpit.submitInputBoxInTerminal(SAID_KEY, draft);
 
   expect(interrupted).toEqual({ action: 'interrupted', state: 'idle' });
   expect(markers).toEqual([INTERRUPTED]);
   expect(await held.ended).toBe('client-gone');
-  expect(box).toBe(draft.join('\n'));
-  expect(resubmitted.prompt).toBe(draft.join('\n'));
+  expect(box).toBe(draft);
+  expect(resubmitted.prompt).toBe(draft);
 });
 
 it('134 — cockpit.end while a reply streams: the partial answer and the marker are kept in the transcript, the session ended by the app; a later send resumes the conversation with both', async () => {
   const cockpit = await startContractCockpit();
-  cockpit.api.script(streamingTurn(turn(REPLY)), NEXT_ANSWER);
+  cockpit.api.script(streamingReply(), NEXT_ANSWER);
   await cockpit.say('stream it');
   const held = await cockpit.api.heldRequest();
   const session = cockpit.terminal(SAID_KEY);
-  await eventually(async () => expect(await session.screen()).toMatch(STREAMING));
+  await untilShown(session, (screen) => expect(screen).toMatch(STREAMING));
 
   const ended = await cockpit.end(SAID_KEY);
   const endedSession = await cockpit.sessionIn(SAID_KEY, 'ended');
-  const partial = assistantTexts(session).filter((text) => text.startsWith('Line 1 of the reply'));
+  const partial = textsOf(session, 'assistant').filter((text) =>
+    text.startsWith('Line 1 of the reply'),
+  );
   const markers = markersIn(session);
   const resumed = await sentAndAnswered(cockpit, 'after the end');
   const carried = conversationTexts(await cockpit.api.conversationRequest(2));
@@ -258,17 +235,19 @@ it('134 — cockpit.end while a reply streams: the partial answer and the marker
   expect(carried.indexOf(INTERRUPTED)).toBeLessThan(carried.indexOf('after the end'));
 });
 
-it('135 — cockpit.end on a session waiting at the trust dialog: the dialog unanswered, the session ended by the app (not declined), its process gone, no hook at all', async () => {
+it('135 — cockpit.end on a session waiting at the trust dialog: no key pressed, the session ended by the app (not declined), its process gone, no hook at all', async () => {
   const cockpit = await startContractCockpit({ shim: { leftOutOfRecipe: ['folder-trust'] } });
   await cockpit.say('say one line');
   const waiting = await cockpit.sessionIn(SAID_KEY, 'waiting');
   const agent = await cockpit.terminal(SAID_KEY).processId();
+  const keysBefore = cockpit.keysSent().length;
 
   const ended = await cockpit.end(SAID_KEY);
   const session = await cockpit.sessionIn(SAID_KEY, 'ended');
 
   expect(waiting).toMatchObject({ pending: [{ kind: 'terminal', dialog: 'trust-folder' }] });
   expect(ended).toEqual({ action: 'ended', stoppedTasks: [] });
+  expect(cockpit.keysSent().slice(keysBefore)).toEqual([]);
   expect(session).toMatchObject({ state: 'ended', reason: 'app' });
   expect(session).not.toHaveProperty('dialog');
   expect(() => process.kill(agent, 0)).toThrow();
@@ -281,22 +260,30 @@ it('136 — cockpit.interrupt while a permission dialog shows in the terminal (n
   const cockpit = await startContractCockpit();
   cockpit.api.script(
     turn(toolUse('Bash', { command: `touch ${made}`, description: 'Make a file' })),
+    NEXT_ANSWER,
   );
   await cockpit.say('make the file');
   const session = cockpit.terminal(SAID_KEY);
-  await eventually(
-    async () => expect(await session.screen()).toContain(PERMISSION_DIALOG),
-    undefined,
-    PATIENCE.agentStep,
-  );
+  await untilShown(session, (screen) => expect(screen).toContain(PERMISSION_DIALOG));
   const before = cockpit.cockpit.sessions.list().find((listed) => listed.key === SAID_KEY);
 
   const interrupted = await cockpit.interrupt(SAID_KEY);
   const markers = markersIn(session);
-  await eventually(async () => expect(await session.screen()).not.toContain(PERMISSION_DIALOG));
+  await eventually(
+    async () => expect(await session.screen()).not.toContain(PERMISSION_DIALOG),
+    undefined,
+    PATIENCE.dialogAnswered,
+  );
+  // A hook of the interrupted turn would come before those of the next.
+  await sentAndAnswered(cockpit, NEXT_PROMPT);
+  const events = cockpit.hooksRead.map((request) => request.body as HookPayload);
 
   expect(before?.state).toBe('busy');
   expect(interrupted).toEqual({ action: 'interrupted', state: 'idle' });
   expect(markers).toEqual([INTERRUPTED_FOR_TOOL_USE]);
+  expect(events.filter((hook) => hook.hook_event_name === 'PermissionRequest')).toEqual([]);
+  expect(
+    events.filter((hook) => hook.hook_event_name === 'PostToolUse' && hook.tool_name === 'Bash'),
+  ).toEqual([]);
   expect(existsSync(join(cockpit.workFolder, made))).toBe(false);
 });

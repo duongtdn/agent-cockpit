@@ -3,7 +3,6 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { z } from 'zod';
 import { claudeCode } from '../../src/claude-code/index.ts';
-import { readInputBoxView } from '../../src/claude-code/screen-reading.ts';
 import type { Job } from '../../src/server/index.ts';
 import type { Session } from '../../src/shared/session.ts';
 import type { AgentSession } from '../support/agent-session.ts';
@@ -19,7 +18,7 @@ import {
   sessionAfter,
   startContractCockpit,
 } from './cockpit-harness.ts';
-import { conversationTexts } from './harness.ts';
+import { boxOf, conversationTexts, typeDraft } from './harness.ts';
 
 /**
  * The units of work on the real agent, through `createCockpit` with the
@@ -354,21 +353,6 @@ it('117 — A first prompt longer than the command line takes (over 120,000 byte
   expect(idle).toMatchObject({ lastMessage: 'Read it all.' });
 });
 
-/** Types a draft as a person does, a line break as Alt+Enter, and waits until the box shows it. */
-async function typeDraft(session: AgentSession, lines: readonly string[]): Promise<void> {
-  for (const [index, line] of lines.entries()) {
-    if (index > 0) await session.press('M-Enter');
-    await session.type(line);
-  }
-  await eventually(async () =>
-    expect(readInputBoxView(await session.screen())?.text).toBe(lines.join('\n')),
-  );
-}
-
-async function boxOf(session: AgentSession): Promise<string | undefined> {
-  return readInputBoxView(await session.screen())?.text;
-}
-
 it('118 — A send keeps a person’s draft of several lines: the prompt typed over it is taken exact, the draft comes back exact', async () => {
   const cockpit = await startContractCockpit();
   cockpit.api.script(turn('Ready.'), turn('Sent.'));
@@ -377,7 +361,7 @@ it('118 — A send keeps a person’s draft of several lines: the prompt typed o
   const session = cockpit.terminal(SAID_KEY);
   const draft = ['the first line of my draft', '', '  the third, indented'];
 
-  await typeDraft(session, draft);
+  await typeDraft(session, draft.join('\n'));
   const from = cockpit.hooksRead.length;
   const [sent] = await idleAfter(cockpit, () => cockpit.send(SAID_KEY, 'a prompt\nof two lines'));
 
@@ -387,7 +371,7 @@ it('118 — A send keeps a person’s draft of several lines: the prompt typed o
       .filter((hook) => hook.hook_event_name === 'UserPromptSubmit')
       .map((hook) => hook.prompt),
   ).toEqual(['a prompt\nof two lines']);
-  await eventually(async () => expect(await boxOf(session)).toBe(draft.join('\n')));
+  await eventually(async () => expect((await boxOf(session))?.text).toBe(draft.join('\n')));
 });
 
 /**
@@ -447,7 +431,7 @@ it('119 — A permission dialog drawn while a send types (a turn the agent began
   await cockpit.sessionIn(SAID_KEY, 'idle');
   const session = cockpit.terminal(SAID_KEY);
   await eventually(async () => expect(await session.screen()).toMatch(/1 shell/));
-  await typeDraft(session, ['my draft']);
+  await typeDraft(session, 'my draft');
 
   const sending = cockpit.send(SAID_KEY, LONG_PROMPT).then(
     () => expect.fail('The send was not stopped.'),
@@ -482,7 +466,7 @@ it('119 — A permission dialog drawn while a send types (a turn the agent began
   expect(prompts.at(-1)).toContain('<task-notification>');
   expect(prompts).not.toContain(LONG_PROMPT);
   await eventually(async () => {
-    const box = (await boxOf(session)) ?? '';
+    const box = (await boxOf(session))?.text ?? '';
     // The box wraps the draft's words onto its rows as it wraps any text.
     if (keys.length > 0) expect(box.replace(/\s+/gu, ' ')).toMatch(/my draft$/);
     else expect(box).toBe('my draft');

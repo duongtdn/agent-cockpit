@@ -12,11 +12,12 @@ import { PATIENCE, POLL } from '../support/patience.ts';
 import {
   type ContractCockpit,
   type ContractCockpitOptions,
-  type HookPayload,
+  promptsSince,
   SAID_KEY,
   sessionAfter,
   startContractCockpit,
 } from './cockpit-harness.ts';
+import { boxOf, typeDraft } from './harness.ts';
 import { typingTerminal } from './typing-terminal.ts';
 
 /**
@@ -45,20 +46,6 @@ async function idleSession(
   await cockpit.say('get ready');
   await cockpit.sessionIn(SAID_KEY, options.until ?? 'idle');
   return { cockpit, session: cockpit.terminal(SAID_KEY) };
-}
-
-/** Types a draft as a person does, a line break as Alt+Enter, and waits until the box shows its end. */
-async function typeDraft(session: AgentSession, draft: string): Promise<void> {
-  for (const [index, line] of draft.split('\n').entries()) {
-    if (index > 0) await session.press('M-Enter');
-    if (line !== '') await session.type(line);
-  }
-  // A line wider than the box shows on several rows: its end is what the box ends with.
-  const bare = (text: string) => text.replace(/\s+/gu, '');
-  const end = bare(draft).slice(-100);
-  await eventually(async () => {
-    expect(bare(readInputBoxView(await session.screen())?.text ?? '').endsWith(end)).toBe(true);
-  });
 }
 
 /** Where the cursor is in the draft: its row, those scrolled out above counted, and its column. */
@@ -111,14 +98,6 @@ async function typed(
   return { outcome, writes: terminal.writes, prompts: promptsSince(cockpit, hooksFrom) };
 }
 
-function promptsSince(cockpit: ContractCockpit, from: number): unknown[] {
-  return cockpit.hooksRead
-    .slice(from)
-    .map((request) => request.body as HookPayload)
-    .filter((payload) => payload.hook_event_name === 'UserPromptSubmit')
-    .map((payload) => payload.prompt);
-}
-
 /**
  * Submits what the box holds, Enter again while it stays there, and gives
  * the prompt the agent took: the draft put back, character for character.
@@ -135,10 +114,6 @@ async function submitBox(cockpit: ContractCockpit, session: AgentSession): Promi
     }
   }
   throw new Error(`The box was not submitted: it shows ${await session.screen()}`);
-}
-
-async function boxOf(session: AgentSession) {
-  return readInputBoxView(await session.screen());
 }
 
 const draftLines = (count: number) =>

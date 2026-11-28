@@ -166,8 +166,11 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   dialog it spares), its `variables` and `passedOn`, the person's own
   settings, and the app's jobs beside `say` (run, sent to and opened
   through the cockpit's `run`, `send` and `open`). The rows of the
-  driver's options, dialogs, failed turns, compaction, `/clear`, interruptions, tasks, version, the app's sandbox
-  and the settings files' denies run through it.
+  driver's options, dialogs, failed turns, compaction, `/clear`, interruptions, interrupt and end, tasks, version, the app's sandbox
+  and the settings files' denies run through it. `keysSent()` gives every
+  write the cockpit made into its terminals (each tmux `send-keys`, logged
+  by a `tmux` second on the server's `PATH`, `key-log.ts`); the test's own
+  keys go through the real one and are not among them.
 - **The rows, by file:** `starting` (1–3), `prompts` (4, 5, 7), `ending`
   (8; 30 SIGTERM idle or with a turn held, the conversation resumed; 32
   mid-turn: the prompt kept, no partial answer, no marker; 129 at the
@@ -176,7 +179,16 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   prompt; 23 an early Esc over an empty box withdraws the prompt into it;
   24 one Esc on an idle, empty box changes nothing, two open the rewind
   menu; 25 Ctrl+U; 28 a background subagent runs on past an Esc; 128 an
-  early Esc over a draft interrupts, the draft kept alone), `clear` (93, `/clear`'s new
+  early Esc over a draft interrupts, the draft kept alone),
+  `interrupt-and-end` (130–136, through the cockpit's `interrupt` and
+  `end`: 130 a streaming reply interrupted by one Esc, the marker; 131 a
+  prompt of one, five and 24 lines withdrawn over an empty box, read on
+  screen and cleared; 132 a person's Esc: idle by the withdrawn read, the
+  prompt left in the box; 133 a draft kept exact, the marker; 134 `end`
+  mid-reply keeping the partial answer and the marker, resumed with both;
+  135 `end` at the trust dialog: no key, `app`, not `declined`; 136 a
+  permission dialog shown in the terminal interrupted, the tool not run),
+  `clear` (93, `/clear`'s new
   conversation followed), `tasks` (15 a background
   subagent and its `<task-notification>` turn, 62 and 73 its hooks'
   `agent_id`), `compaction` (16, 94 an interrupted `/compact`, 123 one
