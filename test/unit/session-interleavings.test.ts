@@ -10,8 +10,8 @@
  * is unknown, with no record, and nothing of a removed record — its
  * conversations, its history — comes back into the key's record when it
  * is run again, and no session was ended for idleness while a terminal
- * was attached to it, a background task ran in it, or it was not `idle`, as
- * its end began.
+ * was attached to it, a background task ran in it, or it was not `idle`
+ * since the timeout or longer, as its end began.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -138,8 +138,9 @@ class World {
   /** Each key of an interrupt that resolved `interrupted` though no change made its session `idle` while it ran. */
   readonly interruptedNotIdle: string[] = [];
   /**
-   * Each end for idleness begun on a session that was not `idle`, or had a
-   * terminal attached or a background task running: `<key> <why>`.
+   * Each end for idleness begun on a session that was not `idle` since the
+   * timeout or longer, or had a terminal attached or a background task
+   * running: `<key> <why>`.
    */
   readonly idleEndsOfHeld: string[] = [];
   /** How many terminals are attached to each key's session, as the host counts them. */
@@ -403,7 +404,7 @@ class World {
       });
   }
 
-  /** Marks each end for idleness begun on a session that something held, as the end begins. */
+  /** Marks each end for idleness begun on a session that something held, or too soon, as the end begins. */
   #watchTheIdleEnds(): void {
     const end = this.sessions.end.bind(this.sessions);
     this.sessions.end = (key, reason) => {
@@ -411,6 +412,9 @@ class World {
         const session = this.sessions.session(key);
         if (session?.state !== 'idle') this.idleEndsOfHeld.push(`${key} ${session?.state}`);
         else if (session.backgroundTasks !== undefined) this.idleEndsOfHeld.push(`${key} tasks`);
+        else if (Date.now() - Date.parse(session.since) < (this.#idleTimeoutMs ?? 0)) {
+          this.idleEndsOfHeld.push(`${key} idle since ${session.since}`);
+        }
         if ((this.#attached.get(key) ?? 0) > 0) this.idleEndsOfHeld.push(`${key} attached`);
       }
       return end(key, reason);

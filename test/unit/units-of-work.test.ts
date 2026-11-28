@@ -6,7 +6,6 @@ import type { JobRun, JobRuns } from '../../src/server/sessions/job-runs.ts';
 import {
   createSessions,
   LIVENESS_INTERVAL_MS,
-  SCREEN_INTERVAL_MS,
   type Sessions,
   SessionsClosedError,
   START_DEADLINE_MS,
@@ -2046,6 +2045,11 @@ describe('the idle timeout', () => {
     expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'idle-timeout' });
   });
 
+  it('refuses a timeout no timer can wait: `RangeError`', async () => {
+    await expect(open({ idleTimeoutMs: 0 })).rejects.toBeInstanceOf(RangeError);
+    await expect(open({ idleTimeoutMs: 2 ** 31 })).rejects.toBeInstanceOf(RangeError);
+  });
+
   it('ends nothing when it is off', async () => {
     await open();
     await started();
@@ -2145,6 +2149,23 @@ describe('the idle timeout', () => {
 
     expect(signals).toEqual([]);
     expect(sessionOf()?.state).toBe('busy');
+  });
+
+  it('ends no session idle anew while its terminals were counted: it is timed from its new `idle`', async () => {
+    await idleSession();
+    const counted = host.holdNextCount();
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+
+    hook('/working');
+    idle();
+    counted.open();
+    await settle();
+    expect(signals).toEqual([]);
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1);
+    expect(signals).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
   });
 
   it('ends with `idle-timeout` a session whose turn begins once its end has begun', async () => {

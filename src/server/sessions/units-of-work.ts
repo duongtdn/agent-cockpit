@@ -73,12 +73,15 @@ export interface UnitsOfWorkOptions {
    * 'idle-timeout'`, in milliseconds: an integer from 1 to 2,147,483,647;
    * no session is ended for idleness when left out. The time counts from
    * when the session became `idle`; any other state, and every new `idle`,
-   * starts it again. A session the cap could not end either — with a
+   * starts it again. A session held as the cap holds one — with a
    * background task, a terminal attached (a count that fails counts as
    * one) or an operation under way on its key — is not ended then, and is
    * tried again one full timeout later. The state is read once the
    * terminals are counted, and its end begins at once: a turn that begins
-   * after that ends with it.
+   * after that ends with it; a session found in another `idle` than the
+   * one timed is timed from its new one. An end that fails is written to
+   * `console.error`, and the session tried again one full timeout later.
+   * {@link openUnitsOfWork} rejects any other value with a `RangeError`.
    */
   readonly idleTimeoutMs?: number;
 }
@@ -279,6 +282,8 @@ export interface UnitsOfWork {
  *
  * @param options - See {@link UnitsOfWorkOptions}.
  * @returns The units of work.
+ * @throws `RangeError` when `idleTimeoutMs` is not an integer from 1 to
+ * 2,147,483,647: the cockpit's options refuse such a value first.
  */
 export async function openUnitsOfWork(options: UnitsOfWorkOptions): Promise<UnitsOfWork> {
   const since = new Date().toISOString();
@@ -388,9 +393,10 @@ class Units implements UnitsOfWork {
     this.#idleTimeout =
       options.idleTimeoutMs === undefined
         ? undefined
-        : createIdleTimeout({
+        : // An end that fails goes to `console.error`, its default, as what a follower throws does.
+          createIdleTimeout({
             timeoutMs: options.idleTimeoutMs,
-            tryEnd: (key) => this.#endForIdleness(key),
+            tryEnd: (key, since) => this.#endForIdleness(key, since),
           });
     this.#stops = [
       this.#sessions.follow((list) => {
@@ -818,15 +824,16 @@ class Units implements UnitsOfWork {
   }
 
   /**
-   * The idle timeout's try of a session: ended as the cap would end it,
-   * when the cap could. A key whose turn is taken is held; the units of
+   * The idle timeout's try of a session in the `idle` begun at `since`:
+   * ended as the cap would end it, when the cap could and the session is
+   * still in that `idle`. A key whose turn is taken is held; the units of
    * work closed meanwhile end nothing more, and their idle timeout tries
    * nothing more either.
    */
-  async #endForIdleness(key: string): Promise<'ended' | 'held' | 'not-idle'> {
+  async #endForIdleness(key: string, since: string): Promise<'ended' | 'held' | 'not-idle'> {
     try {
       const begun = await this.#queue.tryRun(key, () =>
-        this.#beginEndIfEndable(key, 'idle-timeout'),
+        this.#beginEndIfEndable(key, 'idle-timeout', since),
       );
       if (begun === undefined) return 'held';
       if (begun.endability !== 'endable') return begun.endability;
@@ -839,16 +846,20 @@ class Units implements UnitsOfWork {
   }
 
   /**
-   * Begins the end of a session still endable, for the reason given. Its
-   * end is handed back unawaited, so that the key's turn is freed once the
-   * end is begun: an operation on the key then finds it being ended, and is
-   * refused, or joins that end.
+   * Begins the end of a session still endable, for the reason given; with
+   * `since`, only in the `idle` begun then. Its end is handed back
+   * unawaited, so that the key's turn is freed once the end is begun: an
+   * operation on the key then finds it being ended, and is refused, or
+   * joins that end.
    */
-  #beginEndIfEndable(key: string, reason: EndReason): Promise<BegunEnd> {
-    return this.#checkEndability(key, (endability) =>
-      endability === 'endable'
-        ? { endability, ended: this.#sessions.end(key, reason) }
-        : { endability },
+  #beginEndIfEndable(key: string, reason: EndReason, since?: string): Promise<BegunEnd> {
+    return this.#checkEndability(
+      key,
+      (endability) =>
+        endability === 'endable'
+          ? { endability, ended: this.#sessions.end(key, reason) }
+          : { endability },
+      since,
     );
   }
 
@@ -870,15 +881,20 @@ class Units implements UnitsOfWork {
    * idleness, and hands it to `act` in the same step as the session is
    * read: the state is read once the terminals are counted, with nothing
    * run between that read and `act`, so that a session found endable is
-   * still so as `act` begins its end.
+   * still so as `act` begins its end. With `since`, a session in another
+   * `idle` than the one begun then is `not-idle`.
    */
-  async #checkEndability<T>(key: string, act: (endability: Endability) => T): Promise<T> {
+  async #checkEndability<T>(
+    key: string,
+    act: (endability: Endability) => T,
+    since?: string,
+  ): Promise<T> {
     // A session that is not endable as it stands needs no count of its terminals.
-    const before = endabilityOf(this.#sessions.session(key), 0);
+    const before = endabilityOf(this.#sessions.session(key), 0, since);
     if (before !== 'endable') return act(before);
     // A count the host cannot give is a terminal that may be attached.
     const attached = await this.#sessions.terminalsAttached(key).catch(() => 1);
-    return act(endabilityOf(this.#sessions.session(key), attached));
+    return act(endabilityOf(this.#sessions.session(key), attached, since));
   }
 
   /**
@@ -991,8 +1007,11 @@ type BegunEnd =
   | { readonly endability: 'endable'; readonly ended: Promise<readonly BackgroundTask[]> }
   | { readonly endability: Exclude<Endability, 'endable'> };
 
-function endabilityOf(session: Session | undefined, attached: number): Endability {
-  if (session?.state !== 'idle') return 'not-idle';
+/** With `since`, a session in another `idle` than the one begun then counts as `not-idle`. */
+function endabilityOf(session: Session | undefined, attached: number, since?: string): Endability {
+  if (session?.state !== 'idle' || (since !== undefined && session.since !== since)) {
+    return 'not-idle';
+  }
   return session.backgroundTasks === undefined && attached === 0 ? 'endable' : 'held';
 }
 

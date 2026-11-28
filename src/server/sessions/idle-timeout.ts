@@ -18,11 +18,13 @@ export interface Timers {
 
 /**
  * The core's attempt to end a session for `reason: 'idle-timeout'`, checking
- * and ending in one step. It answers `'ended'`, or `'held'` when background
- * tasks run, a terminal is attached or an operation of the app on the key is
- * under way, or `'not-idle'` when the session is no longer `idle`.
+ * and ending in one step. It is given the `since` of the `idle` that was
+ * timed, and answers `'ended'`, or `'held'` when background tasks run, a
+ * terminal is attached or an operation of the app on the key is under way,
+ * or `'not-idle'` when the session is no longer in that `idle`: another
+ * state, or an `idle` begun since.
  */
-export type TryEnd = (key: string) => Promise<'ended' | 'held' | 'not-idle'>;
+export type TryEnd = (key: string, since: string) => Promise<'ended' | 'held' | 'not-idle'>;
 
 /** What an idle timeout is built with. */
 export interface IdleTimeoutOptions {
@@ -156,16 +158,16 @@ class IdleTimers implements IdleTimeout {
 
   async #fire(key: string, watch: Watch): Promise<void> {
     delete watch.timer;
-    const tryAgain = await this.#tryOnce(key);
+    const tryAgain = await this.#tryOnce(key, watch.since);
     // An update, a forget or a close while the try was out decided already.
     // Ended or no longer idle, the session's next update clears or re-times it.
     if (tryAgain && this.#watches.get(key) === watch) this.#arm(key, watch, this.#timeoutMs);
   }
 
   /** Whether the session must be tried again: it was held, or the try failed. */
-  async #tryOnce(key: string): Promise<boolean> {
+  async #tryOnce(key: string, since: string): Promise<boolean> {
     try {
-      return (await this.#tryEnd(key)) === 'held';
+      return (await this.#tryEnd(key, since)) === 'held';
     } catch (thrown) {
       this.#reportSafely(thrown);
       return true;

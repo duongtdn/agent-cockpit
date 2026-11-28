@@ -15,6 +15,8 @@ const KEY = 'explain-readme';
 type Outcome = Awaited<ReturnType<TryEnd>>;
 
 let tries: string[];
+/** The `since` of the `idle` each try was for, in order. */
+let triedSinces: string[];
 let outcomes: (() => Promise<Outcome>)[];
 let reported: unknown[];
 let idleTimeout: IdleTimeout;
@@ -45,8 +47,9 @@ function answer(...next: (Outcome | Error | Promise<Outcome>)[]): void {
 function build(timers?: Timers): IdleTimeout {
   return createIdleTimeout({
     timeoutMs: TIMEOUT_MS,
-    tryEnd: (key) => {
+    tryEnd: (key, since) => {
       tries.push(key);
+      triedSinces.push(since);
       return outcomes.shift()?.() ?? Promise.resolve('ended');
     },
     report: (thrown) => reported.push(thrown),
@@ -57,6 +60,7 @@ function build(timers?: Timers): IdleTimeout {
 beforeEach(() => {
   vi.useFakeTimers({ now: T0 });
   tries = [];
+  triedSinces = [];
   outcomes = [];
   reported = [];
   idleTimeout = build();
@@ -91,6 +95,14 @@ describe('an idle session', () => {
     expect(tries).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     expect(tries).toEqual([KEY]);
+  });
+
+  it('is tried for the `idle` it was timed from: its `since` given', async () => {
+    idleTimeout.observe(idle(at(0)));
+
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+
+    expect(triedSinces).toEqual([at(0)]);
   });
 
   it('counts from its `since`, not from when it is observed', async () => {
