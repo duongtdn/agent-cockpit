@@ -38,16 +38,23 @@ describe("a permission's answer", () => {
     expect(pathsOf({ allow: true, remember })).toEqual([['remember']]);
   });
 
-  it('is refused when it remembers a denial', () => {
-    const issues = issuesOf({ allow: false, remember: 'session' });
-    expect(issues).toHaveLength(1);
-    expect(issues[0]?.message).toContain('remember');
+  it('is refused at remember when it remembers a denial', () => {
+    expect(pathsOf({ allow: false, remember: 'session' })).toEqual([['remember']]);
   });
 
-  it('is refused when an allow carries a message', () => {
-    const issues = issuesOf({ allow: true, message: 'Go on.' });
-    expect(issues).toHaveLength(1);
-    expect(issues[0]?.message).toContain('message');
+  it('is refused at message when an allow carries a message', () => {
+    expect(pathsOf({ allow: true, message: 'Go on.' })).toEqual([['message']]);
+  });
+
+  it.each([
+    [{ allow: true, remember: undefined }, { allow: true }],
+    [{ allow: false, message: undefined }, { allow: false }],
+    [{ allow: true, message: undefined }, { allow: true }],
+    [{ allow: false, remember: undefined }, { allow: false }],
+  ])('takes a field given as undefined as absent, and leaves it out: %j', (answer, taken) => {
+    const checked = checkAnswer('permission', answer);
+    expect(checked).toEqual({ answer: taken });
+    expect(Object.keys('answer' in checked ? checked.answer : {})).toEqual(['allow']);
   });
 
   it.each([

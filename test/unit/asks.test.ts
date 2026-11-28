@@ -218,6 +218,39 @@ describe('the settled asks remembered', () => {
   });
 });
 
+describe('the settlements remembered, by scope', () => {
+  it("gives those of a key, or of every key with '*', oldest first, until the key is removed", async () => {
+    const { asks } = registry();
+    const first = asks.open('k1', LIST, connection().answering);
+    const second = asks.open('k2', WRITE, TERMINAL_ONLY);
+    const third = asks.open('k1', WRITE, TERMINAL_ONLY);
+    asks.open('k1', LIST, TERMINAL_ONLY);
+    asks.settle(third.id, 'cancelled');
+    asks.settle(second.id, 'terminal');
+    await asks.answer(first.id, { allow: true });
+
+    expect(asks.settled('k1')).toEqual([
+      { id: third.id, key: 'k1', by: 'cancelled' },
+      { id: first.id, key: 'k1', by: 'app' },
+    ]);
+    expect(asks.settled('*')).toEqual([
+      { id: third.id, key: 'k1', by: 'cancelled' },
+      { id: second.id, key: 'k2', by: 'terminal' },
+      { id: first.id, key: 'k1', by: 'app' },
+    ]);
+    asks.forget('k1');
+    expect(asks.settled('*')).toEqual([{ id: second.id, key: 'k2', by: 'terminal' }]);
+    expect(asks.settled('k3')).toEqual([]);
+  });
+
+  it("gives the pending asks of every key with '*'", () => {
+    const { asks } = registry();
+    const first = asks.open('k1', LIST, connection().answering);
+    const second = asks.open('k2', WRITE, TERMINAL_ONLY);
+    expect(asks.pending('*')).toEqual([first, second]);
+  });
+});
+
 describe('settling an ask from the core', () => {
   it('settles a pending ask once, tells it once, and says whether it settled it', () => {
     const { asks } = registry();

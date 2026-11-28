@@ -57,6 +57,7 @@ export class Asks {
   readonly #options: AsksOptions;
   /** In the order the asks opened: a Map keeps its insertion order, and a replaced value its place. */
   readonly #pending = new Map<string, PendingAsk>();
+  /** In the order the asks settled. */
   readonly #settled = new Map<string, AskSettled>();
   /** Each key's settled ids, oldest first. */
   readonly #settledOfKey = new Map<string, Set<string>>();
@@ -124,13 +125,25 @@ export class Asks {
   }
 
   /**
-   * The pending asks of a key.
+   * The pending asks of a key, or of every key.
    *
-   * @param key - The unit of work's key.
-   * @returns Its pending asks, in the order they opened.
+   * @param scope - The unit of work's key, or `'*'` for every one.
+   * @returns The scope's pending asks, in the order they opened.
    */
-  pending(key: string): readonly Ask[] {
-    return this.#pendingIn(key);
+  pending(scope: string): readonly Ask[] {
+    return this.#pendingIn(scope);
+  }
+
+  /**
+   * The settlements remembered of a key, or of every key: each key's 1,000
+   * most recent, until the key is removed. A follower that connects learns
+   * from them which asks were settled while it was away, and by whom.
+   *
+   * @param scope - The unit of work's key, or `'*'` for every one.
+   * @returns The scope's settlements, oldest first.
+   */
+  settled(scope: string): readonly AskSettled[] {
+    return [...this.#settled.values()].filter((settled) => inScope(scope, settled));
   }
 
   /**
@@ -276,8 +289,8 @@ export class Asks {
   }
 }
 
-function inScope(scope: string, ask: Ask): boolean {
-  return scope === '*' || ask.key === scope;
+function inScope(scope: string, of: { readonly key: string }): boolean {
+  return scope === '*' || of.key === scope;
 }
 
 function alreadySettled(id: string, by: AskSettled['by']): CockpitError<'already-settled'> {

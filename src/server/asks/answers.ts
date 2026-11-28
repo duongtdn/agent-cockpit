@@ -7,18 +7,37 @@ import { issuesOf } from '../jobs.js';
 const MAX_MESSAGE_LENGTH = 100_000;
 
 /**
+ * A field given as `undefined` taken as absent, and left out: an app built
+ * without `exactOptionalPropertyTypes` may write one, which JSON would drop
+ * on the wire anyway.
+ */
+function withoutUndefinedFields(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined));
+}
+
+/**
  * Each kind's answer, as the app may give it. Every shape is strict: a field
  * of another kind's answer is refused rather than dropped, so that an answer
- * meant for another ask never reaches the agent as half of one.
+ * meant for another ask never reaches the agent as half of one. A field of
+ * the other branch is named, so that its issue points at it.
  */
 const ANSWER_SHAPES: { readonly [Kind in Ask['kind']]: z.ZodType<AskAnswer> } = {
-  permission: z.discriminatedUnion('allow', [
-    z.strictObject({ allow: z.literal(true), remember: z.literal('session').exactOptional() }),
-    z.strictObject({
-      allow: z.literal(false),
-      message: z.string().min(1).max(MAX_MESSAGE_LENGTH).exactOptional(),
-    }),
-  ]),
+  permission: z.preprocess(
+    withoutUndefinedFields,
+    z.discriminatedUnion('allow', [
+      z.strictObject({
+        allow: z.literal(true),
+        remember: z.literal('session').exactOptional(),
+        message: z.never({ error: 'An allow carries no message.' }).exactOptional(),
+      }),
+      z.strictObject({
+        allow: z.literal(false),
+        remember: z.never({ error: 'A denial cannot be remembered.' }).exactOptional(),
+        message: z.string().min(1).max(MAX_MESSAGE_LENGTH).exactOptional(),
+      }),
+    ]),
+  ),
 };
 
 /** An answer checked against its ask's kind: the answer it fits as, or each way it does not fit. */
