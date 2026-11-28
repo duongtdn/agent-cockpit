@@ -370,6 +370,8 @@ describe('a turn, or a process, drops its calls and asks', () => {
     ['the next prompt (a plain "No" or Esc ends the turn with no PostToolUse)', 'UserPromptSubmit'],
     ['the session starting', 'SessionStart'],
     ['the session ending', 'SessionEnd'],
+    ['the turn ending', 'Stop'],
+    ['the turn failing', 'StopFailure'],
   ])('at %s', (_, event) => {
     const asked = bashAsked();
     const call = started(asked, 'toolu_1');
@@ -377,9 +379,24 @@ describe('a turn, or a process, drops its calls and asks', () => {
     askOf(asked);
     read(inAuto(started(readOf('r1.txt'), 'toolu_2')));
 
-    read(recordedPayload(event));
+    read(recordedPayload(event, ofTheSession));
 
     expect(askEvents(finished(call))).toEqual([]);
     expect(read(notification('permission_prompt')).events).toEqual([]);
   });
+
+  it.each(['Stop', 'StopFailure'])(
+    'at %s, with no UserPromptSubmit after it: an identical call of the next turn settles its own ask',
+    (event) => {
+      const asked = bashAsked();
+      read(started(asked, 'toolu_1'));
+      askOf(asked);
+      read(recordedPayload(event, ofTheSession));
+      const next = started({ ...asked, prompt_id: 'next-turn' }, 'toolu_2');
+      read(next);
+      const { ref } = askOf({ ...asked, prompt_id: 'next-turn' });
+
+      expect(askEvents(finished(next))).toEqual([{ type: 'call-finished', ref }]);
+    },
+  );
 });

@@ -60,8 +60,8 @@ export type AskReader = (key: string, payload: Record<string, unknown>) => HookO
 
 /**
  * Makes a reader of a driver's asks, which keeps, for each session, its
- * unfinished calls and its open asks, until its batch, its turn or its
- * process ends.
+ * unfinished calls and its open asks, until its batch, its turn (`Stop`,
+ * `StopFailure`, or the next prompt) or its process ends.
  *
  * A `PermissionRequest` carries no `tool_use_id`: its ask is matched to
  * the oldest unmatched `PreToolUse` of the same tool, input and turn
@@ -110,10 +110,13 @@ function read(turn: Turn, payload: Record<string, unknown>, openAsk: AskOpener):
       // The next batch's calls come only after this hook's reply: whatever is open is this batch's.
       forget(turn);
       return { events: [{ type: 'batch-ended' }] };
+    case 'Stop':
+    case 'StopFailure':
     case 'UserPromptSubmit':
     case 'SessionStart':
     case 'SessionEnd':
-      // A plain "No", an Esc or an interruption ends a turn with no hook for its calls.
+      // A plain "No", an Esc or an interruption ends a turn with no hook for its calls; a turn
+      // may follow with no UserPromptSubmit, whose identical call an entry left would absorb.
       forget(turn);
       return NOTHING;
     default:
