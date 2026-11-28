@@ -679,20 +679,31 @@ describe('the sessions of the host', () => {
     await eventually(() => expect(hasEnded(victim?.pid ?? 0)).toBe(true));
   });
 
-  it('kill the process of a session it outlives, one that ignores the hangup and the terminate signal', async () => {
-    await startScript('stubborn', "trap '' TERM HUP; echo trapped; while :; do sleep 1; done");
-    await expectScreen('stubborn', 'trapped');
+  it('kill the processes of a session they outlive, which ignore the hangup and the terminate signal: its own and its children', async () => {
+    await startScript(
+      'stubborn',
+      "trap '' TERM HUP; sh -c 'while :; do sleep 1; done' & echo \"child $!\"; while :; do sleep 1; done",
+    );
+    const child = Number(
+      await eventually(async () => {
+        const shown = /child (\d+)/.exec(await screenOf('stubborn'))?.[1];
+        expect(shown).toBeDefined();
+        return shown;
+      }),
+    );
     const stubborn = await host.processOf('stubborn');
-    const pid = stubborn?.pid ?? 0;
+    const pids = [stubborn?.pid ?? 0, child];
 
     try {
       expect(await host.kill('stubborn')).toBe('killed');
 
       expect(await host.isLive('stubborn')).toBe(false);
-      await eventually(() => expect(hasEnded(pid)).toBe(true), undefined, PATIENCE.exit);
+      for (const pid of pids) {
+        await eventually(() => expect(hasEnded(pid)).toBe(true), undefined, PATIENCE.exit);
+      }
     } finally {
-      // A host that left it running must not leave it to the machine.
-      if (isRunning(pid)) process.kill(pid, 'SIGKILL');
+      // A host that left them running must not leave them to the machine.
+      for (const pid of pids.filter(isRunning)) process.kill(pid, 'SIGKILL');
     }
   });
 
