@@ -4,9 +4,10 @@
  * test doubles, with fake timers. Whatever the order, once time has passed
  * every bound and every agent has exited: no session is left between two
  * phases, every call settled, each session's end was told once, nothing
- * was typed into a session after the cockpit asked it to end, and no
+ * was typed into a session after the cockpit asked it to end, no
  * interrupt, an end's own among them, pressed its keys twice, nor resolved
- * `interrupted` on a session not `idle`.
+ * `interrupted` on a session not `idle`, and a key removed and not run
+ * since is unknown, with no record.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -38,6 +39,7 @@ import {
   createRecordingHookAccess,
   createStubDriver,
   type FakeHost,
+  type MemoryRecords,
   PROMPT_PATH,
   type StubDriver,
   stubFolders,
@@ -128,6 +130,7 @@ class World {
   readonly keysPressedAgain: string[] = [];
   /** Each key of an interrupt that resolved `interrupted` though no change made its session `idle` while it ran. */
   readonly interruptedNotIdle: string[] = [];
+  readonly records: MemoryRecords = createMemoryRecords();
   units: UnitsOfWork | undefined;
   closed = false;
   /** The keys whose agent the cockpit asked to end or killed, until their next start. */
@@ -138,6 +141,11 @@ class World {
   readonly #interrupting = new Map<string, number>();
   /** The keys whose interrupt runs in the core and saw a change of its session to `idle`. */
   readonly #idleSeen = new Set<string>();
+  /**
+   * Each key whose last run or remove asked was a remove, with whether it
+   * resolved `removed`: no run asked before it can record the key after it.
+   */
+  readonly #removals = new Map<string, { removed: boolean }>();
 
   constructor({ exitOnSignal, slowness }: Setting) {
     const driver = this.#driver;
@@ -180,7 +188,7 @@ class World {
   async open({ maxSessions }: Setting): Promise<void> {
     this.units = await openUnitsOfWork({
       sessions: this.sessions,
-      records: createMemoryRecords(),
+      records: this.records,
       jobs: JOBS,
       driver: { launchSettings: () => ({}), canResume: async () => true },
       environment: () => ({ PATH: '/usr/bin' }),
@@ -228,6 +236,30 @@ class World {
         call.failure = failure;
       },
     );
+  }
+
+  /** Runs a job, as the app asks. */
+  run(job: string, file: File, fresh: boolean): void {
+    this.#removals.delete(keyOf(file));
+    this.call(`run ${job} ${file}`, this.unitsOfWork.run(job, { file }, { fresh }));
+  }
+
+  /** Removes a unit of work, as the app asks. */
+  remove(key: string): void {
+    const removal = { removed: false };
+    this.#removals.set(key, removal);
+    const removing = this.unitsOfWork.remove(key).then((result) => {
+      removal.removed = result.action === 'removed';
+    });
+    this.call(`remove ${key}`, removing);
+  }
+
+  /** The keys removed and not run since that are still listed, or still recorded. */
+  removedButKnown(): string[] {
+    const listed = new Set(this.unitsOfWork.list().map((session) => session.key));
+    return [...this.#removals]
+      .filter(([key, { removed }]) => removed && (listed.has(key) || this.records.get(key)))
+      .map(([key]) => key);
   }
 
   unsettled(): string[] {
@@ -411,7 +443,7 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
     arbitrary: fc.tuple(fc.constantFrom('explain', 'long'), file, fresh).map(([job, file, fresh]) =>
       command(`run ${job} ${file}${fresh ? ' fresh' : ''}`, (world) => {
         world.lastPrompt.set(keyOf(file), job === 'long' ? LONG_PROMPT : `Explain ${file}.`);
-        world.call(`run ${job} ${file}`, world.unitsOfWork.run(job, { file }, { fresh }));
+        world.run(job, file, fresh);
       }),
     ),
   },
@@ -463,6 +495,10 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
         world.call(`end-unit ${file}`, world.unitsOfWork.end(keyOf(file))),
       ),
     ),
+  },
+  {
+    weight: 2,
+    arbitrary: file.map((file) => command(`remove ${file}`, (world) => world.remove(keyOf(file)))),
   },
   { weight: 1, arbitrary: fc.constant(command('close', (world) => world.close())) },
   {
@@ -536,7 +572,7 @@ afterEach(() => {
 });
 
 describe('the sessions, whatever the order of what happens to them', () => {
-  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle', async () => {
+  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known', async () => {
     const { parameters, replayPath } = replay();
     await fc.assert(
       fc.asyncProperty(
@@ -559,6 +595,7 @@ describe('the sessions, whatever the order of what happens to them', () => {
             expect(world.writesAfterEnd).toEqual([]);
             expect(world.keysPressedAgain).toEqual([]);
             expect(world.interruptedNotIdle).toEqual([]);
+            expect(world.removedButKnown()).toEqual([]);
             if (!world.closed) {
               expect(world.sessions.liveKeys()).toEqual([]);
               const notEnded = world.sessions.list().filter((each) => each.state !== 'ended');
