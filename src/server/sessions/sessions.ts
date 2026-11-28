@@ -592,11 +592,17 @@ class SessionRegistry implements Sessions {
     const typed = prompt !== undefined && !this.#options.driver.promptFitsLaunch(prompt);
     const entry = this.#newEntry(launch, typed ? prompt : undefined, existing);
     this.#launches.reserve(entry);
-    await this.#launches.start(entry, {
-      prompt: typed ? undefined : prompt,
-      ...(resume === undefined ? {} : { resume }),
-      ...(part === undefined ? {} : { part }),
-    });
+    try {
+      await this.#launches.start(entry, {
+        prompt: typed ? undefined : prompt,
+        ...(resume === undefined ? {} : { resume }),
+        ...(part === undefined ? {} : { part }),
+      });
+    } catch (error) {
+      // Its hooks were heard from the grant: what its agent asked meanwhile ends with it.
+      this.#cancelAsks(entry);
+      throw error;
+    }
     this.#watchLive(entry);
     return this.#outcome(entry);
   }

@@ -91,6 +91,9 @@ const DRAIN_MS = 3 * PAST_EVERY_BOUND_MS;
 /** How often the drain makes every agent exit: within the liveness watch's interval. */
 const DRAIN_STEP_MS = LIVENESS_INTERVAL_MS / 2;
 
+/** How long a start that fails takes before it fails: one of the commands' ticks. */
+const LAUNCH_FAILS_AFTER_MS = 200;
+
 /** The stub driver's interrupt keys, as a write of them reads. */
 const INTERRUPT_KEYS = DRIVER_DEFAULTS.interrupting.busy.keys.join(' ');
 
@@ -206,6 +209,8 @@ class World {
   readonly records: MemoryRecords = createMemoryRecords();
   units: UnitsOfWork | undefined;
   closed = false;
+  /** Whether the host's next start fails, a while after it began: the agent's hooks may come meanwhile. */
+  failNextStart = false;
   /** The keys whose agent the cockpit asked to end or killed, until their next start. */
   readonly #ending = new Set<string>();
   readonly #lastSeen = new Map<string, Session>();
@@ -512,6 +517,11 @@ class World {
     const start = host.start.bind(host);
     host.start = async (options) => {
       this.#ending.delete(options.name);
+      if (this.failNextStart) {
+        this.failNextStart = false;
+        await elapsed(LAUNCH_FAILS_AFTER_MS);
+        throw new SessionHostError('host-failed', 'tmux failed to start the session.');
+      }
       await start(options);
     };
     const kill = host.kill.bind(host);
@@ -767,6 +777,14 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
     arbitrary: file.map((file) => command(`remove ${file}`, (world) => world.remove(keyOf(file)))),
   },
   { weight: 1, arbitrary: fc.constant(command('close', (world) => world.close())) },
+  {
+    weight: 1,
+    arbitrary: fc.constant(
+      command('the next launch fails', (world) => {
+        world.failNextStart = true;
+      }),
+    ),
+  },
   {
     weight: 8,
     arbitrary: fc

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Asks } from '../../src/server/asks/asks.ts';
+import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import type { JobRuns } from '../../src/server/sessions/job-runs.ts';
 import {
   createSessions,
@@ -169,6 +170,22 @@ describe('a permission the agent asks', () => {
     expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'ask', id }] });
     start.open();
     await expect(launched).resolves.toMatchObject({ state: 'waiting' });
+  });
+
+  it('opened while its session launched is settled `cancelled`, its hook let go, when that launch fails', async () => {
+    const start = host.holdNextStart();
+    const launched = sessions.launch({ key: KEY, directory: DIRECTORY, conversationId: 'c-1' });
+    launched.catch(() => {});
+    await settle();
+    const { id, held } = asked('call-1');
+
+    start.fail(new SessionHostError('host-failed', 'tmux failed.'));
+    await expect(launched).rejects.toBeInstanceOf(SessionHostError);
+
+    expect(told).toEqual([{ id, key: KEY, by: 'cancelled' }]);
+    expect(held.end).toBe('released');
+    expect(asks.pending('*')).toEqual([]);
+    expect(sessionOf()).toBeUndefined();
   });
 
   it('as the first hook heard after a start-up dialog lists the ask alone: the dialog was answered', async () => {
