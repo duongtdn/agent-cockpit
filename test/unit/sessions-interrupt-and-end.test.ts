@@ -237,7 +237,7 @@ describe('an end of a session in a turn', () => {
     await expect(result).resolves.toEqual({ action: 'ended', stoppedTasks: [TASK] });
   });
 
-  it('clears a prompt the interrupt withdrew, then signals the agent', async () => {
+  it('leaves a prompt the interrupt withdrew in the box and signals the agent: no key pressed once the end was asked but its Esc', async () => {
     await busySession();
 
     const result = ending();
@@ -245,7 +245,7 @@ describe('an end of a session in a turn', () => {
     host.show(KEY, withdrawnScreen(PROMPT));
     await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
     await settle();
-    expect(writes()).toEqual(['Escape', 'C-u']);
+    expect(writes()).toEqual(['Escape']);
     expect(signals).toHaveLength(1);
     await exits();
 
@@ -298,6 +298,30 @@ describe('an end asked while another is under way', () => {
 });
 
 describe('an end whose kill fails', () => {
+  it("is followed by the end that joined it, which interrupts the session's turn first, as its own end does", async () => {
+    await busySession();
+    host.failNextKill(new SessionHostError('host-failed', 'tmux failed.'));
+    const first = sessions.end(KEY, 'session-cap');
+    first.catch(() => {});
+    await settle();
+    const result = ending();
+    await settle();
+    expect(writes()).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(ENDING_BOUND_MS);
+    await expect(first).rejects.toThrow('tmux failed.');
+    expect(writes()).toEqual(['Escape']);
+    expect(signals).toHaveLength(1);
+    recorded({ type: 'interrupted' });
+    await settle();
+    expect(signals).toHaveLength(2);
+    await exits();
+
+    await expect(result).resolves.toEqual({ action: 'ended', stoppedTasks: [TASK] });
+    expect(writes()).toEqual(['Escape']);
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'app' });
+  });
+
   it('rejects with the host, the session live and heard, its later going its own; a later end kills it', async () => {
     await idleSession();
     host.failNextKill(new SessionHostError('host-failed', 'tmux failed.'));

@@ -585,17 +585,19 @@ tmux session killed, then its process group), the session `ended` with
 open to resume. It resolves once the process is gone: `ended`, with
 `stoppedTasks`, the background tasks known running as it went (empty when
 none ran). A session the cockpit is ending already (the cap, a restart, the
-idle timeout) has that end awaited, its reason kept. A session that
-outlived the bound and could not be killed is left live: the end rejects
+idle timeout) has that end awaited, its reason kept; if that end's kill
+fails, this end then ends the session as the table says for its state
+then, a `busy` one's turn interrupted first. A session that outlived the
+bound and could not be killed is left live: the end rejects
 with the host's error, which has no code (a 500 with no body on the wire,
 `internal-failure` to `on('error')`), and a later end may kill it.
 
-| State                             | End                                                                                                                                                   |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `idle`, `waiting` in the terminal | Ended at once, no key pressed.                                                                                                                        |
-| `busy`                            | Its turn interrupted first, as `interrupt` does, then ended whether or not the interrupt was confirmed: the partial answer stays in the conversation. |
-| `ended`, no record                | `nothing-to-end`, with the state when there is one.                                                                                                   |
-| `starting`                        | Refused `wrong-state`.                                                                                                                                |
+| State                                                                          | End                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `idle`, `waiting` in the terminal                                              | Ended at once, no key pressed.                                                                                                                                                                                                                                               |
+| `busy`, `waiting` on an ask or a channel request (from features that add them) | Its turn interrupted first, as `interrupt` does, then ended whether or not the interrupt was confirmed: the partial answer stays in the conversation. A prompt the interrupt withdraws is left in the box: no key is pressed once the end was asked but the interrupt's own. |
+| `ended`, no record                                                             | `nothing-to-end`, with the state when there is one.                                                                                                                                                                                                                          |
+| `starting`                                                                     | Refused `wrong-state`.                                                                                                                                                                                                                                                       |
 
 `remove(key)` ends a live session as `end` does (`reason: 'app'`), then
 deletes everything the cockpit wrote for the key (its record, its

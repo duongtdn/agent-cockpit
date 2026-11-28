@@ -281,10 +281,13 @@ export interface Sessions {
    * Ends a key's session as an app asks: its turn interrupted first, then
    * ended as {@link end} does. A `busy` session, or one waiting on more
    * than the terminal, has its turn interrupted as {@link interrupt} does,
-   * then is ended whether or not the interrupt was confirmed; an `idle`
-   * one, or one waiting in the terminal only (a start-up dialog, a panel),
-   * is ended at once, no key pressed. A session the cockpit is ending
-   * already has that end awaited, its reason kept. From the moment it is
+   * but a prompt it withdraws is left in the box (no key goes in once the
+   * end was asked), then is ended whether or not the interrupt was
+   * confirmed; an `idle` one, or one waiting in the terminal only (a
+   * start-up dialog, a panel), is ended at once, no key pressed. A session
+   * the cockpit is ending already has that end awaited, its reason kept;
+   * one that end left live, its kill failed, is then ended by this one, by
+   * its state then, its turn interrupted first. From the moment it is
    * asked, a process that goes ended for the reason given, though the
    * agent said otherwise or a start-up dialog showed.
    *
@@ -577,13 +580,23 @@ class SessionRegistry implements Sessions {
     const entry = this.#entries.get(key);
     if (entry === undefined) return { action: 'nothing-to-end' };
     // A process that goes while its turn is interrupted goes because the cockpit asked it to.
-    if (entry.lifecycle.isLive) entry.endAskedBecause = reason;
+    const askToEnd = () => {
+      if (entry.lifecycle.isLive) entry.endAskedBecause = reason;
+    };
+    askToEnd();
     try {
       return await endAfterInterrupt({
         session: () => this.session(key),
         hasEndUnderWay: () => entry.lifecycle.hasEndUnderWay,
-        interrupt: () => this.interrupt(key),
+        // The prompt it may withdraw is left in the box: no key goes in once the end was asked.
+        interrupt: () => this.#interruptTurn(entry, this.#interruptTarget(entry)),
         end: () => this.#endOrJoin(entry, reason),
+        join: async () => {
+          const stopped = await this.#join(entry);
+          // Live again, its kill failed: this end is the one asked now.
+          askToEnd();
+          return stopped;
+        },
       });
     } finally {
       delete entry.endAskedBecause;
@@ -622,9 +635,17 @@ class SessionRegistry implements Sessions {
    * its own reason, or joins that one.
    */
   async #joinEnd(entry: Entry, reason: EndReason): Promise<readonly BackgroundTask[]> {
-    await settlesBeforeAbort(entry.lifecycle.endUnderWay, this.#closing.signal);
+    const stopped = await this.#join(entry);
     const { lifecycle } = entry;
-    if (lifecycle.isLive || lifecycle.hasEndUnderWay) return this.#endOrJoin(entry, reason);
+    return lifecycle.isLive || lifecycle.hasEndUnderWay ? this.#endOrJoin(entry, reason) : stopped;
+  }
+
+  /**
+   * Waits for the end under way of a session, and gives the tasks known as
+   * its process went: none when it is live again, its kill failed.
+   */
+  async #join(entry: Entry): Promise<readonly BackgroundTask[]> {
+    await settlesBeforeAbort(entry.lifecycle.endUnderWay, this.#closing.signal);
     this.#refuseIfClosed(entry.key);
     return entry.stoppedTasks ?? [];
   }
@@ -656,26 +677,38 @@ class SessionRegistry implements Sessions {
     this.#refuseIfClosed(key);
     const entry = this.#entries.get(key);
     if (entry === undefined) return { action: 'nothing-to-interrupt' };
+    const { driver } = this.#options;
+    return this.#interruptTurn(entry, {
+      ...this.#interruptTarget(entry),
+      clearInputBox: () =>
+        this.#throughTypingTerminal(entry, (terminal) => driver.clearInputBox(terminal)),
+    });
+  }
+
+  /** Interrupts a session's turn once the end under way, if any, settled. */
+  async #interruptTurn(entry: Entry, target: InterruptedSession): Promise<InterruptResult> {
     // An end under way is the cockpit's own: its outcome is the state the interrupt reads.
     await settlesBeforeAbort(entry.lifecycle.endUnderWay, this.#closing.signal);
-    this.#refuseIfClosed(key);
-    const { driver, host } = this.#options;
-    const target: InterruptedSession = {
+    this.#refuseIfClosed(entry.key);
+    return interruptTurn(target, {
+      interrupting: this.#options.driver.interrupting,
+      closing: this.#closing.signal,
+      refusal: () => new SessionsClosedError(entry.key),
+    });
+  }
+
+  /** The session as an interrupt works with it, which clears no input box. */
+  #interruptTarget(entry: Entry): InterruptedSession {
+    const { key } = entry;
+    return {
       key,
       session: () => this.session(key),
       changeListeners: entry.changeListeners,
       withdrawal: entry.withdrawal,
       takesKeys: () => this.#takesInput(entry),
-      sendKeys: (keys) => host.sendKeys(key, keys),
+      sendKeys: (keys) => this.#options.host.sendKeys(key, keys),
       gone: () => this.#gone(entry),
-      clearInputBox: () =>
-        this.#throughTypingTerminal(entry, (terminal) => driver.clearInputBox(terminal)),
     };
-    return interruptTurn(target, {
-      interrupting: driver.interrupting,
-      closing: this.#closing.signal,
-      refusal: () => new SessionsClosedError(key),
-    });
   }
 
   firstPrompt(key: string): Promise<Session> | undefined {

@@ -20,6 +20,12 @@ export interface EndingSession {
    * and gives the background tasks known as its process went.
    */
   end(): Promise<readonly BackgroundTask[]>;
+  /**
+   * Waits for the end under way, and gives the background tasks known as
+   * the process went: none when that end left the session live, its kill
+   * failed.
+   */
+  join(): Promise<readonly BackgroundTask[]>;
 }
 
 /**
@@ -31,7 +37,7 @@ export interface EndingSession {
  * | `starting` | Refused. |
  * | `idle`, `waiting` in the terminal only | Ended at once: no turn runs, and no key is pressed into a dialog the cockpit never answers. |
  * | `busy`, `waiting` on anything else | Its turn interrupted first, then ended, whether or not the interrupt was confirmed: the person asked to end it. |
- * | being ended already | That end joined. |
+ * | being ended already | That end joined; one that left the session live, its kill failed, is followed by this end, by the session's state then, as above. |
  *
  * @param target - The session.
  * @returns `ended` once the session's process is gone, with the background
@@ -45,10 +51,23 @@ export async function endAfterInterrupt(target: EndingSession): Promise<EndResul
   const session = target.session();
   if (session === undefined) return { action: 'nothing-to-end' };
   if (session.state === 'ended') return { action: 'nothing-to-end', state: 'ended' };
+  return { action: 'ended', stoppedTasks: await endLive(target, session) };
+}
+
+/** Ends a session not yet ended, by its state, as {@link endAfterInterrupt}'s table says. */
+async function endLive(
+  target: EndingSession,
+  session: Session,
+): Promise<readonly BackgroundTask[]> {
   const interruption = interruptionOf(session);
   if (interruption === 'refused') throw wrongState(session);
-  if (interruption === 'stop-the-turn' && !target.hasEndUnderWay()) await interruptAnyway(target);
-  return { action: 'ended', stoppedTasks: await target.end() };
+  if (target.hasEndUnderWay()) {
+    const stopped = await target.join();
+    const now = target.session();
+    return now === undefined || now.state === 'ended' ? stopped : endLive(target, now);
+  }
+  if (interruption === 'stop-the-turn') await interruptAnyway(target);
+  return target.end();
 }
 
 /** Interrupts the session's turn; an interrupt that cannot be confirmed does not keep the end from going on. */

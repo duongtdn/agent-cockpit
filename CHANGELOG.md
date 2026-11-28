@@ -363,8 +363,10 @@ Nothing is published yet.
   driver's keys once on a `busy` session (one Esc) and resolves
   `interrupted` once `idle` is confirmed, else rejects
   `interrupt-unconfirmed` after 5 seconds; a prompt withdrawn by it into
-  an empty input box is cleared. An end interrupts a `busy` turn first,
-  then ends the session (`reason: 'app'`), resolving with the background
+  an empty input box is cleared. An end interrupts a `busy` turn first
+  (a prompt that interrupt withdraws is left in the box: no key is
+  pressed once an end was asked but its interrupt's own), then ends the
+  session (`reason: 'app'`), resolving with the background
   tasks it stopped; the conversation and record are kept. A remove ends a
   live session the same way, then deletes the key's record and session
   folder (the agent's transcripts are left) and forgets the key. A kill

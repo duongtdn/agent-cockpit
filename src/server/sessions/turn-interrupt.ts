@@ -65,9 +65,11 @@ export interface InterruptedSession {
   gone(): Promise<void>;
   /**
    * Clears the agent's input box, the page's terminals' keys held
-   * meanwhile. Rejects with what the host fails with.
+   * meanwhile. Rejects with what the host fails with. Absent for the
+   * interrupt an end asks first: its process is signalled next, and no
+   * key goes into it once its end was asked.
    */
-  clearInputBox(): Promise<InputBoxClearing>;
+  readonly clearInputBox?: () => Promise<InputBoxClearing>;
 }
 
 /** The interrupt's ways, and when it gives up. */
@@ -88,7 +90,8 @@ export interface InterruptOptions {
  * whatever follows. The session then has the driver's bound to be `idle`:
  * the turn ended, the transcript recorded the interruption, or the screen
  * showed the prompt withdrawn, which is then cleared from the input box,
- * since the app asked to stop. However the clearing ends — the box left
+ * since the app asked to stop, when the target can clear it (an end's
+ * interrupt leaves it). However the clearing ends — the box left
  * holding text, none shown, the host failing — the interrupt resolves
  * `interrupted`: the turn did stop. A session that ends meanwhile had no
  * turn left to stop.
@@ -152,7 +155,7 @@ async function pressKeys(target: InterruptedSession, keys: readonly string[]): P
 /** Clears the prompt the interrupt withdrew: the turn stopped, whatever the clearing comes to. */
 async function clearWithdrawnPrompt(target: InterruptedSession): Promise<void> {
   try {
-    await target.clearInputBox();
+    await target.clearInputBox?.();
   } catch (error) {
     if (!(error instanceof SessionHostError)) throw error;
   }

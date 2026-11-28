@@ -194,12 +194,14 @@ export interface Cockpit {
    * | State | End |
    * |---|---|
    * | `idle`, `waiting` in the terminal | Ended at once, no key pressed. |
-   * | `busy` | Its turn interrupted first, as `interrupt` does, then ended whether or not the interrupt was confirmed: the partial answer is kept in the conversation. |
+   * | `busy`, `waiting` on an ask or a channel request (from features that add them) | Its turn interrupted first, as `interrupt` does, then ended whether or not the interrupt was confirmed: the partial answer is kept in the conversation. A prompt the interrupt withdraws is left in the box: no key is pressed once the end was asked but the interrupt's own. |
    * | `ended`, no record | Nothing to end. |
    * | `starting` | Refused `wrong-state`. |
    *
    * A session the cockpit is ending already (the cap's end, a restart's,
-   * the idle timeout's) has that end awaited, its reason kept.
+   * the idle timeout's) has that end awaited, its reason kept. If that
+   * end's kill fails, this end then ends the session as the table says
+   * for its state then: a `busy` one has its turn interrupted first.
    *
    * @param key - The unit of work's key.
    * @returns `ended` once the agent's process is gone, with the background

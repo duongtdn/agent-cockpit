@@ -4,7 +4,9 @@
  * test doubles, with fake timers. Whatever the order, once time has passed
  * every bound and every agent has exited: no session is left between two
  * phases, every call settled, each session's end was told once, nothing
- * was typed into a session after the cockpit asked it to end, no
+ * was typed into a session after the cockpit asked it to end, no key
+ * pressed into it once an end was asked but that end's interrupt's (no
+ * withdrawn prompt cleared, no first prompt typed), no
  * interrupt, an end's own among them, pressed its keys twice, nor resolved
  * `interrupted` on a session not `idle`, a key removed and not run since
  * is unknown, with no record, and nothing of a removed record — its
@@ -90,7 +92,9 @@ function keyOf(file: File): string {
 
 /**
  * What a run's options vary: the cap, the idle timeout, whether an agent
- * exits when it is signalled, and how long the host takes to kill a
+ * exits when it is signalled, whether an Esc puts the prompt back into the
+ * input box, as an agent that had not begun on it does, and how long the
+ * host takes to kill a
  * session or count its terminals, and the driver to tell whether a
  * conversation can resume.
  */
@@ -98,6 +102,7 @@ interface Setting {
   readonly maxSessions: number | undefined;
   readonly idleTimeoutMs: number | undefined;
   readonly exitOnSignal: boolean;
+  readonly escWithdraws: boolean;
   readonly slowness: Slowness;
 }
 
@@ -128,6 +133,11 @@ class World {
   readonly endsToldTwice: string[] = [];
   /** Each write into a session whose end was under way: `<key> <write>`. */
   readonly writesAfterEnd: string[] = [];
+  /**
+   * Each write into a session while an end asked of the core runs, but
+   * its interrupt's keys: `<key> <write>`.
+   */
+  readonly writesAfterEndAsked: string[] = [];
   /** The last prompt passed to each key's session, which its hook tells taken. */
   readonly lastPrompt = new Map<string, string>();
   /**
@@ -152,6 +162,8 @@ class World {
   readonly #ending = new Set<string>();
   readonly #lastSeen = new Map<string, Session>();
   readonly #driver: StubDriver = createStubDriver();
+  /** How many ends asked of the core run on each key, its own and its cap's or idle timeout's. */
+  readonly #endsAsked = new Map<string, number>();
   /** The keys whose interrupt runs in the core, with how many times it pressed the interrupt's keys. */
   readonly #interrupting = new Map<string, number>();
   /** The keys whose interrupt runs in the core and saw a change of its session to `idle`. */
@@ -167,7 +179,7 @@ class World {
 
   readonly #idleTimeoutMs: number | undefined;
 
-  constructor({ exitOnSignal, slowness, idleTimeoutMs }: Setting) {
+  constructor({ exitOnSignal, escWithdraws, slowness, idleTimeoutMs }: Setting) {
     this.#idleTimeoutMs = idleTimeoutMs;
     const driver = this.#driver;
     driver.promptFitsLaunch = (prompt) => prompt.length <= COMMAND_LINE_LIMIT;
@@ -176,7 +188,7 @@ class World {
       await elapsed(slowness.resume);
       return canResume(conversation);
     };
-    this.#watchTheHost(slowness);
+    this.#watchTheHost(slowness, escWithdraws);
     this.#watchTheRemovals();
     // An agent draws its input box unless a command shows another screen.
     for (const key of KEYS) this.show(key, 'input-box');
@@ -206,6 +218,7 @@ class World {
     });
     this.#watchTheInterrupts();
     this.#watchTheIdleEnds();
+    this.#watchTheEndsAsked();
   }
 
   async open({ maxSessions, idleTimeoutMs }: Setting): Promise<void> {
@@ -353,7 +366,7 @@ class World {
   }
 
   /** Marks the ends the cockpit asks of the host, and the writes it makes. */
-  #watchTheHost(slowness: Slowness): void {
+  #watchTheHost(slowness: Slowness, escWithdraws: boolean): void {
     const { host } = this;
     const start = host.start.bind(host);
     host.start = async (options) => {
@@ -378,8 +391,10 @@ class World {
     };
     const sendKeys = host.sendKeys.bind(host);
     host.sendKeys = async (name, keys) => {
-      this.#write(name, keys.join(' '));
+      const write = keys.join(' ');
+      this.#write(name, write);
       await sendKeys(name, keys);
+      if (escWithdraws && write === INTERRUPT_KEYS) this.show(name, 'withdrawn');
     };
   }
 
@@ -421,6 +436,26 @@ class World {
     };
   }
 
+  /** Marks each end asked of the core, from its call until it settled. */
+  #watchTheEndsAsked(): void {
+    const interruptAndEnd = this.sessions.interruptAndEnd.bind(this.sessions);
+    this.sessions.interruptAndEnd = (key, reason) =>
+      this.#whileEnding(key, () => interruptAndEnd(key, reason));
+    const end = this.sessions.end.bind(this.sessions);
+    this.sessions.end = (key, reason) => this.#whileEnding(key, () => end(key, reason));
+  }
+
+  async #whileEnding<T>(key: string, run: () => Promise<T>): Promise<T> {
+    this.#endsAsked.set(key, (this.#endsAsked.get(key) ?? 0) + 1);
+    try {
+      return await run();
+    } finally {
+      const left = (this.#endsAsked.get(key) ?? 1) - 1;
+      if (left === 0) this.#endsAsked.delete(key);
+      else this.#endsAsked.set(key, left);
+    }
+  }
+
   /**
    * Counts the interrupt's keys pressed while it runs: an end's whole run,
    * its interrupt's inside it, is one mark.
@@ -438,8 +473,10 @@ class World {
   #write(key: string, write: string): void {
     if (write === INTERRUPT_KEYS) this.#pressedToInterrupt(key, write);
     // A write to a session gone is refused by the host: nothing reaches an agent.
-    if (this.#ending.has(key) && this.host.pidOf(key) !== undefined) {
-      this.writesAfterEnd.push(`${key} ${write}`);
+    if (this.host.pidOf(key) === undefined) return;
+    if (this.#ending.has(key)) this.writesAfterEnd.push(`${key} ${write}`);
+    else if (this.#endsAsked.has(key) && write !== INTERRUPT_KEYS) {
+      this.writesAfterEndAsked.push(`${key} ${write}`);
     }
   }
 
@@ -659,6 +696,7 @@ const setting: fc.Arbitrary<Setting> = fc.record({
   maxSessions: fc.constantFrom(undefined, 1, 2),
   idleTimeoutMs: fc.constantFrom(undefined, 500, 3_000),
   exitOnSignal: fc.boolean(),
+  escWithdraws: fc.boolean(),
   slowness: fc.record({ kill: delay, count: delay, resume: delay }),
 });
 
@@ -708,6 +746,7 @@ describe('the sessions, whatever the order of what happens to them', () => {
             expect(world.faults()).toEqual([]);
             expect(world.endsToldTwice).toEqual([]);
             expect(world.writesAfterEnd).toEqual([]);
+            expect(world.writesAfterEndAsked).toEqual([]);
             expect(world.keysPressedAgain).toEqual([]);
             expect(world.interruptedNotIdle).toEqual([]);
             expect(world.removedButKnown()).toEqual([]);
