@@ -648,11 +648,14 @@ class Units implements UnitsOfWork {
 
   /**
    * Records an operation that settled after its key's turn was freed, in
-   * the key's history in the order the operations were asked.
+   * the key's history in the order the operations were asked — only in
+   * the record of the unit of work it ran in, one that names its
+   * conversation: the unit of work may have been removed meanwhile, and
+   * its key recorded anew by a run asked after the remove.
    */
   async #recordOperation(key: string, entry: HistoryEntry): Promise<void> {
     const record = this.#records.get(key);
-    if (record === undefined) return;
+    if (record === undefined || !namesConversation(record, entry.conversationId)) return;
     const history = [...record.history];
     const later = history.findIndex((each) => each.at > entry.at);
     history.splice(later === -1 ? history.length : later, 0, entry);
@@ -893,6 +896,13 @@ class Units implements UnitsOfWork {
   #notify(): void {
     this.#followers.tell(() => this.list());
   }
+}
+
+/** Whether a record names the conversation: its current one, or an earlier one. */
+function namesConversation(record: UnitRecord, conversationId: string): boolean {
+  return (
+    record.conversationId === conversationId || record.earlierConversations.includes(conversationId)
+  );
 }
 
 function isIdleWithNoTask(session: Session | undefined): boolean {

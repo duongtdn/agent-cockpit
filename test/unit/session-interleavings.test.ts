@@ -6,8 +6,10 @@
  * phases, every call settled, each session's end was told once, nothing
  * was typed into a session after the cockpit asked it to end, no
  * interrupt, an end's own among them, pressed its keys twice, nor resolved
- * `interrupted` on a session not `idle`, and a key removed and not run
- * since is unknown, with no record.
+ * `interrupted` on a session not `idle`, a key removed and not run since
+ * is unknown, with no record, and nothing of a removed record — its
+ * conversations, its history — comes back into the key's record when it
+ * is run again.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -29,6 +31,7 @@ import {
 } from '../../src/server/sessions/sessions.ts';
 import { START_DEADLINE_MS } from '../../src/server/sessions/start-up-watch.ts';
 import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/units-of-work.ts';
+import type { UnitRecord } from '../../src/server/state/records.ts';
 import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
 import { CockpitError } from '../../src/shared/cockpit-error.ts';
 import type { Session } from '../../src/shared/session.ts';
@@ -146,6 +149,8 @@ class World {
    * resolved `removed`: no run asked before it can record the key after it.
    */
   readonly #removals = new Map<string, { removed: boolean }>();
+  /** The conversations of every record removed, by key: those its current one, earlier ones and history name. */
+  readonly #removedConversations = new Map<string, Set<string>>();
 
   constructor({ exitOnSignal, slowness }: Setting) {
     const driver = this.#driver;
@@ -156,6 +161,7 @@ class World {
       return canResume(conversation);
     };
     this.#watchTheHost(slowness);
+    this.#watchTheRemovals();
     // An agent draws its input box unless a command shows another screen.
     for (const key of KEYS) this.show(key, 'input-box');
     this.sessions = createSessions({
@@ -254,6 +260,17 @@ class World {
     this.call(`remove ${key}`, removing);
   }
 
+  /** Each conversation of a removed record that the key's record names again: `<key> <conversation>`. */
+  removedConversationsKept(): string[] {
+    return [...this.#removedConversations].flatMap(([key, removed]) => {
+      const record = this.records.get(key);
+      if (record === undefined) return [];
+      return conversationsOf(record)
+        .filter((conversationId) => removed.has(conversationId))
+        .map((conversationId) => `${key} ${conversationId}`);
+    });
+  }
+
   /** The keys removed and not run since that are still listed, or still recorded. */
   removedButKnown(): string[] {
     const listed = new Set(this.unitsOfWork.list().map((session) => session.key));
@@ -289,6 +306,21 @@ class World {
       for (const key of KEYS) this.host.exit(key);
       await vi.advanceTimersByTimeAsync(DRAIN_STEP_MS);
     }
+  }
+
+  /** Keeps the conversations of each record as it is removed. */
+  #watchTheRemovals(): void {
+    const { records } = this;
+    const remove = records.remove.bind(records);
+    records.remove = async (key) => {
+      const record = records.get(key);
+      if (record !== undefined) {
+        const removed = this.#removedConversations.get(key) ?? new Set();
+        for (const conversationId of conversationsOf(record)) removed.add(conversationId);
+        this.#removedConversations.set(key, removed);
+      }
+      await remove(key);
+    };
   }
 
   /** Marks the ends the cockpit asks of the host, and the writes it makes. */
@@ -386,6 +418,15 @@ class World {
       this.#lastSeen.set(session.key, session);
     }
   }
+}
+
+/** Every conversation a record names: its current one, its earlier ones, its history's. */
+function conversationsOf(record: UnitRecord): string[] {
+  return [
+    record.conversationId,
+    ...record.earlierConversations,
+    ...record.history.map((entry) => entry.conversationId),
+  ];
 }
 
 /** Whether an error is one a call tells the app: a refusal, the close, the host's failure. */
@@ -572,7 +613,7 @@ afterEach(() => {
 });
 
 describe('the sessions, whatever the order of what happens to them', () => {
-  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known', async () => {
+  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known nor its record come back', async () => {
     const { parameters, replayPath } = replay();
     await fc.assert(
       fc.asyncProperty(
@@ -596,6 +637,7 @@ describe('the sessions, whatever the order of what happens to them', () => {
             expect(world.keysPressedAgain).toEqual([]);
             expect(world.interruptedNotIdle).toEqual([]);
             expect(world.removedButKnown()).toEqual([]);
+            expect(world.removedConversationsKept()).toEqual([]);
             if (!world.closed) {
               expect(world.sessions.liveKeys()).toEqual([]);
               const notEnded = world.sessions.list().filter((each) => each.state !== 'ended');

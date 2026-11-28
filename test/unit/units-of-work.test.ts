@@ -1511,6 +1511,30 @@ describe('a remove', () => {
       expect(units.list()).toEqual([]);
     });
 
+    it('leaves the parked run out of the record a run asked after the remove makes', async () => {
+      await open();
+      const { ran } = await parkedBehindADialog();
+      host.show(KEY, stubScreen('input-box'));
+      driver.promptFitsLaunch = () => true;
+
+      const removing = pending(units.remove(KEY));
+      const again = pending(units.run('explain', { file: 'a' }));
+      await listHost();
+      await expect(removing).resolves.toEqual({ action: 'removed' });
+      await settle();
+      hook('/start-and-take');
+      await expect(again).resolves.toEqual({ action: 'started', state: 'busy' });
+      // The parked run's entry is queued behind the run asked after the remove.
+      await expect(ran).resolves.toEqual({ action: 'started', state: 'ended' });
+
+      const fresh = driver.launches[1]?.conversationId;
+      expect(recordOf()).toMatchObject({
+        conversationId: fresh,
+        earlierConversations: [],
+        history: [{ operation: 'run', jobId: 'explain', conversationId: fresh }],
+      });
+    });
+
     it('is refused `wrong-state` while the prompt is typed past the dialog, `starting`: nothing ended or deleted', async () => {
       await open();
       const { ran } = await parkedBehindADialog();
