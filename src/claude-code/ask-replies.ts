@@ -48,12 +48,6 @@ const UNSPELLED_FILE_TOOLS: ReadonlySet<string> = new Set([
  */
 const PATH_FIELDS = ['file_path', 'notebook_path', 'path', 'local_path'] as const;
 
-/** A first word that names a program and nothing else: no path, no assignment, no quote. */
-const BARE_PROGRAM_NAME = /^[A-Za-z0-9._-]+$/;
-
-/** What makes a command more than one simple command, a line break aside (a rule character). */
-const COMPOUND_SIGNS = /[;&|<>`()]|\$\(/;
-
 /**
  * The reply that stops a turn holding a `PermissionRequest`: a deny that
  * interrupts, with no message, which the agent would show nowhere. The
@@ -66,8 +60,9 @@ export const INTERRUPT_REPLY = decisionReply({ behavior: 'deny', interrupt: true
  * `allow`, an `allow` adding one session rule when the answer remembers,
  * or a `deny`, with the answer's message when it has one.
  *
- * "Remember" never adds a rule wider than the call the person saw: one
- * simple `Bash` command by its first word, any other by its exact line; a
+ * "Remember" never adds a rule wider than the call the person saw: a
+ * `Bash` call by its exact command, never a prefix, since a first word
+ * may be a program that runs any other command; a
  * `Write` or `Edit` as an `Edit` rule on the file's absolute path, a
  * `Read` as a `Read` rule on it; any other tool by its name. A rule that
  * cannot be spelled exactly is not written: the call is allowed once.
@@ -115,16 +110,14 @@ function rememberedRule(
 }
 
 /**
- * A command's rule: its first word when it is one simple command, else its
- * exact line. An empty line has none: `Bash()` could read as every command.
+ * A command's rule: its exact line. An empty line has none: `Bash()` could
+ * read as every command.
  */
 function commandRule(command: unknown): PermissionRule | undefined {
   if (typeof command !== 'string' || command.trim() === '' || holdsRuleSyntax(command)) {
     return undefined;
   }
-  const firstWord = command.trim().split(/\s+/)[0] ?? '';
-  const simple = BARE_PROGRAM_NAME.test(firstWord) && !COMPOUND_SIGNS.test(command);
-  return { toolName: 'Bash', ruleContent: simple ? `${firstWord}:*` : command };
+  return { toolName: 'Bash', ruleContent: command };
 }
 
 /**

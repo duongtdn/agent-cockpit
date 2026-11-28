@@ -301,59 +301,35 @@ it("138 — The app's deny with a message, then a bare deny: the model is given 
   expect(existsSync(join(cockpit.workFolder, 'second.txt'))).toBe(false);
 });
 
-it('139 — Remembered Bash calls: a compound line remembered (its exact line) runs unasked again; touch remembered (Bash(touch:*)) lets a later touch run unasked, while a compound line with another command still asks', async () => {
+it('139 — Remembered Bash calls, each its exact command (Bash(<command>)): touch b remembered lets touch b run unasked again while touch c asks; a compound line remembered runs unasked again', async () => {
   const asking = await askingCockpit();
   const { cockpit, seen } = asking;
   const compound = 'touch c1 && rm -f d1';
-  const unmatched = 'touch c2 && rm -f d2';
   cockpit.api.script(
-    turn(bash(compound)),
-    turn(bash(compound)),
-    turn(bash('touch a')),
     turn(bash('touch b')),
-    turn(bash(unmatched)),
+    turn(bash('touch b')),
+    turn(bash('touch c')),
+    turn(bash(compound)),
+    turn(bash(compound)),
     turn('Done.'),
   );
   await cockpit.say('make the files');
 
-  const exact = await askAt(asking, 0);
+  const simple = await askAt(asking, 0);
+  await cockpit.cockpit.asks.answer(simple.id, { allow: true, remember: 'session' });
+  const sibling = await askAt(asking, 1);
+  await cockpit.cockpit.asks.answer(sibling.id, { allow: true });
+  const exact = await askAt(asking, 2);
   await cockpit.cockpit.asks.answer(exact.id, { allow: true, remember: 'session' });
-  const prefix = await askAt(asking, 1);
-  await cockpit.cockpit.asks.answer(prefix.id, { allow: true, remember: 'session' });
-  const other = await askAt(asking, 2);
-  await cockpit.cockpit.asks.answer(other.id, { allow: true });
   await turnEnded(cockpit, 'Done.');
 
-  expect(seen.asks.map((ask) => ask.input.command)).toEqual([compound, 'touch a', unmatched]);
+  expect(seen.asks.map((ask) => ask.input.command)).toEqual(['touch b', 'touch c', compound]);
   expect(
     hooksOf(cockpit, 'PostToolUse', 'Bash').map((hook) => (hook.tool_input as HookPayload).command),
-  ).toEqual([compound, compound, 'touch a', 'touch b', unmatched]);
-  for (const name of ['c1', 'a', 'b', 'c2']) {
+  ).toEqual(['touch b', 'touch b', 'touch c', compound, compound]);
+  for (const name of ['b', 'c', 'c1']) {
     expect(existsSync(join(cockpit.workFolder, name))).toBe(true);
   }
-});
-
-it('139 — A compound line remembered (its exact line) once touch was remembered (Bash(touch:*)): the agent asks again for that same line, more than the rule would let run, never less', async () => {
-  const asking = await askingCockpit();
-  const { cockpit, seen } = asking;
-  const compound = 'touch c && rm -f d';
-  cockpit.api.script(
-    turn(bash('touch a')),
-    turn(bash(compound)),
-    turn(bash(compound)),
-    turn('Done.'),
-  );
-  await cockpit.say('make the files');
-
-  const prefix = await askAt(asking, 0);
-  await cockpit.cockpit.asks.answer(prefix.id, { allow: true, remember: 'session' });
-  const exact = await askAt(asking, 1);
-  await cockpit.cockpit.asks.answer(exact.id, { allow: true, remember: 'session' });
-  const again = await askAt(asking, 2);
-  await cockpit.cockpit.asks.answer(again.id, { allow: true });
-  await turnEnded(cockpit, 'Done.');
-
-  expect(seen.asks.map((ask) => ask.input.command)).toEqual(['touch a', compound, compound]);
 });
 
 it('140 — Remembered file calls: a Write remembered (Edit(//<path>)) lets a Write and an Edit of the file run unasked, a sibling still asking; a Read remembered (Read(//<path>)) lets the file be read again unasked, a sibling still asking; no settings file written', async () => {

@@ -243,9 +243,9 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   cockpit's half, 137–148, through the cockpit's `asks`, `interrupt`, `end`
   and `close`: 137 the app's allow, the dialog closed, the call run; 138 a
   deny with a message, then bare, the turn going on; 139 "remember" on
-  `Bash`: an exact compound line, then `touch:*`, a compound line with
-  another command still asking, and, `touch:*` remembered first, the exact
-  compound line remembered then asked again; 140 on files: a `Write` remembered lets a
+  `Bash`, each its exact command: `touch b` remembered letting `touch b`
+  run again, `touch c` asking, an exact compound line remembered running
+  again; 140 on files: a `Write` remembered lets a
   `Write` and an `Edit` of the file run, a `Read` the file, siblings
   asking, no settings file written; 141 in one session, each settled
   `terminal`: a Yes by 1, 2 and 3 at `PostToolUse`, a Yes whose command

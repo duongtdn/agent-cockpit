@@ -71,22 +71,23 @@ describe("Claude Code's reply to a permission's answer", () => {
 
 describe('what "remember" adds for a Bash command', () => {
   it.each([
-    ['the recorded one', 'touch asked.txt', 'touch'],
-    ['a program alone', 'ls', 'ls'],
-    [
-      'one with a dot, a dash and an underscore in its name',
-      'my_tool-2.sh --check',
-      'my_tool-2.sh',
-    ],
-    ['one led by spaces', '  git status', 'git'],
-    ['one naming a variable, not running a command in it', 'echo $HOME', 'echo'],
-  ])('remembers one simple command by its first word: %s', (_, command, word) => {
-    expect(driver.answerReply(bash(command), REMEMBER)).toEqual(
-      allowRemembering({ toolName: 'Bash', ruleContent: `${word}:*` }),
-    );
-  });
-
-  it.each([
+    ['the recorded one', 'touch asked.txt'],
+    ['a program alone', 'ls'],
+    ['one with a dot, a dash and an underscore in its name', 'my_tool-2.sh --check'],
+    ['one led by spaces, kept as the agent sent it', '  git status'],
+    ['one naming a variable', 'echo $HOME'],
+    ['a shell running a command line', "bash -c 'rm -rf build'"],
+    ['a shell alone', 'sh'],
+    ['env', 'env FOO=1 make'],
+    ['sudo', 'sudo ls'],
+    ['xargs', 'xargs rm'],
+    ['nohup', 'nohup npm start'],
+    ['timeout', 'timeout 5 make'],
+    ['an interpreter running code', 'python3 -c pass'],
+    ['node running code', 'node -e 1'],
+    ['npx', 'npx prettier --write .'],
+    ['find running a command', 'find . -name x -exec rm'],
+    ['git with a setting', 'git -c core.pager=less log'],
     ['two commands joined by &&', 'cd build && rm -rf dist'],
     ['two commands joined by ;', 'rm d2; touch e'],
     ['a pipe', 'cat notes.txt | wc -l'],
@@ -99,7 +100,7 @@ describe('what "remember" adds for a Bash command', () => {
     ['an absolute path first', '/usr/bin/env node'],
     ['a quoted program first', '"$X" go'],
     ['a quote around a plain word first', "'ls' -la"],
-  ])('remembers any other command as that exact line: %s', (_, command) => {
+  ])('remembers that exact command, whatever its first word, never a prefix: %s', (_, command) => {
     expect(driver.answerReply(bash(command), REMEMBER)).toEqual(
       allowRemembering({ toolName: 'Bash', ruleContent: command }),
     );
