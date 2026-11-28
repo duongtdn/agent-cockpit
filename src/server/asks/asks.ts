@@ -31,6 +31,22 @@ export interface AsksOptions {
   readonly handlerThrew: (thrown: unknown) => void;
 }
 
+/**
+ * Why an answer was refused: the cockpit was closed first. It carries no
+ * code, since no request of an app's can mend it — on the wire it is a 500
+ * with no body — and the agent keeps its dialog in the terminal.
+ */
+export class AsksClosedError extends Error {
+  override readonly name = 'AsksClosedError';
+
+  /** @param id - The id of the ask answered. */
+  constructor(id: string) {
+    super(
+      `The cockpit was closed before the answer to the ask ${id}: the agent keeps its dialog in the terminal.`,
+    );
+  }
+}
+
 /** How many settled asks a key keeps, to refuse a late answer `already-settled` rather than `unknown-id`. */
 const SETTLED_KEPT_PER_KEY = 1_000;
 
@@ -63,6 +79,7 @@ export class Asks {
   readonly #settledOfKey = new Map<string, Set<string>>();
   readonly #followers = new Set<Follower>();
   readonly #settledHandlers = new Set<(settled: AskSettled) => void>();
+  #closed = false;
 
   /** @param options - The clock and the sink of what handlers throw. */
   constructor(options: AsksOptions) {
@@ -171,6 +188,7 @@ export class Asks {
    * @returns A function that stops following.
    */
   follow(key: string, handler: (ask: Ask) => void): () => void {
+    if (this.#closed) return () => {};
     const follower: Follower = { scope: key, handler };
     this.#followers.add(follower);
     for (const ask of this.#pendingIn(key)) {
@@ -194,8 +212,10 @@ export class Asks {
    * settled before, or whose connection was found closed (`cancelled`);
    * `terminal-only` for an ask answerable in the terminal only;
    * `invalid-answer` with `issues` for an answer that does not fit its kind.
+   * @throws {@link AsksClosedError} once the asks are closed, before any check.
    */
   async answer(id: string, answer: unknown): Promise<void> {
+    if (this.#closed) throw new AsksClosedError(id);
     const { ask, handOff } = this.#answerable(id);
     const checked = checkAnswer(ask.kind, answer);
     if ('issues' in checked) {
@@ -224,10 +244,23 @@ export class Asks {
   on(event: 'settled', handler: (settled: AskSettled) => void): () => void {
     if (event !== 'settled')
       throw new TypeError(`The asks have no event ${JSON.stringify(event)}.`);
+    if (this.#closed) return () => {};
     // Wrapped, so that a handler given twice is told twice and removed once per unsubscribe.
     const settledHandler = (settled: AskSettled) => handler(settled);
     this.#settledHandlers.add(settledHandler);
     return () => void this.#settledHandlers.delete(settledHandler);
+  }
+
+  /**
+   * Closes the asks with the cockpit: nobody is told anything from now on —
+   * no follower, no `settled` handler, those added later included — and
+   * every answer is refused. No ask is settled: the held hooks are the
+   * listener's to drop.
+   */
+  close(): void {
+    this.#closed = true;
+    this.#followers.clear();
+    this.#settledHandlers.clear();
   }
 
   /** The pending ask of an id the app may answer, or the refusal of its answer. */

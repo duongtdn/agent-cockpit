@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type AnswerHandOff, Asks } from '../../src/server/asks/asks.ts';
+import { type AnswerHandOff, Asks, AsksClosedError } from '../../src/server/asks/asks.ts';
 import type { AskContent } from '../../src/server/driver.ts';
 import type { Ask, AskAnswer, AskSettled } from '../../src/shared/ask.ts';
 import { isCockpitError } from '../../src/shared/cockpit-error.ts';
@@ -403,5 +403,42 @@ describe('the settled event', () => {
   it('refuses an event the asks do not have', () => {
     const { asks } = registry();
     expect(() => asks.on('opened' as 'settled', () => {})).toThrow(TypeError);
+  });
+});
+
+describe('the asks once the cockpit closed', () => {
+  it('tell nobody: no follower nor settled handler is called, an ask the core settles or opens included', () => {
+    const { asks } = registry();
+    const pending = asks.open('k1', LIST, connection().answering);
+    const followed = collector<Ask>();
+    const settled = collector<AskSettled>();
+    asks.follow('*', followed.handler);
+    asks.on('settled', settled.handler);
+    followed.seen.length = 0;
+
+    asks.close();
+    asks.settle(pending.id, 'terminal');
+    asks.open('k1', WRITE, connection().answering);
+    asks.follow('*', followed.handler);
+    asks.on('settled', settled.handler);
+
+    expect(followed.seen).toEqual([]);
+    expect(settled.seen).toEqual([]);
+  });
+
+  it('refuse an answer with an error of no code, handing it to no connection and settling nothing', async () => {
+    const { asks } = registry();
+    const held = connection();
+    const ask = asks.open('k1', LIST, held.answering);
+    const settled = collector<AskSettled>();
+    asks.on('settled', settled.handler);
+
+    asks.close();
+    const refused = asks.answer(ask.id, { allow: true });
+
+    await expect(refused).rejects.toThrow(AsksClosedError);
+    await expect(refused).rejects.not.toHaveProperty('code');
+    expect(held.handed).toEqual([]);
+    expect(settled.seen).toEqual([]);
   });
 });
