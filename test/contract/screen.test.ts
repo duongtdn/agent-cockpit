@@ -13,7 +13,7 @@ import {
   sessionAfter,
   startContractCockpit,
 } from './cockpit-harness.ts';
-import { startContractAgent, submitPrompt } from './harness.ts';
+import { spinnerRow, startContractAgent, submitPrompt } from './harness.ts';
 
 /**
  * What tells a busy agent from an idle one on its screen, with a person's
@@ -50,23 +50,11 @@ interface Seen {
   readonly reading: ScreenReading;
 }
 
-/**
- * The spinner's row: a sign, words that end in `…`, and what it waits for
- * in brackets, as the last row of the conversation above the box (the rows
- * under it, a tip or the effort's, are indented).
- */
-function spinnerRow(rows: readonly string[], boxTop: number): string | undefined {
-  const last = rows
-    .slice(0, boxTop - 1)
-    .findLast((row) => row.trim() !== '' && !row.startsWith(' '));
-  return last !== undefined && /^\S \S[^…]*…/u.test(last) ? last : undefined;
-}
-
 function seen(screen: string): Seen {
   const rows = screen.split('\n');
   const box = readInputBoxView(screen);
   return {
-    spinner: box === undefined ? undefined : spinnerRow(rows, box.firstRow),
+    spinner: spinnerRow(screen),
     box: box?.text.trimEnd(),
     footer:
       box === undefined

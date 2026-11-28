@@ -1,5 +1,6 @@
 import { setTimeout as pause } from 'node:timers/promises';
 import { expect, onTestFinished, type RunnerTestCase, type TaskMeta, TestRunner } from 'vitest';
+import { readInputBoxView } from '../../src/claude-code/screen-reading.ts';
 import { eventually } from '../support/eventually.ts';
 import { type FakeApi, type LoggedRequest, startFakeApi } from '../support/fake-api/index.ts';
 import {
@@ -441,6 +442,25 @@ export function inputBoxText(screen: string): string | undefined {
     .replace(/^❯\s/u, '');
 }
 
+/**
+ * Gives the spinner's row of a screen: a sign, words that end in `…`, and
+ * what it waits for in brackets, as the last row of the conversation above
+ * the input box (the rows under it, a tip or the effort's, are indented).
+ * A busy agent draws it; an idle one does not.
+ *
+ * @param screen - What the session's terminal shows.
+ * @returns The row; `undefined` when the screen shows none, or no input box.
+ */
+export function spinnerRow(screen: string): string | undefined {
+  const box = readInputBoxView(screen);
+  if (box === undefined) return undefined;
+  const last = screen
+    .split('\n')
+    .slice(0, box.firstRow - 1)
+    .findLast((row) => row.trim() !== '' && !row.startsWith(' '));
+  return last !== undefined && /^\S \S[^…]*…/u.test(last) ? last : undefined;
+}
+
 /** How many times Enter is pressed on a prompt that stays in the box, as the driver does. */
 const ENTER_PRESSES = 3;
 
@@ -538,8 +558,11 @@ function noted(agent: DrivenAgent, submitted: Submitted): Submitted {
  * Tells whether an input box holds a text, whatever whitespace it drew: a
  * text wider than the box is wrapped onto lines, at a space or inside a
  * word, so the box's spaces and line breaks are not surely the text's.
+ *
+ * @param box - What the box holds, as {@link inputBoxText} gives it.
+ * @param text - The text.
  */
-function sameText(box: string, text: string): boolean {
+export function sameText(box: string, text: string): boolean {
   const bare = (drawn: string) => drawn.replace(/\s+/gu, '');
   return bare(box) === bare(text);
 }
