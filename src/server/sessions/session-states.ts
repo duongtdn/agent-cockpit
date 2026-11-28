@@ -21,6 +21,21 @@ export interface SessionCourse {
    * interruption recorded before it ended an earlier turn.
    */
   readonly promptTakenAt?: string;
+  /**
+   * The prompt of the open turn, while nothing else of that turn was told:
+   * an early Esc may put it back into the input box, which no hook, no
+   * transcript entry and nothing but the screen tells. Absent for a turn
+   * whose prompt the agent gave no text of, and for one with no prompt (a
+   * compaction begun `idle`).
+   */
+  readonly withdrawablePrompt?: string;
+  /**
+   * The background tasks the session listed as it left `idle` for a turn,
+   * less those finished since: no `busy` session lists them, and the
+   * `idle` session an interruption or a withdrawn prompt leaves, of which
+   * no `Stop` gives a list, lists them again.
+   */
+  readonly tasksDuringTurn?: readonly BackgroundTask[];
 }
 
 /**
@@ -41,6 +56,56 @@ export interface SessionCourse {
  * @param now - The time of the event, as `since` holds it.
  */
 export function courseAfter(
+  course: SessionCourse,
+  event: DriverEvent,
+  launchedWithPrompt: boolean,
+  now: string,
+): SessionCourse {
+  const after = nextCourse(course, event, launchedWithPrompt, now);
+  if (event.type === 'prompt-taken') return withWithdrawablePrompt(after, event.prompt);
+  return isOfTheTurn(course, event) ? withoutWithdrawablePrompt(after) : after;
+}
+
+/**
+ * Gives the course once the screen showed the turn's prompt withdrawn by an
+ * early Esc: `idle`, listing the background tasks it listed before the
+ * turn, the prompt no longer withdrawable. A session not `busy` has no
+ * turn to withdraw, and keeps its course.
+ *
+ * @param course - The course as it is.
+ * @param now - The time the screen was read, as `since` holds it.
+ * @returns The course, the same object when nothing changes.
+ */
+export function courseWithdrawn(course: SessionCourse, now: string): SessionCourse {
+  const { key, state } = course.session;
+  if (state !== 'busy') return course;
+  return withSession(course, withTasks({ key, state: 'idle', since: now }, tasksSetAside(course)));
+}
+
+/**
+ * Whether an event tells something of the open turn, past its prompt: the
+ * prompt was no longer withdrawable by then. A background task's end is
+ * not of the turn, nor an interruption recorded before the turn's prompt
+ * was taken, which ended an earlier one.
+ */
+function isOfTheTurn(course: SessionCourse, event: DriverEvent): boolean {
+  if (event.type === 'task-finished') return false;
+  return !(event.type === 'interrupted' && endsAnEarlierTurn(course, event.at));
+}
+
+function withWithdrawablePrompt(course: SessionCourse, prompt: string | undefined): SessionCourse {
+  return prompt === undefined
+    ? withoutWithdrawablePrompt(course)
+    : { ...course, withdrawablePrompt: prompt };
+}
+
+function withoutWithdrawablePrompt(course: SessionCourse): SessionCourse {
+  if (course.withdrawablePrompt === undefined) return course;
+  const { withdrawablePrompt: _told, ...rest } = course;
+  return rest;
+}
+
+function nextCourse(
   course: SessionCourse,
   event: DriverEvent,
   launchedWithPrompt: boolean,
@@ -79,7 +144,9 @@ export function courseAfter(
     case 'tasks':
       return withIdle(course, (idle) => withTasks(idle, event.running));
     case 'task-finished':
-      return withIdle(course, (idle) => withoutTask(idle, event.id));
+      return withIdle(withoutTaskDuringTurn(course, event.id), (idle) =>
+        withoutTask(idle, event.id),
+      );
     case 'conversation':
     case 'ending':
       return course;
@@ -108,12 +175,31 @@ function withSession(course: SessionCourse, session: Session): SessionCourse {
 
 /**
  * The course of a session whose turn shows: `busy`, its `since` kept when
- * it was already; a compaction that began idle is now inside the turn.
+ * it was already; a compaction that began idle is now inside the turn. The
+ * tasks the `idle` session listed are set aside for the turn.
  */
 function inTurn(course: SessionCourse, now: string): SessionCourse {
   const { session, compactingFrom } = course;
-  if (session.state !== 'busy') return withSession(course, busySince(session, now));
-  return compactingFrom === undefined ? course : withSession(course, session);
+  const resting = compactingFrom ?? (session.state === 'idle' ? session : undefined);
+  const turn =
+    session.state === 'busy' && compactingFrom === undefined
+      ? course
+      : withSession(course, session.state === 'busy' ? session : busySince(session, now));
+  // A turn that waited on a person goes on with the tasks it set aside.
+  const tasks = resting === undefined ? course.tasksDuringTurn : resting.backgroundTasks;
+  return tasks === undefined ? turn : { ...turn, tasksDuringTurn: tasks };
+}
+
+/** The background tasks the open turn set aside: those of the idle session a compaction began on, while it runs. */
+function tasksSetAside(course: SessionCourse): readonly BackgroundTask[] {
+  return course.compactingFrom?.backgroundTasks ?? course.tasksDuringTurn ?? [];
+}
+
+/** The course without the task among those set aside for the turn. */
+function withoutTaskDuringTurn(course: SessionCourse, id: string): SessionCourse {
+  const tasks = course.tasksDuringTurn;
+  if (tasks === undefined || !tasks.some((task) => task.id === id)) return course;
+  return { ...course, tasksDuringTurn: tasks.filter((task) => task.id !== id) };
 }
 
 /**
@@ -160,7 +246,8 @@ function busySince(session: Session, now: string): Session {
 /**
  * The end of a turn — an answer, a failure or an interruption: `idle`,
  * with the turn's last message or its error, which replace whatever the last `idle` carried. On
- * an `idle` session there is no turn to end.
+ * an `idle` session there is no turn to end. An interruption, of which no
+ * `Stop` lists the tasks, lists those set aside for the turn.
  */
 function turnOver(
   course: SessionCourse,
@@ -171,9 +258,8 @@ function turnOver(
   if (state === 'idle') return course;
   const idle: IdleSession = { key, state: 'idle', since: now };
   if (event.type === 'turn-failed') return withSession(course, { ...idle, error: event.error });
-  if (event.type === 'interrupted' || event.lastMessage === undefined) {
-    return withSession(course, idle);
-  }
+  if (event.type === 'interrupted') return withSession(course, withTasks(idle, tasksSetAside(course)));
+  if (event.lastMessage === undefined) return withSession(course, idle);
   return withSession(course, { ...idle, lastMessage: event.lastMessage });
 }
 

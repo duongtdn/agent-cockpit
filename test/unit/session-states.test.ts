@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { DriverEvent } from '../../src/server/driver.ts';
-import { courseAfter, type SessionCourse } from '../../src/server/sessions/session-states.ts';
+import {
+  courseAfter,
+  courseWithdrawn,
+  type SessionCourse,
+} from '../../src/server/sessions/session-states.ts';
 import type { BackgroundTask, IdleSession, Session } from '../../src/shared/session.ts';
 
 const KEY = 'chapter-1';
@@ -398,5 +402,166 @@ describe('the conversation the agent names', () => {
     expect(courseAfter(course, { type: 'conversation', conversationId: 'c2' }, true, NOW)).toBe(
       course,
     );
+  });
+});
+
+describe('the prompt an early Esc may withdraw', () => {
+  const EARLIER = '2026-11-26T10:04:59.000Z';
+  const taken: DriverEvent = { type: 'prompt-taken', prompt: 'Fix the tests.' };
+
+  it('is the prompt a turn began with, its text carried', () => {
+    expect(courseAfter({ session: idle }, taken, true, NOW).withdrawablePrompt).toBe(
+      'Fix the tests.',
+    );
+  });
+
+  it('is none for a prompt taken with no text', () => {
+    expect(
+      courseAfter({ session: idle }, { type: 'prompt-taken' }, true, NOW).withdrawablePrompt,
+    ).toBeUndefined();
+  });
+
+  it('is the later prompt when another is taken', () => {
+    const course = afterEvents({ session: idle }, [
+      taken,
+      { type: 'prompt-taken', prompt: 'And the docs.' },
+    ]);
+
+    expect(course.withdrawablePrompt).toBe('And the docs.');
+  });
+
+  it.each<[string, DriverEvent]>([
+    ['a tool', { type: 'working' }],
+    ['the end of the turn', { type: 'turn-ended', lastMessage: 'Done.' }],
+    ['a failed turn', overloaded],
+    ['its interruption', { type: 'interrupted' }],
+    ['a compaction', { type: 'compaction-began' }],
+    ['another conversation', { type: 'conversation', conversationId: 'c2' }],
+    ['the agent ending', { type: 'ending', reason: 'agent-exit' }],
+  ])('is forgotten at any later sign of the turn: %s', (_, event) => {
+    expect(afterEvents({ session: idle }, [taken, event]).withdrawablePrompt).toBeUndefined();
+  });
+
+  it('is kept past an interruption recorded before it was taken: an earlier turn’s', () => {
+    const course = afterEvents({ session: idle }, [taken, { type: 'interrupted', at: EARLIER }]);
+
+    expect(course.withdrawablePrompt).toBe('Fix the tests.');
+  });
+
+  it('is kept past a background task finished: no sign of the turn', () => {
+    const course = afterEvents({ session: idleWithTasks }, [
+      taken,
+      { type: 'task-finished', id: 'a1' },
+    ]);
+
+    expect(course.withdrawablePrompt).toBe('Fix the tests.');
+  });
+});
+
+describe('a prompt withdrawn, as the screen shows it', () => {
+  const taken: DriverEvent = { type: 'prompt-taken', prompt: 'Fix the tests.' };
+
+  it('leaves the session idle since then, the prompt no longer withdrawable', () => {
+    const course = courseWithdrawn(afterEvents({ session: idle }, [taken]), NOW);
+
+    expect(course).toEqual({
+      session: { key: KEY, state: 'idle', since: NOW },
+      promptTakenAt: NOW,
+    });
+  });
+
+  it('changes nothing of a session not busy: the same course', () => {
+    const course: SessionCourse = { session: idle };
+
+    expect(courseWithdrawn(course, NOW)).toBe(course);
+  });
+});
+
+describe('the background tasks across a turn that ends with no list of them', () => {
+  const taken: DriverEvent = { type: 'prompt-taken', prompt: 'Fix the tests.' };
+
+  it('are listed again by the idle session an interruption leaves', () => {
+    const course = afterEvents({ session: idleWithTasks }, [taken, { type: 'interrupted' }]);
+
+    expect(course.session).toEqual({
+      key: KEY,
+      state: 'idle',
+      since: NOW,
+      backgroundTasks: [reviewer, tests],
+    });
+  });
+
+  it('are listed again by the idle session a withdrawn prompt leaves', () => {
+    const course = courseWithdrawn(afterEvents({ session: idleWithTasks }, [taken]), NOW);
+
+    expect(course.session).toEqual({
+      key: KEY,
+      state: 'idle',
+      since: NOW,
+      backgroundTasks: [reviewer, tests],
+    });
+  });
+
+  it('are kept while the turn goes on: a tool, another prompt', () => {
+    const course = afterEvents({ session: idleWithTasks }, [
+      taken,
+      { type: 'working' },
+      { type: 'prompt-taken', prompt: 'And the docs.' },
+      { type: 'interrupted' },
+    ]);
+
+    expect(course.session).toMatchObject({ state: 'idle', backgroundTasks: [reviewer, tests] });
+  });
+
+  it('leave out a task that finished during the turn', () => {
+    const course = afterEvents({ session: idleWithTasks }, [
+      taken,
+      { type: 'task-finished', id: 'a1' },
+      { type: 'interrupted' },
+    ]);
+
+    expect(course.session).toEqual({
+      key: KEY,
+      state: 'idle',
+      since: NOW,
+      backgroundTasks: [tests],
+    });
+  });
+
+  it('are those of the idle session a compaction began on, when a prompt followed it', () => {
+    const course = afterEvents({ session: idleWithTasks }, [
+      { type: 'compaction-began' },
+      taken,
+      { type: 'interrupted' },
+    ]);
+
+    expect(course.session).toMatchObject({ state: 'idle', backgroundTasks: [reviewer, tests] });
+  });
+
+  it('give way to the list the end of a turn gives', () => {
+    const course = afterEvents({ session: idleWithTasks }, [
+      taken,
+      { type: 'turn-ended' },
+      { type: 'tasks', running: [tests] },
+    ]);
+
+    expect(course.session).toEqual({
+      key: KEY,
+      state: 'idle',
+      since: NOW,
+      backgroundTasks: [tests],
+    });
+  });
+
+  it('are none once the idle session is listed: a later interrupted turn lists only what it set aside', () => {
+    const course = afterEvents({ session: idleWithTasks }, [
+      taken,
+      { type: 'interrupted' },
+      { type: 'tasks', running: [] },
+      taken,
+      { type: 'interrupted' },
+    ]);
+
+    expect(course.session).toEqual({ key: KEY, state: 'idle', since: NOW });
   });
 });
