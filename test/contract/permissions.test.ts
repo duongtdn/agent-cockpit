@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 import type { AgentSession } from '../support/agent-session.ts';
 import { toolUse, turn } from '../support/fake-api/index.ts';
 import type { ReceivedHook } from '../support/hooks/hook-receiver.ts';
+import { REFUSED_CALL } from '../support/hooks/payload-recording.ts';
 import type { LaunchOptions } from '../support/real-agent/runner.ts';
 import { toolResults } from './confinement-probes.ts';
 import { answerYes, pressOnDialog, selectOnDialog } from './dialog-keys.ts';
@@ -43,6 +44,41 @@ function received(agent: ContractAgent, event: string): ReceivedHook[] {
   return agent.hooks.received.filter((hook) => hook.event === event);
 }
 
+/**
+ * Answers a held PreToolUse, once it is sure no PermissionRequest came
+ * before that answer, and waits for the ask that follows it.
+ *
+ * @returns How many asks had come before the answer, and the ask.
+ */
+async function askAfter(
+  agent: ContractAgent,
+  pre: ReceivedHook,
+): Promise<{ askedBefore: number; ask: ReceivedHook }> {
+  const askedBefore = received(agent, 'PermissionRequest').length;
+  pre.answer({});
+  return { askedBefore, ask: await agent.hook('PermissionRequest') };
+}
+
+/**
+ * Waits for the next hook of an event that matches, each wait under the
+ * bound of the agent's step, the ones before it passed over.
+ */
+async function nextWhere(
+  agent: ContractAgent,
+  event: string,
+  matches: (payload: Record<string, unknown>) => boolean,
+): Promise<ReceivedHook> {
+  for (;;) {
+    const hook = await agent.hook(event);
+    if (matches(hook.payload)) return hook;
+  }
+}
+
+/** Waits for the agent's Notification of a type. */
+function notification(agent: ContractAgent, type: string): Promise<ReceivedHook> {
+  return nextWhere(agent, 'Notification', (payload) => payload.notification_type === type);
+}
+
 it("137 — A Bash call with a description asks only once its PreToolUse is answered: PermissionRequest carries the turn's prompt_id, the mode, the call's input with its description and the agent's suggestions (the work folder for the session, acceptEdits), no tool_use_id; the hook's allow runs the call, PostToolUse naming the PreToolUse's tool_use_id", async () => {
   const agent = await askingAgent();
   const input = { command: 'touch asked.txt', description: 'Create asked.txt' };
@@ -53,14 +89,12 @@ it("137 — A Bash call with a description asks only once its PreToolUse is answ
   await submitPrompt(agent, session, 'make the file');
 
   const pre = await agent.hook('PreToolUse');
-  const askedBeforeItsPreToolUse = received(agent, 'PermissionRequest').length;
-  pre.answer({});
-  const ask = await agent.hook('PermissionRequest');
+  const { askedBefore, ask } = await askAfter(agent, pre);
   ask.answer(ALLOW);
   const ran = await agent.hook('PostToolUse');
   await agent.hook('Stop');
 
-  expect(askedBeforeItsPreToolUse).toBe(0);
+  expect(askedBefore).toBe(0);
   expect(ask.payload).toMatchObject({
     tool_name: 'Bash',
     tool_input: input,
@@ -76,20 +110,22 @@ it("137 — A Bash call with a description asks only once its PreToolUse is answ
   expect(existsSync(join(agent.workFolder, 'asked.txt'))).toBe(true);
 });
 
-it("137 — A Write in the work folder asks: PermissionRequest carries the file and its content, the agent suggesting acceptEdits for the session alone; the hook's allow writes the file", async () => {
+it("137 — A Write in the work folder asks only once its PreToolUse is answered: PermissionRequest carries the file and its content, the agent suggesting acceptEdits for the session alone; the hook's allow writes the file", async () => {
   const agent = await askingAgent();
   const file = join(agent.workFolder, 'written.txt');
   agent.api.script(turn(toolUse('Write', { file_path: file, content: 'w\n' })), turn('Done.'));
+  agent.hooks.hold('PreToolUse');
   agent.hooks.hold('PermissionRequest');
   const session = await startedSession(agent);
   await submitPrompt(agent, session, 'write the file');
 
   const pre = await agent.hook('PreToolUse');
-  const ask = await agent.hook('PermissionRequest');
+  const { askedBefore, ask } = await askAfter(agent, pre);
   ask.answer(ALLOW);
   const ran = await agent.hook('PostToolUse');
   await agent.hook('Stop');
 
+  expect(askedBefore).toBe(0);
   expect(ask.payload).toMatchObject({
     tool_name: 'Write',
     tool_input: { file_path: file, content: 'w\n' },
@@ -102,7 +138,7 @@ it("137 — A Write in the work folder asks: PermissionRequest carries the file 
   expect(readFileSync(file, 'utf8')).toBe('w\n');
 });
 
-it("137 — A background task's call asks: PermissionRequest carries the task's agent_id and agent_type, as its PreToolUse does, while the session's turn has ended listing the task; the hook's allow runs the call in the task", async () => {
+it("137 — A background task's call asks only once its PreToolUse is answered: PermissionRequest carries the task's agent_id and agent_type, as its PreToolUse does, while the session's turn has ended listing the task; the hook's allow runs the call in the task", async () => {
   const agent = await askingAgent();
   const taskPrompt = 'Make the inner file.';
   const input = { command: 'touch inner.txt', description: 'Create inner.txt' };
@@ -119,25 +155,23 @@ it("137 — A background task's call asks: PermissionRequest carries the task's 
     turn('Noted.'),
   );
   agent.api.scriptConversation(taskPrompt, turn(toolUse('Bash', input)), turn('Made.'));
+  agent.hooks.hold('PreToolUse');
   agent.hooks.hold('PermissionRequest');
   const session = await startedSession(agent);
   await submitPrompt(agent, session, 'start a task');
 
-  const ask = await agent.hook('PermissionRequest');
+  // The session's own call that starts the task, then the task's.
+  (await agent.hook('PreToolUse')).answer({});
+  const pre = await agent.hook('PreToolUse');
+  const { askedBefore, ask } = await askAfter(agent, pre);
   // The ask is held: the session's turn ends meanwhile, the task still running.
   const sessionTurnEnd = await agent.hook('Stop');
-  const pre = received(agent, 'PreToolUse').find((hook) => hook.payload.tool_name === 'Bash');
   ask.answer(ALLOW);
-  const ran = await agent.eventually(() => {
-    const [found] = received(agent, 'PostToolUse').filter(
-      (hook) => hook.payload.tool_name === 'Bash',
-    );
-    expect(found).toBeDefined();
-    return found as ReceivedHook;
-  });
+  const ran = await nextWhere(agent, 'PostToolUse', (payload) => payload.tool_name === 'Bash');
   await agent.hook('SubagentStop');
   await agent.hook('Stop');
 
+  expect(askedBefore).toBe(0);
   expect(sessionTurnEnd.payload).toMatchObject({
     background_tasks: [expect.objectContaining({ type: 'subagent' })],
   });
@@ -149,14 +183,15 @@ it("137 — A background task's call asks: PermissionRequest carries the task's 
     permission_mode: 'default',
   });
   expect(ask.payload).not.toHaveProperty('tool_use_id');
-  expect(pre?.payload).toMatchObject({
+  expect(pre.payload).toMatchObject({
+    tool_name: 'Bash',
     agent_id: ask.payload.agent_id,
     prompt_id: ask.payload.prompt_id,
     tool_input: input,
   });
   expect(ran.payload).toMatchObject({
     agent_id: ask.payload.agent_id,
-    tool_use_id: pre?.payload.tool_use_id,
+    tool_use_id: pre.payload.tool_use_id,
   });
   expect(existsSync(join(agent.workFolder, 'inner.txt'))).toBe(true);
 });
@@ -214,7 +249,12 @@ it('144 — A "No" amended in the terminal (No selected, Tab, a text, Enter): no
 
   expect(batch.payload).toMatchObject({
     prompt_id: pre.payload.prompt_id,
-    tool_calls: [expect.objectContaining({ tool_use_id: pre.payload.tool_use_id })],
+    tool_calls: [
+      expect.objectContaining({
+        tool_use_id: pre.payload.tool_use_id,
+        tool_response: expect.stringContaining(REFUSED_CALL),
+      }),
+    ],
   });
   for (const event of ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied']) {
     expect(received(agent, event)).toEqual([]);
@@ -225,7 +265,7 @@ it('144 — A "No" amended in the terminal (No selected, Tab, a text, Enter): no
   expect(existsSync(join(agent.workFolder, 'refused.txt'))).toBe(false);
 });
 
-it("146 — Three Reads in one reply, outside the work folder: their PreToolUse come together, and each PermissionRequest only once its own PreToolUse is answered, whatever the order, all of the turn's prompt_id; each allowed Read runs", async () => {
+it("146 — Three Reads in one reply, outside the work folder: their PreToolUse come together, and each PermissionRequest only once its own PreToolUse is answered, out of the calls' order, all of the turn's prompt_id; each allowed Read runs", async () => {
   const agent = await askingAgent();
   const outside = join(dirname(agent.workFolder), 'outside');
   mkdirSync(outside);
@@ -250,10 +290,8 @@ it("146 — Three Reads in one reply, outside the work folder: their PreToolUse 
     asks.push(await agent.hook('PermissionRequest'));
   }
   for (const ask of asks) ask.answer(ALLOW);
-  const ran = await agent.eventually(() => {
-    expect(received(agent, 'PostToolUse')).toHaveLength(files.length);
-    return received(agent, 'PostToolUse');
-  });
+  const ran: ReceivedHook[] = [];
+  for (const _ of files) ran.push(await agent.hook('PostToolUse'));
   await agent.hook('Stop');
 
   expect(askedBeforeAnyAnswer).toBe(0);
@@ -289,16 +327,14 @@ it('147 — In auto mode, a command that needs the server-side check the scripte
   const panel = 'Enter to stay in auto mode';
 
   await agent.eventually(async () => expect(await session.screen()).toContain(panel));
-  const needsInput = await agent.hook('Notification');
+  await notification(agent, 'agent_needs_input');
   await pressOnDialog(session, 'Enter', (screen) => !screen?.includes(panel));
   await agent.eventually(async () => expect(await session.screen()).toContain(PERMISSION_DIALOG));
-  const prompted = await agent.hook('Notification');
+  await notification(agent, 'permission_prompt');
   await answerYes(session, PERMISSION_DIALOG, 'Down');
   await agent.hook('PostToolUse');
   await agent.hook('Stop');
 
-  expect(needsInput.payload).toMatchObject({ notification_type: 'agent_needs_input' });
-  expect(prompted.payload).toMatchObject({ notification_type: 'permission_prompt' });
   expect(received(agent, 'PermissionRequest')).toEqual([]);
   expect(existsSync(made)).toBe(true);
 });

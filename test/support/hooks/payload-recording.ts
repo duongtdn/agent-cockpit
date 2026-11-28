@@ -168,8 +168,13 @@ const TASK_LISTS: readonly string[] = ['background_tasks'];
  */
 const CALL_LISTS: readonly string[] = ['tool_calls'];
 
-/** How the agent's result of a call the person refused begins, as a batch's call carries it. */
-const REFUSED_CALL = "The user doesn't want to proceed with this tool use.";
+/**
+ * How the agent's result of a call the person refused begins, as a batch's
+ * call carries it. A contract row checks it, so that a version that words
+ * it otherwise fails there rather than recording a refused batch as one
+ * that ran.
+ */
+export const REFUSED_CALL = "The user doesn't want to proceed with this tool use.";
 
 function tellingOf(payload: Record<string, unknown>): [string, unknown][] {
   const values = TELLING_FIELDS.filter((field) => field in payload).map(
@@ -189,7 +194,7 @@ function taskKinds(list: unknown): string {
   return [...new Set(kinds)].sort().join('+');
 }
 
-/** How the calls a list holds ended, each once, in order: `ran`, `refused`, or none. */
+/** How the calls a list holds ended, each once, sorted: `ran`, `refused`, or both joined by `+`; none for no list. */
 function callOutcomes(list: unknown): string {
   if (!Array.isArray(list)) return '';
   const outcomes = list.map((call) =>

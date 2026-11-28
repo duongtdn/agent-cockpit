@@ -125,7 +125,10 @@ export async function selectOnDialog(
   throw new Error(`The dialog did not keep ${selected} selected.`);
 }
 
-/** The row a dialog's pointer marks. */
+/**
+ * The row a dialog's pointer marks: a numbered option, never the prompt
+ * the transcript shows above the dialog with the same sign.
+ */
 function selectionOn(screen: string | undefined): string | undefined {
-  return /❯ .*/u.exec(screen ?? '')?.[0];
+  return /^\s*❯ \d+\. .*$/mu.exec(screen ?? '')?.[0];
 }
