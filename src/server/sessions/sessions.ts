@@ -14,6 +14,7 @@ import {
   type BackgroundTask,
   type EndedSession,
   type EndReason,
+  type EndResult,
   type InterruptResult,
   isSessionKey,
   type Session,
@@ -35,6 +36,7 @@ import type { Attachment, SessionHost, TerminalSize } from '../session-host/sess
 import { SessionHostError } from '../session-host/session-host-error.js';
 import type { TerminalHold } from '../terminal-hold.js';
 import { fulfilledWithin, settlesBeforeAbort } from './abort-race.js';
+import { endAfterInterrupt } from './end-after-interrupt.js';
 import { FirstPrompt, type StartingSession } from './first-prompt.js';
 import { Followers } from './followers.js';
 import { Launches } from './launch.js';
@@ -276,6 +278,31 @@ export interface Sessions {
    */
   end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]>;
   /**
+   * Ends a key's session as an app asks: its turn interrupted first, then
+   * ended as {@link end} does. A `busy` session, or one waiting on more
+   * than the terminal, has its turn interrupted as {@link interrupt} does,
+   * then is ended whether or not the interrupt was confirmed; an `idle`
+   * one, or one waiting in the terminal only (a start-up dialog, a panel),
+   * is ended at once, no key pressed. A session the cockpit is ending
+   * already has that end awaited, its reason kept. From the moment it is
+   * asked, a process that goes ended for the reason given, though the
+   * agent said otherwise or a start-up dialog showed.
+   *
+   * @param key - The session's key.
+   * @param reason - Why the cockpit ends it.
+   * @returns `ended` once the session ended, its process gone, with the
+   * background tasks known running as it went, stopped with it;
+   * `nothing-to-end` with the session's state, none for a key with no
+   * session, on an `ended` one.
+   * @throws `CockpitError` `wrong-state` on a `starting` session.
+   * @throws `SessionHostError` when the host cannot kill a session that
+   * outlived the driver's bound: the session is live again, heard, and a
+   * later end may kill it.
+   * @throws `SessionsClosedError` when the core is closed, or is closed
+   * before the end settles: nothing more is pressed, signalled or killed.
+   */
+  interruptAndEnd(key: string, reason: EndReason): Promise<EndResult>;
+  /**
    * Interrupts the turn of a key's session, as `interruptTurn` does: the
    * driver's keys pressed once, never twice, on a `busy` session or one
    * waiting on more than the terminal, then the driver's bound for it to
@@ -435,6 +462,11 @@ interface Entry {
   readonly lifecycle: SessionLifecycle;
   /** Why the cockpit itself ends the session, which prevails over the agent's word. */
   endedBecause?: EndReason;
+  /**
+   * Why an app asked the session to end, while its turn is interrupted
+   * before the end begins: it prevails over the agent's word too.
+   */
+  endAskedBecause?: EndReason;
   /** Why the agent said it was ending. */
   agentSaid?: AgentEndReason;
   /** The background tasks known running as its process went: those its end stopped. */
@@ -522,9 +554,37 @@ class SessionRegistry implements Sessions {
   async end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]> {
     this.#refuseIfClosed(key);
     const entry = this.#entries.get(key);
-    if (entry === undefined) return [];
-    if (entry.lifecycle.isLive) return this.#endLive(entry, reason);
-    return entry.lifecycle.hasEndUnderWay ? this.#joinEnd(entry, reason) : [];
+    if (entry === undefined || !(entry.lifecycle.isLive || entry.lifecycle.hasEndUnderWay)) {
+      return [];
+    }
+    return this.#endOrJoin(entry, reason);
+  }
+
+  async interruptAndEnd(key: string, reason: EndReason): Promise<EndResult> {
+    this.#refuseIfClosed(key);
+    const entry = this.#entries.get(key);
+    if (entry === undefined) return { action: 'nothing-to-end' };
+    // A process that goes while its turn is interrupted goes because the cockpit asked it to.
+    if (entry.lifecycle.isLive) entry.endAskedBecause = reason;
+    try {
+      return await endAfterInterrupt({
+        session: () => this.session(key),
+        hasEndUnderWay: () => entry.lifecycle.hasEndUnderWay,
+        interrupt: () => this.interrupt(key),
+        end: () => this.#endOrJoin(entry, reason),
+      });
+    } finally {
+      delete entry.endAskedBecause;
+    }
+  }
+
+  /**
+   * Ends a live session, or waits for the end under way or the going of
+   * one that is not: the tasks known as its process went.
+   */
+  async #endOrJoin(entry: Entry, reason: EndReason): Promise<readonly BackgroundTask[]> {
+    this.#refuseIfClosed(entry.key);
+    return entry.lifecycle.isLive ? this.#endLive(entry, reason) : this.#joinEnd(entry, reason);
   }
 
   /** Ends a live session: its agent signalled, given the driver's bound, then killed. */
@@ -1056,7 +1116,8 @@ class SessionRegistry implements Sessions {
  * goes, as Claude Code does on the bypass warning); then the agent's word.
  */
 function endOf(entry: Entry): Pick<EndedSession, 'reason' | 'dialog'> {
-  if (entry.endedBecause !== undefined) return { reason: entry.endedBecause };
+  const cockpits = entry.endedBecause ?? entry.endAskedBecause;
+  if (cockpits !== undefined) return { reason: cockpits };
   const declined = entry.heard ? undefined : entry.startUp?.dialogShown;
   if (declined === undefined) return { reason: entry.agentSaid ?? 'lost' };
   return declined.dialog === undefined
