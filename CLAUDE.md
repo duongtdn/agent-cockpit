@@ -169,8 +169,14 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   driver's options, dialogs, failed turns, compaction, `/clear`, interruptions, tasks, version, the app's sandbox
   and the settings files' denies run through it.
 - **The rows, by file:** `starting` (1–3), `prompts` (4, 5, 7), `ending`
-  (8), `driver` (14, 29), `interrupting` (6, 22, 95 an interruption
-  recorded before the next prompt), `clear` (93, `/clear`'s new
+  (8; 30 SIGTERM idle or with a turn held, the conversation resumed; 32
+  mid-turn: the prompt kept, no partial answer, no marker; 129 at the
+  trust dialog, no hook, and on a launch command's panel), `driver` (14,
+  29), `interrupting` (6, 22, 95 an interruption recorded before the next
+  prompt; 23 an early Esc over an empty box withdraws the prompt into it;
+  24 one Esc on an idle, empty box changes nothing, two open the rewind
+  menu; 25 Ctrl+U; 28 a background subagent runs on past an Esc; 128 an
+  early Esc over a draft interrupts, the draft kept alone), `clear` (93, `/clear`'s new
   conversation followed), `tasks` (15 a background
   subagent and its `<task-notification>` turn, 62 and 73 its hooks'
   `agent_id`), `compaction` (16, 94 an interrupted `/compact`, 123 one
