@@ -966,6 +966,27 @@ describe('a hook that arrives while the agent is being started on the host', () 
     await expect(result).rejects.toBe(failure);
     expect(sessionOf()).toBeUndefined();
   });
+
+  it('types the first prompt of a launch that then failed into nothing: not into the next session of the key', async () => {
+    driver.promptFitsLaunch = () => false;
+    const held = host.holdNextStart();
+    const failed = launch({ key: KEY, directory: DIRECTORY, prompt: 'A prompt typed once ready.' });
+    failed.catch(() => {});
+    await settle();
+    hook('/ready');
+    held.fail(new SessionHostError('host-failed', 'tmux failed.'));
+    await expect(failed).rejects.toBeInstanceOf(SessionHostError);
+
+    const next = launch({ key: KEY, directory: DIRECTORY });
+    await settle();
+    hook('/ready');
+    await expect(next).resolves.toMatchObject({ state: 'idle' });
+    host.show(KEY, stubScreen('input-box'));
+    await vi.advanceTimersByTimeAsync(3 * SCREEN_INTERVAL_MS);
+
+    expect(host.writes).toEqual([]);
+    expect(sessionOf()?.state).toBe('idle');
+  });
 });
 
 describe('a hook that arrives while the cockpit ends a silent session', () => {

@@ -600,8 +600,7 @@ class SessionRegistry implements Sessions {
         ...(part === undefined ? {} : { part }),
       });
     } catch (error) {
-      // Its hooks were heard from the grant: what its agent asked meanwhile ends with it.
-      this.#cancelAsks(entry);
+      this.#launchFailed(entry);
       throw error;
     }
     this.#watchLive(entry);
@@ -1118,6 +1117,18 @@ class SessionRegistry implements Sessions {
     return entry;
   }
 
+  /**
+   * Lets go of what a launch that failed began: its hooks were heard from
+   * the grant, so a first prompt may wait for the box, and its agent may
+   * have asked.
+   */
+  #launchFailed(entry: Entry): void {
+    entry.firstPrompt.stop();
+    entry.typing?.close();
+    stopReadingTheScreen(entry);
+    this.#cancelAsks(entry);
+  }
+
   /** Watches a session put on the host: its liveness, its agent's conversation and its start. */
   #watchLive(entry: Entry): void {
     // Closed while the host started it: the session goes on, unwatched.
@@ -1329,9 +1340,17 @@ class SessionRegistry implements Sessions {
     };
   }
 
-  /** Whether a prompt may be typed into the session now: the core open, the session not being ended. */
+  /**
+   * Whether a prompt may be typed into the session now: the core open, the
+   * session the key's (not one whose launch failed: the key's name may
+   * reach another) and not being ended.
+   */
   #takesInput(entry: Entry): boolean {
-    return entry.lifecycle.takesInput && !this.#closing.signal.aborted;
+    return (
+      entry.lifecycle.takesInput &&
+      !this.#closing.signal.aborted &&
+      this.#entries.get(entry.key) === entry
+    );
   }
 
   #update(entry: Entry, session: Session): void {
