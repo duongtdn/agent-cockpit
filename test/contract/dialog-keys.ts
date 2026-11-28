@@ -3,11 +3,11 @@ import { cameTrue } from '../support/eventually.ts';
 import { PATIENCE, POLL } from '../support/patience.ts';
 
 /**
- * Keys on the start-up dialogs of the real agent, as a person presses them,
- * for the driver's rows.
+ * Keys on the dialogs of the real agent (its start-up dialogs, a tool's
+ * permission dialog), as a person presses them, for the driver's rows.
  */
 
-/** How many times a key is pressed on a start-up dialog that shows nothing of it. */
+/** How many times a key is pressed on a dialog that shows nothing of it. */
 const DIALOG_KEY_PRESSES = 3;
 
 /**
@@ -94,4 +94,38 @@ export async function answerYes(
     if (tries === DIALOG_KEY_PRESSES) throw new Error(`The dialog did not keep "Yes" selected.`);
   }
   await pressOnDialog(session, 'Enter', (screen) => !screen?.includes(dialog));
+}
+
+/**
+ * Moves a dialog's selection a row at a time until a row stays selected: a
+ * move the dialog dropped leaves the selection where it was and is pressed
+ * again, and a redraw that puts the selection back on the first row is
+ * moved on from.
+ *
+ * @param selected - The selected row, as the screen shows it.
+ * @param move - The key that moves the selection towards it.
+ * @param rows - How many rows the dialog offers: each move may be pressed a few times.
+ * @throws Error when the row is not kept selected within those presses.
+ */
+export async function selectOnDialog(
+  session: AgentSession,
+  selected: RegExp,
+  move: 'Up' | 'Down',
+  rows: number,
+): Promise<void> {
+  for (let presses = 0; presses < rows * DIALOG_KEY_PRESSES; presses++) {
+    if (selected.test((await screenOrNothing(session)) ?? '') && (await stays(session, selected))) {
+      return;
+    }
+    const before = selectionOn(await screenOrNothing(session));
+    await session.press(move);
+    const moved = async () => selectionOn(await screenOrNothing(session)) !== before;
+    await cameTrue(moved, PATIENCE.dialogKey, POLL.screen);
+  }
+  throw new Error(`The dialog did not keep ${selected} selected.`);
+}
+
+/** The row a dialog's pointer marks. */
+function selectionOn(screen: string | undefined): string | undefined {
+  return /❯ .*/u.exec(screen ?? '')?.[0];
 }

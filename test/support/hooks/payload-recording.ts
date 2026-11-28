@@ -161,14 +161,24 @@ function identityOf(payload: Record<string, unknown>): string {
  */
 const TASK_LISTS: readonly string[] = ['background_tasks'];
 
+/**
+ * The fields that list a batch's calls, told apart by how the calls ended:
+ * a batch whose call the person refused with a text in the terminal (no
+ * hook tells of that call but the batch) from one whose calls ran.
+ */
+const CALL_LISTS: readonly string[] = ['tool_calls'];
+
+/** How the agent's result of a call the person refused begins, as a batch's call carries it. */
+const REFUSED_CALL = "The user doesn't want to proceed with this tool use.";
+
 function tellingOf(payload: Record<string, unknown>): [string, unknown][] {
   const values = TELLING_FIELDS.filter((field) => field in payload).map(
     (field): [string, unknown] => [field, payload[field]],
   );
-  const lists = TASK_LISTS.flatMap((field): [string, unknown][] => {
-    const kinds = taskKinds(payload[field]);
-    return kinds === '' ? [] : [[field, kinds]];
-  });
+  const lists = [
+    ...TASK_LISTS.map((field): [string, string] => [field, taskKinds(payload[field])]),
+    ...CALL_LISTS.map((field): [string, string] => [field, callOutcomes(payload[field])]),
+  ].filter(([, kinds]) => kinds !== '');
   return [...values, ...lists];
 }
 
@@ -177,6 +187,15 @@ function taskKinds(list: unknown): string {
   if (!Array.isArray(list)) return '';
   const kinds = list.map((task) => (isRecord(task) ? String(task.type) : typeof task));
   return [...new Set(kinds)].sort().join('+');
+}
+
+/** How the calls a list holds ended, each once, in order: `ran`, `refused`, or none. */
+function callOutcomes(list: unknown): string {
+  if (!Array.isArray(list)) return '';
+  const outcomes = list.map((call) =>
+    isRecord(call) && String(call.tool_response).startsWith(REFUSED_CALL) ? 'refused' : 'ran',
+  );
+  return [...new Set(outcomes)].sort().join('+');
 }
 
 /** Removes what an earlier recording run left of its workers' files. */

@@ -227,7 +227,16 @@ driver relies on, titled with the behavior's number. It takes a few seconds.
   126 the exception: a reply streamed over a draft draws no spinner's row,
   and reads as the box free, as idle), `permission-dialog` (127 keys typed
   as `PermissionRequest` arrives, before the dialog shows: they answer
-  nothing; after Esc the box holds them or nothing).
+  nothing; after Esc the box holds them or nothing), `permissions` (the
+  agent's half of 137, 142, 144, 146, 147, through `startContractAgent`,
+  the cockpit's half to come: 137 a `PermissionRequest` of a `Bash` with a
+  description, of a `Write`, of a background task's call, each after its
+  `PreToolUse`, with no `tool_use_id`, the hook's `allow` running it; 142
+  a Yes in the terminal whose command fails, `PostToolUseFailure`; 144 an
+  amended "No": no hook for the call, then `PostToolBatch`; 146 three
+  concurrent `Read`s, each ask after its own `PreToolUse`'s answer; 147
+  `auto`'s ask in the terminal alone, told by `Notification`
+  `agent_needs_input` then `permission_prompt`).
 - **A behavior that does not hold is a finding**: the test keeps stating the
   behavior and fails; it is never bent to pass.
 - **A test is written with `test/contract/harness.ts`**:
@@ -293,7 +302,8 @@ is TypeScript that Node runs as it is, so the integration tests need Node
 Every payload it fires is the real agent's: `test/fixtures/hooks/claude-code.json`
 holds, for each event, each shape the contract suite saw (its fields and
 the values that tell variants apart: a `SessionEnd`'s `reason`, a
-`StopFailure`'s `error`, an `agent_id`, the kinds of tasks a `Stop` lists)
+`StopFailure`'s `error`, an `agent_id`, the kinds of tasks a `Stop` lists,
+whether a `PostToolBatch`'s calls ran or one was refused)
 with one example, the run's own values made placeholders
 (`{{session_id}}`, `{{transcript_path}}`, `{{cwd}}`, `{{root}}`). The fake
 agent fills them with its session's, and puts in the prompt and the reply;

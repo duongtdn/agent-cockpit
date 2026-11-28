@@ -18,6 +18,155 @@
         }
       }
     ],
+    "Notification": [
+      {
+        "shape": "notification_type=agent_needs_input",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "b41e30c5-ecb9-477e-85b0-2313e7478a68",
+          "hook_event_name": "Notification",
+          "message": "Auto mode can't check actions in this session and needs your choice",
+          "notification_type": "agent_needs_input"
+        }
+      },
+      {
+        "shape": "notification_type=permission_prompt",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "b41e30c5-ecb9-477e-85b0-2313e7478a68",
+          "hook_event_name": "Notification",
+          "message": "Claude needs your permission",
+          "notification_type": "permission_prompt"
+        }
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "shape": "tool_name=Bash",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "0756a0e1-11c6-4f4f-afa5-7ef4467fdff4",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PermissionRequest",
+          "tool_name": "Bash",
+          "tool_input": {
+            "command": "touch asked.txt",
+            "description": "Create asked.txt"
+          },
+          "permission_suggestions": [
+            {
+              "type": "addDirectories",
+              "directories": ["{{cwd}}"],
+              "destination": "session"
+            },
+            {
+              "type": "setMode",
+              "mode": "acceptEdits",
+              "destination": "session"
+            }
+          ]
+        }
+      },
+      {
+        "shape": "tool_name=Bash +agent_id +agent_type",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "4c64ff79-7572-464a-9eb4-baf34b320679",
+          "permission_mode": "default",
+          "agent_id": "ac34d346b6219a099",
+          "agent_type": "general-purpose",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PermissionRequest",
+          "tool_name": "Bash",
+          "tool_input": {
+            "command": "touch inner.txt",
+            "description": "Create inner.txt"
+          },
+          "permission_suggestions": [
+            {
+              "type": "addDirectories",
+              "directories": ["{{cwd}}"],
+              "destination": "session"
+            },
+            {
+              "type": "setMode",
+              "mode": "acceptEdits",
+              "destination": "session"
+            }
+          ]
+        }
+      },
+      {
+        "shape": "tool_name=Read",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "76ffea8a-1619-4bad-9ac1-11e7b803b633",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PermissionRequest",
+          "tool_name": "Read",
+          "tool_input": {
+            "file_path": "{{root}}/outside/r3.txt"
+          },
+          "permission_suggestions": [
+            {
+              "type": "addRules",
+              "rules": [
+                {
+                  "toolName": "Read",
+                  "ruleContent": "/{{root}}/outside/**"
+                }
+              ],
+              "behavior": "allow",
+              "destination": "session"
+            }
+          ]
+        }
+      },
+      {
+        "shape": "tool_name=Write",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "3252fbd9-1aac-426a-b198-4f49f2859f19",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PermissionRequest",
+          "tool_name": "Write",
+          "tool_input": {
+            "file_path": "{{cwd}}/written.txt",
+            "content": "w\n"
+          },
+          "permission_suggestions": [
+            {
+              "type": "setMode",
+              "mode": "acceptEdits",
+              "destination": "session"
+            }
+          ]
+        }
+      }
+    ],
     "PostCompact": [
       {
         "shape": "trigger=manual",
@@ -34,7 +183,7 @@
     ],
     "PostToolBatch": [
       {
-        "shape": "plain",
+        "shape": "tool_calls=ran",
         "payload": {
           "session_id": "{{session_id}}",
           "transcript_path": "{{transcript_path}}",
@@ -54,6 +203,58 @@
               },
               "tool_use_id": "toolu_fake_1_0",
               "tool_response": "(Bash completed with no output)"
+            }
+          ]
+        }
+      },
+      {
+        "shape": "tool_calls=ran +agent_id +agent_type",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "4c64ff79-7572-464a-9eb4-baf34b320679",
+          "permission_mode": "default",
+          "agent_id": "ac34d346b6219a099",
+          "agent_type": "general-purpose",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolBatch",
+          "tool_calls": [
+            {
+              "tool_name": "Bash",
+              "tool_input": {
+                "command": "touch inner.txt",
+                "description": "Create inner.txt"
+              },
+              "tool_use_id": "toolu_fake_2_0",
+              "tool_response": "(Bash completed with no output)"
+            }
+          ]
+        }
+      },
+      {
+        "shape": "tool_calls=refused",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "d1042e94-3829-4127-9791-5802d095f7f5",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolBatch",
+          "tool_calls": [
+            {
+              "tool_name": "Bash",
+              "tool_input": {
+                "command": "touch refused.txt",
+                "description": "Create refused.txt"
+              },
+              "tool_use_id": "toolu_fake_1_0",
+              "tool_response": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nuse mkdir instead"
             }
           ]
         }
@@ -247,6 +448,31 @@
           },
           "tool_use_id": "toolu_fake_2_0",
           "duration_ms": 31
+        }
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "shape": "error=Exit code 3 tool_name=Bash",
+        "payload": {
+          "session_id": "{{session_id}}",
+          "transcript_path": "{{transcript_path}}",
+          "cwd": "{{cwd}}",
+          "prompt_id": "0a383840-e51f-45ff-b992-547ca99dc531",
+          "permission_mode": "default",
+          "effort": {
+            "level": "medium"
+          },
+          "hook_event_name": "PostToolUseFailure",
+          "tool_name": "Bash",
+          "tool_input": {
+            "command": "exit 3",
+            "description": "Fail on purpose"
+          },
+          "tool_use_id": "toolu_fake_1_0",
+          "error": "Exit code 3",
+          "is_interrupt": false,
+          "duration_ms": 41
         }
       }
     ],
