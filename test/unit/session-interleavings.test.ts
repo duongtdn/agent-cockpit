@@ -5,8 +5,8 @@
  * every bound and every agent has exited: no session is left between two
  * phases, every call settled, each session's end was told once, nothing
  * was typed into a session after the cockpit asked it to end, and no
- * interrupt pressed its keys twice or resolved `interrupted` on a session
- * not `idle`.
+ * interrupt, an end's own among them, pressed its keys twice, nor resolved
+ * `interrupted` on a session not `idle`.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -289,8 +289,21 @@ class World {
     };
   }
 
-  /** Marks each interrupt the core runs, from its start until it settled. */
+  /**
+   * Marks each interrupt the core runs, from its start until it settled,
+   * and each end that may interrupt first: the keys an end presses are its
+   * interrupt's.
+   */
   #watchTheInterrupts(): void {
+    const interruptAndEnd = this.sessions.interruptAndEnd.bind(this.sessions);
+    this.sessions.interruptAndEnd = async (key, reason) => {
+      this.#interrupting.set(key, 0);
+      try {
+        return await interruptAndEnd(key, reason);
+      } finally {
+        this.#interrupting.delete(key);
+      }
+    };
     const interrupt = this.sessions.interrupt.bind(this.sessions);
     this.sessions.interrupt = async (key) => {
       this.#interrupting.set(key, 0);
@@ -435,6 +448,14 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
     arbitrary: file.map((file) =>
       command(`end ${file}`, (world) =>
         world.call(`end ${file}`, world.sessions.end(keyOf(file), 'app')),
+      ),
+    ),
+  },
+  {
+    weight: 2,
+    arbitrary: file.map((file) =>
+      command(`end-unit ${file}`, (world) =>
+        world.call(`end-unit ${file}`, world.unitsOfWork.end(keyOf(file))),
       ),
     ),
   },
