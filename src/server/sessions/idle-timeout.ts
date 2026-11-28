@@ -26,7 +26,10 @@ export type TryEnd = (key: string) => Promise<'ended' | 'held' | 'not-idle'>;
 
 /** What an idle timeout is built with. */
 export interface IdleTimeoutOptions {
-  /** How long a session stays `idle` before it is tried, in milliseconds. */
+  /**
+   * How long a session stays `idle` before it is tried, in milliseconds: an
+   * integer from 1 to 2,147,483,647, the longest a timer waits.
+   */
   readonly timeoutMs: number;
   /** Ends a session, or says why not: see {@link TryEnd}. */
   readonly tryEnd: TryEnd;
@@ -61,9 +64,23 @@ export interface IdleTimeout {
  *
  * @param options - See {@link IdleTimeoutOptions}.
  * @returns The idle timeout, timing nothing yet.
+ * @throws RangeError when `timeoutMs` is not an integer a timer can wait:
+ *   the cockpit's options refuse such a value before it gets here.
  */
 export function createIdleTimeout(options: IdleTimeoutOptions): IdleTimeout {
+  if (!isTimerDelay(options.timeoutMs)) {
+    throw new RangeError(
+      `timeoutMs must be an integer from 1 to ${MAX_TIMER_DELAY_MS}: ${options.timeoutMs}`,
+    );
+  }
   return new IdleTimers(options);
+}
+
+/** The longest a timer waits: Node fires a longer one after 1 ms. */
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+
+function isTimerDelay(ms: number): boolean {
+  return Number.isInteger(ms) && ms >= 1 && ms <= MAX_TIMER_DELAY_MS;
 }
 
 /** Resolved at each call, so that a clock a test installs is the one used. */
@@ -108,8 +125,7 @@ class IdleTimers implements IdleTimeout {
     this.forget(session.key);
     const watch: Watch = { since: session.since };
     this.#watches.set(session.key, watch);
-    const due = Date.parse(session.since) + this.#timeoutMs;
-    this.#arm(session.key, watch, Math.max(0, due - this.#timers.now()));
+    this.#arm(session.key, watch, this.#untilDue(session.since));
   }
 
   forget(key: string): void {
@@ -121,6 +137,16 @@ class IdleTimers implements IdleTimeout {
   close(): void {
     this.#closed = true;
     for (const key of [...this.#watches.keys()]) this.forget(key);
+  }
+
+  /**
+   * The time left until `since` plus the timeout, never more than the
+   * timeout: a clock set back, or a `since` that is not a time, waits one
+   * timeout, not longer.
+   */
+  #untilDue(since: string): number {
+    const left = Date.parse(since) + this.#timeoutMs - this.#timers.now();
+    return Number.isNaN(left) ? this.#timeoutMs : Math.min(this.#timeoutMs, Math.max(0, left));
   }
 
   #arm(key: string, watch: Watch, ms: number): void {
@@ -141,8 +167,18 @@ class IdleTimers implements IdleTimeout {
     try {
       return (await this.#tryEnd(key)) === 'held';
     } catch (thrown) {
-      this.#report(thrown);
+      this.#reportSafely(thrown);
       return true;
+    }
+  }
+
+  /** A report that throws goes to the console, not to an unhandled rejection that would end the process. */
+  #reportSafely(thrown: unknown): void {
+    try {
+      this.#report(thrown);
+    } catch (reportFailure) {
+      console.error(thrown);
+      console.error(reportFailure);
     }
   }
 }

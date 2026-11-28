@@ -67,6 +67,22 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('building', () => {
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31])(
+    'refuses a timeout of %s ms, which a timer cannot wait',
+    (timeoutMs) => {
+      expect(() => createIdleTimeout({ timeoutMs, tryEnd: async () => 'ended' })).toThrow(
+        RangeError,
+      );
+    },
+  );
+
+  it.each([1, 2 ** 31 - 1])('takes a timeout of %s ms', (timeoutMs) => {
+    const built = createIdleTimeout({ timeoutMs, tryEnd: async () => 'ended' });
+    built.close();
+  });
+});
+
 describe('an idle session', () => {
   it('is tried once its timeout has passed since it became idle, not before', async () => {
     idleTimeout.observe(idle(at(0)));
@@ -92,6 +108,24 @@ describe('an idle session', () => {
     idleTimeout.observe(idle(at(0)));
 
     await vi.advanceTimersByTimeAsync(0);
+    expect(tries).toEqual([KEY]);
+  });
+
+  it('waits no longer than the timeout when its `since` is ahead of the clock', async () => {
+    idleTimeout.observe(idle(at(60 * 60_000)));
+
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1);
+    expect(tries).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(tries).toEqual([KEY]);
+  });
+
+  it('waits the full timeout when its `since` is not a time', async () => {
+    idleTimeout.observe(idle('not-a-time'));
+
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1);
+    expect(tries).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
     expect(tries).toEqual([KEY]);
   });
 
@@ -241,6 +275,33 @@ describe('a try', () => {
       expect(error).toHaveBeenCalledWith(failure);
     } finally {
       quiet.close();
+      error.mockRestore();
+    }
+  });
+
+  it('that rejects goes to the console with what the report threw, when the report throws', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failure = new Error('the host is gone');
+    const reportFailure = new Error('the report failed');
+    let attempts = 0;
+    const loud = createIdleTimeout({
+      timeoutMs: TIMEOUT_MS,
+      tryEnd: () => {
+        attempts++;
+        return Promise.reject(failure);
+      },
+      report: () => {
+        throw reportFailure;
+      },
+    });
+    try {
+      loud.observe(idle(at(0)));
+      await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+      expect(error.mock.calls).toEqual([[failure], [reportFailure]]);
+      await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+      expect(attempts).toBe(2);
+    } finally {
+      loud.close();
       error.mockRestore();
     }
   });
