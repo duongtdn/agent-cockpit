@@ -606,12 +606,14 @@ class SessionRegistry implements Sessions {
   /**
    * Waits for the end under way of a session asked to end again, and gives
    * the tasks that end stopped. One whose kill failed left the session
-   * live: this end then ends it, for its own reason.
+   * live, or another waiting end began anew: this end then ends it, for
+   * its own reason, or joins that one.
    */
   async #joinEnd(entry: Entry, reason: EndReason): Promise<readonly BackgroundTask[]> {
     await settlesBeforeAbort(entry.lifecycle.endUnderWay, this.#closing.signal);
+    const { lifecycle } = entry;
+    if (lifecycle.isLive || lifecycle.hasEndUnderWay) return this.#endOrJoin(entry, reason);
     this.#refuseIfClosed(entry.key);
-    if (entry.lifecycle.isLive) return this.#endLive(entry, reason);
     return entry.stoppedTasks ?? [];
   }
 

@@ -925,6 +925,29 @@ describe('ending a live session gracefully', () => {
     expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'session-cap' });
   });
 
+  it('keeps two ends that waited for an end whose kill failed waiting until the session ended: the first ends it, the second joins', async () => {
+    await idleSession();
+    host.failNextKill(new SessionHostError('host-failed', 'tmux failed.'));
+    const first = sessions.end(KEY, 'app');
+    first.catch(() => {});
+    await settle();
+
+    const second = settledLater(sessions.end(KEY, 'session-cap'));
+    const third = settledLater(sessions.end(KEY, 'restarted'));
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    await expect(first).rejects.toThrow('tmux failed.');
+    await settle();
+    expect(second.outcome).toBeUndefined();
+    expect(third.outcome).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
+    await expect(second.promise).resolves.toEqual([]);
+    await expect(third.promise).resolves.toEqual([]);
+    expect(signals).toHaveLength(2);
+    expect(host.kills).toEqual([KEY]);
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'session-cap' });
+  });
+
   it('does nothing for a key with no live session', async () => {
     await expect(sessions.end('nothing-here', 'restarted')).resolves.toEqual([]);
     expect(signals).toEqual([]);
