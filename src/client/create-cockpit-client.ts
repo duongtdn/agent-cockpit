@@ -1,22 +1,29 @@
 import type { CockpitError } from '../shared/cockpit-error.js';
 import type { Choice, JobDescription } from '../shared/job.js';
 import type {
+  EndResult,
+  InterruptResult,
   OpenOptions,
   OpenResult,
+  RemoveResult,
   RunOptions,
   RunResult,
   SendResult,
   Session,
 } from '../shared/session.js';
 import {
+  END_PATH,
   freshOf,
+  INTERRUPT_PATH,
   JOBS_PATH,
   type JobsResponse,
+  type KeyRequest,
   OPEN_PATH,
   OPTIONS_PATH,
   type OpenRequest,
   type OptionsRequest,
   type OptionsResponse,
+  REMOVE_PATH,
   RUN_PATH,
   type RunRequest,
   SEND_PATH,
@@ -81,6 +88,57 @@ export interface CockpitClient {
    * says for the request checks and `unreachable`.
    */
   open(key: string, options?: OpenOptions): Promise<OpenResult>;
+  /**
+   * Interrupts a unit of work's turn, as the server's `cockpit.interrupt`
+   * does: on a `busy` or `waiting` session it stops the turn and resolves
+   * once the session is `idle`; on an `idle` or `ended` session, or a key
+   * with no record, it resolves with `nothing-to-interrupt`. Background
+   * tasks go on. Made again once, as a run is, when a renewal of the token
+   * overlapped it.
+   *
+   * @param key - The unit of work's key.
+   * @returns What the interrupt did and the state it left the session in.
+   * @throws `CockpitError` `wrong-state` (with `key` and `state`) on a
+   * `starting` session; `interrupt-unconfirmed` (with `key` and the last
+   * `state` known) when the session was not seen `idle` in time; and as
+   * `run` says for the request checks and `unreachable`, which also stands
+   * for a failure inside the server (its app is told it as
+   * `internal-failure`).
+   */
+  interrupt(key: string): Promise<InterruptResult>;
+  /**
+   * Ends a unit of work's session, as the server's `cockpit.end` does: on
+   * an `idle` session it ends the agent's process, on a `busy` or
+   * `waiting` one it interrupts the turn first; the conversation and the
+   * record are kept. On an `ended` session or a key with no record it
+   * resolves with `nothing-to-end`. Made again once, as a run is, when a
+   * renewal of the token overlapped it.
+   *
+   * @param key - The unit of work's key.
+   * @returns What the end did, with the background tasks stopped with the
+   * agent.
+   * @throws `CockpitError` `wrong-state` (with `key` and `state`) on a
+   * `starting` session; and as `run` says for the request checks and
+   * `unreachable`, which also stands for a failure inside the server (its
+   * app is told it as `internal-failure`).
+   */
+  end(key: string): Promise<EndResult>;
+  /**
+   * Removes a unit of work, as the server's `cockpit.remove` does: it ends
+   * a live session first, then deletes everything the cockpit wrote for the
+   * key, which is unknown afterwards; the agent's transcripts are left. On
+   * a key with no record it resolves with `nothing-to-remove`. Made again
+   * once, as a run is, when a renewal of the token overlapped it.
+   *
+   * @param key - The unit of work's key.
+   * @returns What the remove did, with the background tasks stopped with a
+   * live session.
+   * @throws `CockpitError` `wrong-state` (with `key` and `state`) on a
+   * `starting` session; and as `run` says for the request checks and
+   * `unreachable`, which also stands for a failure inside the server (its
+   * app is told it as `internal-failure`).
+   */
+  remove(key: string): Promise<RemoveResult>;
   /**
    * Describes the app's jobs, as the server's `cockpit.jobs()` does: each
    * one's schema as JSON Schema, to draw its form from.
@@ -156,6 +214,10 @@ export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitC
   const connection = createConnection(baseUrl, takeTokenFromLink());
   const errorHandlers = new Set<(error: CockpitError) => void>();
   const report = (error: CockpitError): void => callEach(errorHandlers, error);
+  const postKey = (path: string, key: string): Promise<unknown> => {
+    const body: KeyRequest = { key };
+    return connection.request(path, { method: 'POST', body });
+  };
   return {
     run: async (jobId, args, options) => {
       const body: RunRequest = { jobId, args, ...freshOf(options) };
@@ -169,6 +231,9 @@ export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitC
       const body: OpenRequest = { key, ...freshOf(options) };
       return (await connection.request(OPEN_PATH, { method: 'POST', body })) as OpenResult;
     },
+    interrupt: async (key) => (await postKey(INTERRUPT_PATH, key)) as InterruptResult,
+    end: async (key) => (await postKey(END_PATH, key)) as EndResult,
+    remove: async (key) => (await postKey(REMOVE_PATH, key)) as RemoveResult,
     jobs: async () => ((await connection.request(JOBS_PATH)) as JobsResponse).jobs,
     options: async (jobId, field, argsSoFar = {}) => {
       const body: OptionsRequest = { jobId, field, args: argsSoFar };

@@ -135,3 +135,106 @@ describe("the client's units of work", () => {
     expect(error).toMatchObject({ key: 'k' });
   });
 });
+
+describe('the client interrupts, ends and removes a unit of work', () => {
+  const stoppedTasks = [{ id: 'a1', type: 'general-purpose', description: 'Review a.ts' }];
+
+  it.each([
+    ['interrupt', '/interrupt'],
+    ['end', '/end'],
+    ['remove', '/remove'],
+  ] as const)('%s posts the key to %s, with the token', async (operation, path) => {
+    server.answer(path, json(200, { action: `nothing-to-${operation}` }));
+
+    await createCockpitClient({ baseUrl: server.baseUrl })[operation]('chapter-1');
+
+    expect(theRequest()).toMatchObject({
+      method: 'POST',
+      path,
+      token,
+      body: { key: 'chapter-1' },
+    });
+  });
+
+  it.each([
+    { action: 'interrupted', state: 'idle' },
+    { action: 'nothing-to-interrupt', state: 'ended' },
+    { action: 'nothing-to-interrupt' },
+  ])('resolves an interrupt with what it did: $action', async (result) => {
+    server.answer('/interrupt', json(200, result));
+
+    expect(await createCockpitClient({ baseUrl: server.baseUrl }).interrupt('k')).toEqual(result);
+  });
+
+  it.each([
+    { action: 'ended', stoppedTasks },
+    { action: 'ended', stoppedTasks: [] },
+    { action: 'nothing-to-end', state: 'ended' },
+    { action: 'nothing-to-end' },
+  ])('resolves an end with what it did: $action', async (result) => {
+    server.answer('/end', json(200, result));
+
+    expect(await createCockpitClient({ baseUrl: server.baseUrl }).end('k')).toEqual(result);
+  });
+
+  it.each([
+    { action: 'removed', stoppedTasks },
+    { action: 'removed' },
+    { action: 'nothing-to-remove' },
+  ])('resolves a remove with what it did: $action', async (result) => {
+    server.answer('/remove', json(200, result));
+
+    expect(await createCockpitClient({ baseUrl: server.baseUrl }).remove('k')).toEqual(result);
+  });
+
+  it.each([
+    ['interrupt', '/interrupt'],
+    ['end', '/end'],
+    ['remove', '/remove'],
+  ] as const)(
+    'rejects %s on a starting session with wrong-state and the state',
+    async (operation, path) => {
+      server.answer(
+        path,
+        json(409, {
+          error: {
+            name: 'CockpitError',
+            code: 'wrong-state',
+            message: 'The session is starting.',
+            key: 'k',
+            state: 'starting',
+          },
+        }),
+      );
+
+      const error = await createCockpitClient({ baseUrl: server.baseUrl })
+        [operation]('k')
+        .catch((reason: unknown) => reason);
+
+      expect(isCockpitError(error, 'wrong-state')).toBe(true);
+      expect(error).toMatchObject({ key: 'k', state: 'starting' });
+    },
+  );
+
+  it('rejects an interrupt whose idle was not confirmed with interrupt-unconfirmed, the key and the last state', async () => {
+    server.answer(
+      '/interrupt',
+      json(504, {
+        error: {
+          name: 'CockpitError',
+          code: 'interrupt-unconfirmed',
+          message: 'Not seen idle in time.',
+          key: 'k',
+          state: 'busy',
+        },
+      }),
+    );
+
+    const error = await createCockpitClient({ baseUrl: server.baseUrl })
+      .interrupt('k')
+      .catch((reason: unknown) => reason);
+
+    expect(isCockpitError(error, 'interrupt-unconfirmed')).toBe(true);
+    expect(error).toMatchObject({ key: 'k', state: 'busy' });
+  });
+});

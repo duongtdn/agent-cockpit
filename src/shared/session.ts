@@ -277,6 +277,65 @@ export type OpenResult =
       readonly state?: SessionState;
     };
 
+/**
+ * What an interrupt did: the turn of a `busy` or `waiting` session stopped,
+ * the session confirmed `idle` (`interrupted`), or no turn to stop
+ * (`nothing-to-interrupt`: the session is `idle` or `ended`, or the key has
+ * no record). Background tasks go on either way.
+ */
+export type InterruptResult =
+  | {
+      /** The turn was stopped, and the session seen `idle`. */
+      readonly action: 'interrupted';
+      /** The state the session is in: `idle`. */
+      readonly state: SessionState;
+    }
+  | {
+      /** No turn ran: there was nothing to interrupt. */
+      readonly action: 'nothing-to-interrupt';
+      /** The state of the session; absent for a key with no record. */
+      readonly state?: SessionState;
+    };
+
+/**
+ * What an end did: the agent's process of a live session gone, the session
+ * `ended` with its conversation and record kept (`ended`), or no live
+ * session (`nothing-to-end`).
+ */
+export type EndResult =
+  | {
+      /** The session was ended: its agent's process is gone. */
+      readonly action: 'ended';
+      /** The background tasks stopped with the agent's process: empty when none ran. */
+      readonly stoppedTasks: readonly BackgroundTask[];
+    }
+  | {
+      /** The session is `ended`, or the key has no record: there was nothing to end. */
+      readonly action: 'nothing-to-end';
+      /** The state of the session; absent for a key with no record. */
+      readonly state?: SessionState;
+    };
+
+/**
+ * What a remove did: everything the cockpit wrote for the key deleted, a
+ * live session ended first (`removed`), or no record (`nothing-to-remove`).
+ * The agent's transcripts are left where the agent keeps them.
+ */
+export type RemoveResult =
+  | {
+      /** The key's record and files were deleted: the key is unknown now. */
+      readonly action: 'removed';
+      /**
+       * The background tasks stopped with the live session ended first;
+       * absent when none ran.
+       */
+      readonly stoppedTasks?: readonly BackgroundTask[];
+    }
+  | {
+      /** The key has no record: there was nothing to remove. */
+      readonly action: 'nothing-to-remove';
+    };
+
 /** What a run takes beside its job and arguments. */
 export interface RunOptions {
   /**

@@ -16,8 +16,11 @@
 import type { CockpitErrorCode, CockpitErrorFields } from './cockpit-error.js';
 import type { Choice, JobDescription } from './job.js';
 import {
+  type EndResult,
+  type InterruptResult,
   isSessionKey,
   type OpenResult,
+  type RemoveResult,
   type RunResult,
   type SendResult,
   type Session,
@@ -104,6 +107,15 @@ export const SEND_PATH = '/send';
 /** `POST`: opens a unit of work. The body is an {@link OpenRequest}; the answer an {@link OpenResponse}. */
 export const OPEN_PATH = '/open';
 
+/** `POST`: interrupts a unit of work's turn. The body is a {@link KeyRequest}; the answer an {@link InterruptResponse}. */
+export const INTERRUPT_PATH = '/interrupt';
+
+/** `POST`: ends a unit of work's session. The body is a {@link KeyRequest}; the answer an {@link EndResponse}. */
+export const END_PATH = '/end';
+
+/** `POST`: removes a unit of work. The body is a {@link KeyRequest}; the answer a {@link RemoveResponse}. */
+export const REMOVE_PATH = '/remove';
+
 /** `GET`: describes the jobs. The answer is a {@link JobsResponse}. */
 export const JOBS_PATH = '/jobs';
 
@@ -188,6 +200,24 @@ export interface OpenRequest {
 
 /** The answer to an {@link OPEN_PATH} request that succeeded: what the open did. */
 export type OpenResponse = OpenResult;
+
+/**
+ * The body of a request that names a unit of work and nothing else: an
+ * {@link INTERRUPT_PATH}, {@link END_PATH} or {@link REMOVE_PATH} request.
+ */
+export interface KeyRequest {
+  /** The key of the unit of work. */
+  readonly key: string;
+}
+
+/** The answer to an {@link INTERRUPT_PATH} request that succeeded: what the interrupt did. */
+export type InterruptResponse = InterruptResult;
+
+/** The answer to an {@link END_PATH} request that succeeded: what the end did. */
+export type EndResponse = EndResult;
+
+/** The answer to a {@link REMOVE_PATH} request that succeeded: what the remove did. */
+export type RemoveResponse = RemoveResult;
 
 /**
  * The `fresh` of a run or an open, as the wire carries it and as the
