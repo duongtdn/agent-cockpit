@@ -92,6 +92,26 @@ async function idleAfter<T>(
   return [result, await sessionAfter(cockpit, 'idle', from)];
 }
 
+/** The states the cockpit's sessions took since a point of its timeline, in order. */
+function statesSince(cockpit: ContractCockpit, from: number): string[] {
+  return cockpit.timeline
+    .slice(from)
+    .flatMap((moment) => ('session' in moment ? [moment.session.state] : []));
+}
+
+/**
+ * The session `idle` once a fresh start on a session in a turn settled:
+ * the first after the new session's start, not the old session's, whose
+ * turn the start interrupted before its end.
+ */
+async function idleAfterTheNewStart(cockpit: ContractCockpit, from: number): Promise<Session> {
+  const start = cockpit.timeline.findIndex(
+    (moment, index) => index >= from && 'session' in moment && moment.session.state === 'starting',
+  );
+  if (start === -1) throw new Error(`No session started after moment ${from}.`);
+  return sessionAfter(cockpit, 'idle', start);
+}
+
 /** The record of the unit of work of {@link SAID_KEY}, as the cockpit lists it now: written once a launch settled. */
 function recordOf(cockpit: ContractCockpit): Session['record'] {
   return cockpit.cockpit.sessions.list().find((session) => session.key === SAID_KEY)?.record;
@@ -241,9 +261,13 @@ it('115 — fresh on an idle and on a busy session ends it gracefully (SIGTERM: 
   await cockpit.say('think it over');
   const held = await cockpit.api.heldRequest();
   const fromBusy = cockpit.hooksRead.length;
-  const [afterBusy, idle] = await idleAfter(cockpit, () =>
-    cockpit.run(SAY.id, { prompt: 'afresh from busy', key: SAID_KEY }, { fresh: true }),
+  const fromBusyMoment = cockpit.timeline.length;
+  const afterBusy = await cockpit.run(
+    SAY.id,
+    { prompt: 'afresh from busy', key: SAID_KEY },
+    { fresh: true },
   );
+  const idle = await idleAfterTheNewStart(cockpit, fromBusyMoment);
   const third = cockpit.conversationOf(SAID_KEY);
 
   const fresh = { action: 'started', reason: 'fresh-on-request' };
@@ -261,6 +285,8 @@ it('115 — fresh on an idle and on a busy session ends it gracefully (SIGTERM: 
     { hook_event_name: 'UserPromptSubmit', session_id: third, prompt: 'afresh from busy' },
   ]);
   expect(hooksSince(cockpit, fromBusy)[0]).toMatchObject({ hook_event_name: 'SessionEnd' });
+  // The busy session's turn is interrupted, as an end interrupts it, before its end.
+  expect(statesSince(cockpit, fromBusyMoment).slice(0, 3)).toEqual(['idle', 'ended', 'starting']);
   expect(await held.ended).toBe('client-gone');
   // Ended gracefully, each conversation stays the agent's to resume.
   expect(existsSync(transcriptOf(cockpit, first))).toBe(true);
