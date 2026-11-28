@@ -2,7 +2,7 @@ import { CockpitError } from '../../shared/cockpit-error.js';
 import type { InterruptResult, Session } from '../../shared/session.js';
 import type { InputBoxClearing, SessionInterrupting } from '../driver.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
-import { settlesBeforeAbort } from './abort-race.js';
+import { fulfilledWithin } from './abort-race.js';
 import { wrongState } from './refusals.js';
 
 /**
@@ -119,7 +119,7 @@ async function stopTheTurn(
   const rest = restingState(target);
   try {
     await target.pressKeys(interrupting.busy.keys);
-    const settled = await within(rest.reached, interrupting.boundMs, closing);
+    const settled = await fulfilledWithin(rest.reached, interrupting.boundMs, closing);
     if (closing.aborted) throw refusal();
     if (settled === undefined) throw unconfirmed(target);
     if (settled.state === 'ended') return nothingToInterrupt(settled);
@@ -151,24 +151,6 @@ function restingState(target: InterruptedSession): {
     });
   });
   return { reached, stop: () => stop() };
-}
-
-/** What the promise gives within the time, in milliseconds; `undefined` past it, or once the signal aborted. */
-async function within<T>(
-  promise: Promise<T>,
-  ms: number,
-  signal: AbortSignal,
-): Promise<T | undefined> {
-  let timer: NodeJS.Timeout | undefined;
-  const timedOut = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), ms);
-  });
-  const bounded = Promise.race([promise, timedOut]);
-  try {
-    return (await settlesBeforeAbort(bounded, signal)) ? await bounded : undefined;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function nothingToInterrupt(session: Session | undefined): InterruptResult {

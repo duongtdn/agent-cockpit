@@ -34,7 +34,7 @@ import {
 import type { Attachment, SessionHost, TerminalSize } from '../session-host/session-host.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
 import type { TerminalHold } from '../terminal-hold.js';
-import { settlesBeforeAbort } from './abort-race.js';
+import { fulfilledWithin, settlesBeforeAbort } from './abort-race.js';
 import { FirstPrompt, type StartingSession } from './first-prompt.js';
 import { Followers } from './followers.js';
 import { Launches } from './launch.js';
@@ -526,8 +526,8 @@ class SessionRegistry implements Sessions {
     entry.lifecycle.move('ending');
     const { signal, boundMs } = this.#options.driver.ending;
     await this.#signal(key, signal);
-    const ended = settlesBeforeAbort(entry.lifecycle.ended, this.#closing.signal);
-    const exited = await within(ended, boundMs);
+    const ended = entry.lifecycle.ended.then(() => true);
+    const exited = (await fulfilledWithin(ended, boundMs, this.#closing.signal)) ?? false;
     // Closed, the core no longer watches the session: whether it is gone, nothing tells.
     this.#refuseIfClosed(key);
     if (!exited) await this.#kill(entry, reasonBefore);
@@ -1115,19 +1115,6 @@ function conversationOf(entry: Entry): Conversation {
 
 function courseOf({ session, told }: Entry): SessionCourse {
   return { ...told, session };
-}
-
-/** Whether the promise settles within the time, in milliseconds. */
-async function within(promise: Promise<unknown>, ms: number): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined;
-  const timedOut = new Promise<false>((resolve) => {
-    timer = setTimeout(() => resolve(false), ms);
-  });
-  try {
-    return await Promise.race([promise.then(() => true), timedOut]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function now(): string {
