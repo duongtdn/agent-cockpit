@@ -126,7 +126,7 @@ class World {
    * already, or that no interrupt pressed: `<key> <keys>`.
    */
   readonly keysPressedAgain: string[] = [];
-  /** Each interrupt that resolved `interrupted` on a session not `idle` as it settled: `<key> <state>`. */
+  /** Each key of an interrupt that resolved `interrupted` though no change made its session `idle` while it ran. */
   readonly interruptedNotIdle: string[] = [];
   units: UnitsOfWork | undefined;
   closed = false;
@@ -136,6 +136,8 @@ class World {
   readonly #driver: StubDriver = createStubDriver();
   /** The keys whose interrupt runs in the core, with how many times it pressed the interrupt's keys. */
   readonly #interrupting = new Map<string, number>();
+  /** The keys whose interrupt runs in the core and saw a change of its session to `idle`. */
+  readonly #idleSeen = new Set<string>();
 
   constructor({ exitOnSignal, slowness }: Setting) {
     const driver = this.#driver;
@@ -168,7 +170,10 @@ class World {
         if (exitOnSignal) this.host.exit(key);
       },
     });
-    this.sessions.follow((list) => this.#seeEnds(list));
+    this.sessions.follow((list) => {
+      this.#seeEnds(list);
+      this.#seeIdles(list);
+    });
     this.#watchTheInterrupts();
   }
 
@@ -289,11 +294,11 @@ class World {
     const interrupt = this.sessions.interrupt.bind(this.sessions);
     this.sessions.interrupt = async (key) => {
       this.#interrupting.set(key, 0);
+      this.#idleSeen.delete(key);
       try {
         const result = await interrupt(key);
-        const state = this.sessions.session(key)?.state;
-        if (result.action === 'interrupted' && state !== 'idle') {
-          this.interruptedNotIdle.push(`${key} ${state}`);
+        if (result.action === 'interrupted' && !this.#idleSeen.has(key)) {
+          this.interruptedNotIdle.push(key);
         }
         return result;
       } finally {
@@ -314,6 +319,12 @@ class World {
     const pressed = this.#interrupting.get(key);
     if (pressed !== 0) this.keysPressedAgain.push(`${key} ${keys}`);
     if (pressed !== undefined) this.#interrupting.set(key, pressed + 1);
+  }
+
+  #seeIdles(list: readonly Session[]): void {
+    for (const { key, state } of list) {
+      if (state === 'idle' && this.#interrupting.has(key)) this.#idleSeen.add(key);
+    }
   }
 
   #seeEnds(list: readonly Session[]): void {

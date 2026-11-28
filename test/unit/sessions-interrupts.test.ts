@@ -619,6 +619,31 @@ describe('an interrupt confirmed by the withdrawn prompt', () => {
     expect(writes()).toEqual(['Escape']);
   });
 
+  it('clears the box when the session changed but stayed idle before the interrupt looked: a task finished', async () => {
+    await idleSession();
+    hook('/turn-ended-with-a-task');
+    hook(`${PROMPT_PATH}${PROMPT}`);
+    const result = interrupting();
+    await settle();
+    host.show(KEY, withdrawnScreen(PROMPT));
+    let finished = false;
+    const followed = sessions.follow((list) => {
+      const idle = list.some((session) => session.key === KEY && session.state === 'idle');
+      if (idle && !finished) {
+        finished = true;
+        // Once the screen's change is told, before the interrupt looks.
+        queueMicrotask(() => hook('/task-finished'));
+      }
+    });
+
+    await nextRead();
+    followed();
+
+    await expect(result).resolves.toEqual({ action: 'interrupted', state: 'idle' });
+    expect(sessions.session(KEY)).toEqual({ key: KEY, state: 'idle', since: expect.any(String) });
+    expect(writes()).toEqual(['Escape', 'C-u']);
+  });
+
   it('clears nothing when the interruption was recorded: the box holds the person’s draft or nothing', async () => {
     await busySession();
 

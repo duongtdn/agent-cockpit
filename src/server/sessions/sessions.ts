@@ -279,8 +279,9 @@ export interface Sessions {
    * waiting on more than the terminal, then the driver's bound for it to
    * be `idle`; nothing pressed where no turn runs. A session the cockpit is
    * ending is first awaited ended, then read again. Background tasks go
-   * on: the `idle` session lists those it listed before the turn and those
-   * the turn started. A prompt withdrawn into the input box is cleared once
+   * on: the `idle` session lists those it listed before the turn and the
+   * subagents the turn started; a shell or a monitor the turn started
+   * fires no hook as it starts, and is listed from the next end of a turn. A prompt withdrawn into the input box is cleared once
    * the screen showed it, whoever pressed the Esc: a person's Esc in the
    * terminal while the interrupt waits cannot be told from the cockpit's.
    *

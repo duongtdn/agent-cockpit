@@ -51,8 +51,8 @@ export interface InterruptedSession {
   session(): Session | undefined;
   /** Called with the session at each change: the interrupt adds itself while it waits. */
   readonly changeListeners: Set<(session: Session) => void>;
-  /** Tells which `idle` session the screen showed with the turn's prompt withdrawn. */
-  readonly withdrawal: Pick<WithdrawnWatch, 'wasWithdrawn'>;
+  /** Tells whether the session is `idle` since the screen showed the turn's prompt withdrawn. */
+  readonly withdrawal: Pick<WithdrawnWatch, 'isIdleSinceWithdrawn'>;
   /** Whether keys may be pressed into it: the cockpit is not ending it, and the core is open. */
   takesKeys(): boolean;
   /**
@@ -126,7 +126,7 @@ async function stopTheTurn(
     if (closing.aborted) throw refusal();
     if (settled === undefined) throw unconfirmed(target);
     if (settled.state === 'ended') return nothingToInterrupt(settled);
-    if (target.withdrawal.wasWithdrawn(settled)) await clearWithdrawnPrompt(target);
+    if (target.withdrawal.isIdleSinceWithdrawn()) await clearWithdrawnPrompt(target);
     // The clearing waits on the host: the core may have closed meanwhile.
     if (closing.aborted) throw refusal();
     return { action: 'interrupted', state: 'idle' };

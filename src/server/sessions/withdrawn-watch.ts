@@ -14,7 +14,7 @@ export interface WithdrawnWatchOptions {
   /**
    * Called once the screen shows the prompt withdrawn: the watch has
    * stopped, and the agent waits for a prompt. The `idle` session it makes
-   * is the withdrawn one (see {@link WithdrawnWatch.wasWithdrawn}).
+   * begins the stretch {@link WithdrawnWatch.isIdleSinceWithdrawn} tells.
    */
   readonly onWithdrawn: () => void;
 }
@@ -36,7 +36,8 @@ export class WithdrawnWatch {
   #screen: ScreenWatch<string> | undefined;
   /** Whether {@link WithdrawnWatchOptions.onWithdrawn} runs: the change it makes is the withdrawn idle. */
   #withdrawing = false;
-  #withdrawnIdle: Session | undefined;
+  /** Whether the session is `idle` since the screen showed the prompt withdrawn. */
+  #idleSinceWithdrawn = false;
 
   /** @param options - See {@link WithdrawnWatchOptions}. */
   constructor(options: WithdrawnWatchOptions) {
@@ -63,23 +64,19 @@ export class WithdrawnWatch {
 
   /**
    * Takes the session at each of its changes: the `idle` session made as
-   * the prompt was read withdrawn is the withdrawn one, until the next
-   * change.
+   * the prompt was read withdrawn begins an idle stretch that lasts until
+   * the session leaves `idle` (a task finishing changes it, and keeps it so).
    *
    * @param session - The session as it is now.
    */
   changed(session: Session): void {
-    this.#withdrawnIdle = this.#withdrawing && session.state === 'idle' ? session : undefined;
+    if (session.state !== 'idle') this.#idleSinceWithdrawn = false;
+    else if (this.#withdrawing) this.#idleSinceWithdrawn = true;
   }
 
-  /**
-   * Tells whether the session is the `idle` one the screen showed with
-   * the turn's prompt withdrawn, and the session has not changed since.
-   *
-   * @param session - A session.
-   */
-  wasWithdrawn(session: Session): boolean {
-    return session === this.#withdrawnIdle;
+  /** Whether the session is `idle` since the screen showed the turn's prompt withdrawn. */
+  isIdleSinceWithdrawn(): boolean {
+    return this.#idleSinceWithdrawn;
   }
 
   /** Stops watching: nothing is called from now on, until a prompt is followed again. */
