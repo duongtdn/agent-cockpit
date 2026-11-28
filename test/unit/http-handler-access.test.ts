@@ -135,6 +135,7 @@ async function serve(
         return () => {};
       },
     },
+    asks: { follow: () => () => {}, on: () => () => {}, settled: () => [] },
     terminals: {
       attach: async () => {
         const attachment = new QuietAttachment();

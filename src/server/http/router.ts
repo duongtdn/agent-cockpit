@@ -1,4 +1,5 @@
 import {
+  ASKS_ANSWER_PATH,
   END_PATH,
   FOLLOW_SESSIONS_PATH,
   INTERRUPT_PATH,
@@ -10,6 +11,7 @@ import {
   RUN_PATH,
   SEND_PATH,
   SESSIONS_PATH,
+  scopeOfFollowAsks,
 } from '../../shared/wire.js';
 
 /** The HTTP routes of the cockpit's operations, each on a path of its own. */
@@ -22,7 +24,8 @@ type OperationRoute =
   | 'remove'
   | 'jobs'
   | 'options'
-  | 'sessions';
+  | 'sessions'
+  | 'answer';
 
 /** Where an HTTP request under the mount goes. */
 export type RequestRoute =
@@ -42,6 +45,8 @@ export type RequestRoute =
 /** Where a WebSocket upgrade under the mount goes. */
 export type SocketRoute =
   | { readonly route: 'follow-sessions' }
+  /** `scope`: the session's key, or `'*'` for every session. */
+  | { readonly route: 'follow-asks'; readonly scope: string }
   | { readonly route: 'terminal'; readonly key: string };
 
 /** The HTTP paths, each with the one method it takes. */
@@ -55,6 +60,7 @@ const REQUEST_PATHS: Readonly<Record<string, { method: string; route: OperationR
   [JOBS_PATH]: { method: 'GET', route: 'jobs' },
   [OPTIONS_PATH]: { method: 'POST', route: 'options' },
   [SESSIONS_PATH]: { method: 'GET', route: 'sessions' },
+  [ASKS_ANSWER_PATH]: { method: 'POST', route: 'answer' },
 };
 
 /**
@@ -74,9 +80,9 @@ export function requestRouteOf(method: string, url: string): RequestRoute {
       ? { route: known.route }
       : { route: 'wrong-method', allow: known.method };
   }
-  const socket = socketRouteOf(path);
+  const socket = socketRouteOf(url);
   if (socket === undefined) return { route: 'unknown' };
-  if (socket.route === 'follow-sessions') return { route: 'upgrade-required' };
+  if (socket.route !== 'terminal') return { route: 'upgrade-required' };
   return method === 'GET'
     ? { route: 'terminal-probe', key: socket.key }
     : { route: 'wrong-method', allow: 'GET' };
@@ -91,6 +97,8 @@ export function requestRouteOf(method: string, url: string): RequestRoute {
 export function socketRouteOf(url: string): SocketRoute | undefined {
   const path = pathOf(url);
   if (path === FOLLOW_SESSIONS_PATH) return { route: 'follow-sessions' };
+  const scope = scopeOfFollowAsks(url);
+  if (scope !== undefined) return { route: 'follow-asks', scope };
   const key = keyOfTerminalPath(path);
   return key === undefined ? undefined : { route: 'terminal', key };
 }

@@ -29,6 +29,11 @@ describe('the routes of HTTP requests, under the mount', () => {
     expect(requestRouteOf('GET', '/sessions?x=1')).toEqual({ route: 'sessions' });
   });
 
+  it('answers an ask on POST /asks/answer', () => {
+    expect(requestRouteOf('POST', '/asks/answer')).toEqual({ route: 'answer' });
+    expect(requestRouteOf('GET', '/asks/answer')).toEqual({ route: 'wrong-method', allow: 'POST' });
+  });
+
   it('answers another method on a known path with the one it takes', () => {
     expect(requestRouteOf('GET', '/run')).toEqual({ route: 'wrong-method', allow: 'POST' });
     expect(requestRouteOf('DELETE', '/sessions')).toEqual({ route: 'wrong-method', allow: 'GET' });
@@ -37,6 +42,14 @@ describe('the routes of HTTP requests, under the mount', () => {
   it('tells a plain request to the sessions’ WebSocket path that it needs an upgrade', () => {
     expect(requestRouteOf('GET', '/follow/sessions')).toEqual({ route: 'upgrade-required' });
     expect(requestRouteOf('POST', '/follow/sessions')).toEqual({ route: 'upgrade-required' });
+  });
+
+  it('tells a plain request to the asks’ WebSocket path that it needs an upgrade, for a scope it would follow', () => {
+    expect(requestRouteOf('GET', '/follow/asks')).toEqual({ route: 'upgrade-required' });
+    expect(requestRouteOf('GET', '/follow/asks?key=explain-a')).toEqual({
+      route: 'upgrade-required',
+    });
+    expect(requestRouteOf('GET', '/follow/asks?key=A')).toEqual({ route: 'unknown' });
   });
 
   it('takes a GET on a terminal’s path as its probe, which explains a refused handshake', () => {
@@ -65,6 +78,8 @@ describe('the routes of HTTP requests, under the mount', () => {
     '/terminal/Upper',
     '/terminal/a/b',
     '/follow',
+    '/asks',
+    '/follow/asks/x',
     '//run',
   ])('knows no route at %j', (path) => {
     expect(requestRouteOf('GET', path)).toEqual({ route: 'unknown' });
@@ -75,6 +90,14 @@ describe('the routes of HTTP requests, under the mount', () => {
 describe('the routes of WebSocket upgrades, under the mount', () => {
   it('follows the sessions on /follow/sessions', () => {
     expect(socketRouteOf('/follow/sessions')).toEqual({ route: 'follow-sessions' });
+  });
+
+  it('follows the asks of every session on /follow/asks, of one with ?key=', () => {
+    expect(socketRouteOf('/follow/asks')).toEqual({ route: 'follow-asks', scope: '*' });
+    expect(socketRouteOf('/follow/asks?key=explain-a')).toEqual({
+      route: 'follow-asks',
+      scope: 'explain-a',
+    });
   });
 
   it("bridges a session's terminal on /terminal/<key>", () => {
@@ -92,6 +115,10 @@ describe('the routes of WebSocket upgrades, under the mount', () => {
     '/terminal/a%2Fb',
     '/terminal/A',
     '/follow/sessions/x',
+    '/follow/asks?key=',
+    '/follow/asks?key=A',
+    '/follow/asks/x',
+    '/asks/answer',
     '/',
   ])('knows no route at %j', (path) => {
     expect(socketRouteOf(path)).toBeUndefined();

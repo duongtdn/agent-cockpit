@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  FOLLOW_ASKS_PATH,
+  followAsksPath,
   freshOf,
   isWireToken,
   keyOfTerminalPath,
+  scopeOfFollowAsks,
   terminalPath,
   tokenOfSubprotocols,
   WIRE_SUBPROTOCOL,
@@ -125,6 +128,40 @@ describe('the path of a session terminal', () => {
     ['another path', '/sessions'],
   ])('reads no key from %s', (_, path) => {
     expect(keyOfTerminalPath(path)).toBeUndefined();
+  });
+});
+
+describe('the path that follows the asks', () => {
+  it('follows every session with no query, one session with its key in the query', () => {
+    expect(followAsksPath('*')).toBe(FOLLOW_ASKS_PATH);
+    expect(followAsksPath('chapter-1')).toBe(`${FOLLOW_ASKS_PATH}?key=chapter-1`);
+  });
+
+  it.each(['*', 'chapter-1-2'])('is read back to the scope it was made from: %j', (scope) => {
+    expect(scopeOfFollowAsks(followAsksPath(scope))).toBe(scope);
+  });
+
+  it('reads the key among other parameters of the query', () => {
+    expect(scopeOfFollowAsks(`${FOLLOW_ASKS_PATH}?x=1&key=a`)).toBe('a');
+  });
+
+  it.each([
+    ['an empty key', ''],
+    ['an upper-case letter', 'Chapter'],
+    ['a slash', 'a/b'],
+  ])('refuses %s, which is neither a key nor every session', (_, key) => {
+    expect(() => followAsksPath(key)).toThrow(TypeError);
+  });
+
+  it.each([
+    ['another path', '/follow/sessions'],
+    ['a path below it', `${FOLLOW_ASKS_PATH}/a`],
+    ['an empty key', `${FOLLOW_ASKS_PATH}?key=`],
+    ['a key that is no key', `${FOLLOW_ASKS_PATH}?key=A`],
+    ['the star as a key', `${FOLLOW_ASKS_PATH}?key=*`],
+    ['two keys', `${FOLLOW_ASKS_PATH}?key=a&key=b`],
+  ])('reads no scope from %s', (_, url) => {
+    expect(scopeOfFollowAsks(url)).toBeUndefined();
   });
 });
 

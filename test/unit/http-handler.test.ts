@@ -4,11 +4,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHandler, type Handler, MAX_BODY_BYTES } from '../../src/server/http/handler.ts';
 import type { Attachment, TerminalSize } from '../../src/server/session-host/session-host.ts';
 import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
+import type { Ask, AskSettled } from '../../src/shared/ask.ts';
 import { CockpitError } from '../../src/shared/cockpit-error.ts';
 import type { JobDescription } from '../../src/shared/job.ts';
 import type { EndResult, RunResult, Session } from '../../src/shared/session.ts';
 import {
+  ASKS_ANSWER_PATH,
   END_PATH,
+  FOLLOW_ASKS_PATH,
   FOLLOW_SESSIONS_PATH,
   INTERRUPT_PATH,
   JOBS_PATH,
@@ -49,6 +52,13 @@ let attachOutcome: () => Promise<Attachment | undefined>;
 let attachedSizes: TerminalSize[];
 let live: boolean;
 let failures: { where: string; cause: unknown }[];
+let answerOutcome: () => Promise<void>;
+/** The asks pending, as the follows of the asks are first given them. */
+let pendingAsks: Ask[];
+/** The settlements remembered, as the snapshot of the asks reads them. */
+let rememberedSettled: AskSettled[];
+let askFollowers: Set<{ scope: string; handler: (ask: Ask) => void }>;
+let settledHandlers: Set<(settled: AskSettled) => void>;
 
 const explainJob: JobDescription = {
   id: 'explain',
@@ -67,6 +77,11 @@ beforeEach(async () => {
   attachedSizes = [];
   live = true;
   failures = [];
+  answerOutcome = async () => {};
+  pendingAsks = [];
+  rememberedSettled = [];
+  askFollowers = new Set();
+  settledHandlers = new Set();
   attachOutcome = async () => new FakeAttachment();
   handler = createHandler({
     tokenMatches: (candidate) => candidate === TOKEN,
@@ -100,8 +115,9 @@ beforeEach(async () => {
         asked.push({ operation: 'options', given });
         return [{ value: 'a.md', label: 'A' }];
       },
-      async answer(...given) {
+      answer(...given) {
         asked.push({ operation: 'answer', given });
+        return answerOutcome();
       },
     },
     sessions: {
@@ -111,6 +127,20 @@ beforeEach(async () => {
         listener([idle]);
         return () => void followers.delete(listener);
       },
+    },
+    asks: {
+      follow(scope, handler) {
+        const follower = { scope, handler };
+        askFollowers.add(follower);
+        for (const ask of pendingAsks) if (scope === '*' || ask.key === scope) handler(ask);
+        return () => void askFollowers.delete(follower);
+      },
+      on(_event, handler) {
+        settledHandlers.add(handler);
+        return () => void settledHandlers.delete(handler);
+      },
+      settled: (scope) =>
+        rememberedSettled.filter((settled) => scope === '*' || settled.key === scope),
     },
     terminals: {
       attach: (_key, size) => {
@@ -154,7 +184,9 @@ describe('the handler’s request checks', () => {
     ['POST', REMOVE_PATH],
     ['GET', JOBS_PATH],
     ['POST', OPTIONS_PATH],
+    ['POST', ASKS_ANSWER_PATH],
     ['GET', FOLLOW_SESSIONS_PATH],
+    ['GET', FOLLOW_ASKS_PATH],
     ['GET', terminalPath(idle.key)],
     ['GET', '/nothing'],
   ])(
@@ -209,6 +241,23 @@ describe('the handler’s request checks', () => {
       cause: 'forwarded',
     });
   });
+
+  it.each([FOLLOW_ASKS_PATH, `${FOLLOW_ASKS_PATH}?key=explain-a`])(
+    'refuses a handshake on %s without the token, and with another token: no-token',
+    async (path) => {
+      const without = await openSocket(ws(path));
+      const another = await openSocket(ws(path), { token: 'not-it' });
+
+      for (const outcome of [without, another]) {
+        expect(outcome).toMatchObject({ refused: { status: 401 } });
+        expect('refused' in outcome && errorOf(outcome.refused.body)).toMatchObject({
+          code: 'no-token',
+        });
+      }
+      expect(askFollowers.size).toBe(0);
+      expect(settledHandlers.size).toBe(0);
+    },
+  );
 
   it('refuses a handshake whose token rides in a header, not in the subprotocol', async () => {
     const outcome = await openSocket(ws('/follow/sessions'), {
@@ -476,6 +525,151 @@ describe('following the sessions', () => {
     });
     opened.socket.close();
     await eventually(() => expect(followers.size).toBe(0));
+  });
+});
+
+const permission: Ask = {
+  id: 'ask-1',
+  key: 'explain-a',
+  kind: 'permission',
+  tool: 'Bash',
+  input: { command: 'ls' },
+  answerable: 'app',
+  since: '2026-11-28T10:00:00.000Z',
+};
+const otherKeysAsk: Ask = { ...permission, id: 'ask-2', key: 'explain-b' };
+
+describe('answering an ask', () => {
+  it('gives the operation the id and the answer as sent, and answers 204 with no body', async () => {
+    const answer = { allow: false, message: 'Not that one.' };
+
+    const reply = await post(
+      `${base}${ASKS_ANSWER_PATH}`,
+      { id: 'ask-1', answer },
+      { token: TOKEN },
+    );
+
+    expect(reply.status).toBe(204);
+    expect(reply.body).toBe('');
+    expect(asked).toEqual([{ operation: 'answer', given: ['ask-1', answer] }]);
+  });
+
+  it('leaves the answer’s checks to the operation: an answer of no shape is given as it is', async () => {
+    await post(`${base}${ASKS_ANSWER_PATH}`, { id: 'ask-1', answer: 'yes' }, { token: TOKEN });
+    await post(`${base}${ASKS_ANSWER_PATH}`, { id: 'ask-1' }, { token: TOKEN });
+
+    expect(asked).toEqual([
+      { operation: 'answer', given: ['ask-1', 'yes'] },
+      { operation: 'answer', given: ['ask-1', undefined] },
+    ]);
+  });
+
+  it.each([
+    [404, new CockpitError('unknown-id', 'No ask has this id.', { id: 'ask-1' })],
+    [409, new CockpitError('already-settled', 'Settled.', { id: 'ask-1', by: 'terminal' })],
+    [409, new CockpitError('terminal-only', 'Terminal only.', { id: 'ask-1' })],
+    [
+      400,
+      new CockpitError('invalid-answer', 'Does not fit.', {
+        id: 'ask-1',
+        issues: [{ path: ['allow'], message: 'Expected a boolean.' }],
+      }),
+    ],
+  ])('answers a refusal %i with the error, its code and its fields', async (status, refusal) => {
+    answerOutcome = async () => {
+      throw refusal;
+    };
+
+    const reply = await post(
+      `${base}${ASKS_ANSWER_PATH}`,
+      { id: 'ask-1', answer: { allow: true } },
+      { token: TOKEN },
+    );
+
+    expect(reply.status).toBe(status);
+    expect(errorOf(reply.body)).toEqual(refusal.toJSON());
+  });
+
+  it('refuses a body with no id as the request’s arguments, the operation not asked', async () => {
+    const reply = await post(
+      `${base}${ASKS_ANSWER_PATH}`,
+      { answer: { allow: true } },
+      { token: TOKEN },
+    );
+
+    expect(reply.status).toBe(400);
+    expect(errorOf(reply.body)).toMatchObject({ code: 'invalid-arguments' });
+    expect(asked).toEqual([]);
+  });
+});
+
+describe('following the asks', () => {
+  /** The messages a follower of the asks receives, parsed, from the first. */
+  async function asksFollower(path: string): Promise<{
+    opened: OpenSocket;
+    next: (count: number) => Promise<unknown[]>;
+  }> {
+    const opened = await openedSocket(ws(path), { token: TOKEN });
+    return {
+      opened,
+      next: async (count) => {
+        await opened.next(() => opened.messages.length >= count);
+        return opened.messages.slice(0, count).map((message) => JSON.parse(String(message)));
+      },
+    };
+  }
+
+  it('sends where the asks stand at once, then each ask and each settlement, until the socket closes', async () => {
+    pendingAsks = [permission, otherKeysAsk];
+    rememberedSettled = [{ id: 'ask-0', key: 'explain-b', by: 'app' }];
+    const follower = await asksFollower(FOLLOW_ASKS_PATH);
+    expect(await follower.next(1)).toEqual([
+      { type: 'asks', pending: [permission, otherKeysAsk], settled: rememberedSettled },
+    ]);
+    expect([...askFollowers].map(({ scope }) => scope)).toEqual(['*']);
+
+    const changed: Ask = { ...permission, answerable: 'terminal' };
+    for (const { handler } of askFollowers) handler(changed);
+    for (const handler of settledHandlers)
+      handler({ id: 'ask-2', key: 'explain-b', by: 'cancelled' });
+
+    expect((await follower.next(3)).slice(1)).toEqual([
+      { type: 'ask', ask: changed },
+      { type: 'settled', id: 'ask-2', key: 'explain-b', by: 'cancelled' },
+    ]);
+    follower.opened.socket.close();
+    await eventually(() => expect(askFollowers.size + settledHandlers.size).toBe(0));
+  });
+
+  it('follows one session’s asks with ?key=: its own, and its own settlements alone', async () => {
+    pendingAsks = [permission, otherKeysAsk];
+    rememberedSettled = [
+      { id: 'ask-0', key: 'explain-b', by: 'app' },
+      { id: 'ask-9', key: 'explain-a', by: 'terminal' },
+    ];
+    const follower = await asksFollower(`${FOLLOW_ASKS_PATH}?key=explain-a`);
+    expect(await follower.next(1)).toEqual([
+      {
+        type: 'asks',
+        pending: [permission],
+        settled: [{ id: 'ask-9', key: 'explain-a', by: 'terminal' }],
+      },
+    ]);
+    expect([...askFollowers].map(({ scope }) => scope)).toEqual(['explain-a']);
+
+    for (const handler of settledHandlers) handler({ id: 'ask-2', key: 'explain-b', by: 'app' });
+    for (const handler of settledHandlers) handler({ id: 'ask-1', key: 'explain-a', by: 'app' });
+
+    expect((await follower.next(2)).slice(1)).toEqual([
+      { type: 'settled', id: 'ask-1', key: 'explain-a', by: 'app' },
+    ]);
+    follower.opened.socket.close();
+  });
+
+  it('refuses a handshake for a key that is no key, 404', async () => {
+    expect(await openSocket(ws(`${FOLLOW_ASKS_PATH}?key=A`), { token: TOKEN })).toMatchObject({
+      refused: { status: 404 },
+    });
   });
 });
 

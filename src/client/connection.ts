@@ -12,6 +12,9 @@ import { failureOfAnswer, unreachable } from './wire-error.js';
 /** What the cockpit answers a plain GET on a WebSocket's path whose checks pass. */
 const UPGRADE_REQUIRED = 426;
 
+/** What the cockpit answers an operation that succeeded and gives nothing. */
+const NO_CONTENT = 204;
+
 /**
  * How the page reaches the cockpit's handler: where it is mounted, and the
  * app's token sent with every request. The client and the mounted terminal
@@ -26,7 +29,7 @@ export interface Connection {
    *
    * @param path - The wire's path, relative to the mount.
    * @param init - The request's method and body; JSON when a body is given.
-   * @returns The answer's JSON.
+   * @returns The answer's JSON; `undefined` for an answer with no content (204).
    * @throws `CockpitError` rebuilt from the server's error; `unreachable`
    * when the server cannot be reached, what answers is not the cockpit, or
    * the server asks again for the request made again.
@@ -108,6 +111,7 @@ export function createConnection(baseUrl: unknown, token: TokenKeeper): Connecti
       if ('error' in failure) throw failure.error;
       return failure;
     }
+    if (answer.status === NO_CONTENT) return { json: undefined };
     try {
       return { json: await answer.json() };
     } catch (cause) {

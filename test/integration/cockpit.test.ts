@@ -299,6 +299,28 @@ describe('interrupting, ending and removing over the wire', () => {
   });
 });
 
+describe('the asks over the wire', () => {
+  it('answers and follows the asks through the handler, the token checked on both paths', async () => {
+    const { token, base } = await startOnNodeHttp();
+    const answer = { id: 'ask-1', answer: { allow: true } };
+
+    const unanswered = await post(`${base}/asks/answer`, answer);
+    const answered = await post(`${base}/asks/answer`, answer, { token });
+    const refused = await openSocket(ws(base, '/follow/asks?key=explain-a'));
+    const follower = await openedSocket(ws(base, '/follow/asks?key=explain-a'), { token });
+
+    expect(unanswered.status).toBe(401);
+    expect(JSON.parse(answered.body)).toMatchObject({ error: { code: 'unknown-id', id: 'ask-1' } });
+    expect(refused).toMatchObject({ refused: { status: 401 } });
+    expect(JSON.parse(String(await follower.next(() => true)))).toEqual({
+      type: 'asks',
+      pending: [],
+      settled: [],
+    });
+    follower.socket.close();
+  });
+});
+
 describe('the idle timeout', () => {
   /** Short, so that the session ends well within a condition's patience. */
   const IDLE_TIMEOUT_MS = BigInt(Math.round(PATIENCE.condition / 5));

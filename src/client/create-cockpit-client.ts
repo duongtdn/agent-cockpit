@@ -1,5 +1,5 @@
 import type { Ask, AskAnswer, AskSettled } from '../shared/ask.js';
-import { CockpitError } from '../shared/cockpit-error.js';
+import type { CockpitError } from '../shared/cockpit-error.js';
 import type { Choice, JobDescription } from '../shared/job.js';
 import type {
   EndResult,
@@ -13,6 +13,8 @@ import type {
   Session,
 } from '../shared/session.js';
 import {
+  type AnswerRequest,
+  ASKS_ANSWER_PATH,
   END_PATH,
   freshOf,
   INTERRUPT_PATH,
@@ -32,6 +34,7 @@ import {
 } from '../shared/wire.js';
 import { callEach } from './app-handlers.js';
 import { createConnection } from './connection.js';
+import { createAsksFollowing } from './follow-asks.js';
 import { followSessions } from './follow-sessions.js';
 import { takeTokenFromLink } from './token.js';
 
@@ -193,11 +196,15 @@ export interface CockpitClient {
      * receives each pending ask of the scope at once, then each new one,
      * and an ask again when it changes under the same id; never a settled
      * one. After a drop it reconnects as `sessions.follow` does, and the
-     * handler receives each ask it was not given yet.
+     * handler receives each ask it was not given yet, or that changed
+     * since. Why a connection could not be made goes to the client's
+     * `error` handlers.
      *
      * @param key - The unit of work's key, or `'*'` for every one.
-     * @param handler - Receives each ask.
+     * @param handler - Receives each ask; what it throws goes to the
+     * console, and it stays subscribed.
      * @returns A function that stops following.
+     * @throws `TypeError` for a key that is neither `'*'` nor a session key.
      */
     follow(key: string, handler: (ask: Ask) => void): () => void;
     /**
@@ -213,8 +220,10 @@ export interface CockpitClient {
      */
     answer(id: string, answer: AskAnswer): Promise<void>;
     /**
-     * Tells each settlement of an ask of the keys the client's follows
-     * cover, once; with no follow, none.
+     * Tells each settlement of an ask the client's follows gave, once,
+     * the app's own answers included: from its own message, or, for one
+     * made while a follow's socket was down, as it reconnects. With no
+     * follow, none.
      *
      * @param event - `'settled'`.
      * @param handler - Receives the ask's id, its key and what settled it.
@@ -224,7 +233,7 @@ export interface CockpitClient {
     on(event: 'settled', handler: (settled: AskSettled) => void): () => void;
   };
   /**
-   * Tells why one of the client's streams (today `sessions.follow`) could not
+   * Tells why one of the client's streams (`sessions.follow`, `asks.follow`) could not
    * connect: the server's refusal (`no-token`, `refused`) or `unreachable`,
    * once per failed attempt. The stream goes on trying, and its handler
    * receives what it follows once connected. A connection that drops and
@@ -259,6 +268,7 @@ export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitC
   const connection = createConnection(baseUrl, takeTokenFromLink());
   const errorHandlers = new Set<(error: CockpitError) => void>();
   const report = (error: CockpitError): void => callEach(errorHandlers, error);
+  const asks = createAsksFollowing(connection, report);
   const postKey = (path: string, key: string): Promise<unknown> => {
     const body: KeyRequest = { key };
     return connection.request(path, { method: 'POST', body });
@@ -288,7 +298,14 @@ export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitC
     sessions: {
       follow: (handler) => followSessions(connection, handler, report),
     },
-    asks: asksNoneOpened(),
+    asks: {
+      follow: asks.follow,
+      answer: async (id, answer) => {
+        const body: AnswerRequest = { id, answer };
+        await connection.request(ASKS_ANSWER_PATH, { method: 'POST', body });
+      },
+      on: asks.on,
+    },
     on: (_event, handler) => {
       // A handler given twice is two subscriptions, each removed by its own function.
       const subscription = (error: CockpitError): void => handler(error);
@@ -296,25 +313,6 @@ export function createCockpitClient({ baseUrl }: CockpitClientOptions): CockpitC
       return () => {
         errorHandlers.delete(subscription);
       };
-    },
-  };
-}
-
-/**
- * The client's asks while the cockpit opens none: nothing pending to
- * follow, nothing settled to tell, and every id unknown.
- */
-function asksNoneOpened(): CockpitClient['asks'] {
-  return {
-    follow: () => () => {},
-    answer: async (id) => {
-      throw new CockpitError('unknown-id', `No ask has the id ${JSON.stringify(id)}.`, { id });
-    },
-    on: (event) => {
-      if (event !== 'settled') {
-        throw new TypeError(`The asks have no event ${JSON.stringify(event)}.`);
-      }
-      return () => {};
     },
   };
 }

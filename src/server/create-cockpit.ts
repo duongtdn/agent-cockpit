@@ -558,6 +558,8 @@ async function openCockpit(
       // The handler's answer takes the body as parsed: the asks check its shape.
       operations: { ...operations, answer: (id, answer) => asks.answer(id, answer as AskAnswer) },
       sessions: units,
+      // No settlement is remembered while the core opens no ask.
+      asks: { ...asks, settled: () => [] },
       terminals: {
         attach: (key, size) => sessions.attach(key, size),
         isLive: (key) => host.isLive(key),

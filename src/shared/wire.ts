@@ -152,6 +152,47 @@ export const FOLLOW_ASKS_PATH = '/follow/asks';
 /** The query parameter of {@link FOLLOW_ASKS_PATH} that names the one session followed. */
 export const FOLLOW_ASKS_KEY = 'key';
 
+/** The scope of {@link FOLLOW_ASKS_PATH} that follows every session's asks. */
+export const EVERY_SESSION = '*';
+
+/**
+ * Gives the URL, relative to the mount, that follows the asks of a scope:
+ * {@link FOLLOW_ASKS_PATH}, with the session's key in its query for one
+ * session.
+ *
+ * @param scope - A session's key, or `'*'` for every session.
+ * @returns The path, with its query when it names a key.
+ * @throws `TypeError` for a scope that is neither `'*'` nor a session key.
+ */
+export function followAsksPath(scope: string): string {
+  if (scope === EVERY_SESSION) return FOLLOW_ASKS_PATH;
+  if (!isSessionKey(scope)) throw new TypeError(`${JSON.stringify(scope)} is no session key.`);
+  return `${FOLLOW_ASKS_PATH}?${FOLLOW_ASKS_KEY}=${scope}`;
+}
+
+/**
+ * Reads the scope from a URL that follows the asks, as
+ * {@link followAsksPath} made it.
+ *
+ * @param url - A request's URL under the mount, its query included.
+ * @returns The session's key, or `'*'` when the query names none;
+ * `undefined` for another path, or a query that names no single key.
+ */
+export function scopeOfFollowAsks(url: string): string | undefined {
+  const [path, query] = splitAtQuery(url);
+  if (path !== FOLLOW_ASKS_PATH) return undefined;
+  const keys = new URLSearchParams(query).getAll(FOLLOW_ASKS_KEY);
+  if (keys.length === 0) return EVERY_SESSION;
+  const [key] = keys;
+  return keys.length === 1 && key !== undefined && isSessionKey(key) ? key : undefined;
+}
+
+/** A URL's path and its query, the `?` between them dropped. */
+function splitAtQuery(url: string): [path: string, query: string] {
+  const mark = url.indexOf('?');
+  return mark === -1 ? [url, ''] : [url.slice(0, mark), url.slice(mark + 1)];
+}
+
 /** What precedes a session's key in the path of its terminal. */
 const TERMINAL_PREFIX = '/terminal/';
 

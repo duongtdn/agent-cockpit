@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { type WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
+import type { Ask, AskSettled } from '../../shared/ask.js';
 import { CockpitError, isCockpitError } from '../../shared/cockpit-error.js';
 import type { Choice, JobDescription } from '../../shared/job.js';
 import type {
@@ -16,6 +17,8 @@ import type {
   Session,
 } from '../../shared/session.js';
 import {
+  type AsksServerMessage,
+  EVERY_SESSION,
   freshOf,
   type JobsResponse,
   type KeyRequest,
@@ -87,6 +90,25 @@ export interface Operations {
   answer(id: string, answer: unknown): Promise<void>;
 }
 
+/**
+ * The asks as the handler follows them for a browser: `cockpit.asks`'s
+ * `follow` and `on('settled')`, and the settlements remembered, which a
+ * browser that reconnects is sent to learn what was settled meanwhile.
+ */
+export interface FollowedAsks {
+  /** Follows the asks of a scope, as `cockpit.asks.follow` does: each pending one at once, then each new or changed one. */
+  follow(scope: string, handler: (ask: Ask) => void): () => void;
+  /** Tells each settlement, as `cockpit.asks.on('settled')` does. */
+  on(event: 'settled', handler: (settled: AskSettled) => void): () => void;
+  /**
+   * The settlements the cockpit remembers (at most a key's 1,000 most
+   * recent, until the key is removed), oldest first.
+   *
+   * @param scope - A session's key, or `'*'` for every session.
+   */
+  settled(scope: string): readonly AskSettled[];
+}
+
 /** What the handler serves the browser's requests with. */
 export interface HandlerOptions {
   /** The app's token's constant-time comparison: a local request needs the token. */
@@ -98,6 +120,8 @@ export interface HandlerOptions {
     list(): readonly Session[];
     follow(listener: (sessions: readonly Session[]) => void): () => void;
   };
+  /** The asks, to follow. */
+  readonly asks: FollowedAsks;
   /** Where the pty bridge reaches a session. */
   readonly terminals: BridgedSessions;
   /** The driver's terminal keys. */
@@ -257,6 +281,10 @@ export function createHandler(options: HandlerOptions): Handler {
         followSessions(webSocket, options.sessions);
         return;
       }
+      if (route.route === 'follow-asks') {
+        followAsks(webSocket, options.asks, route.scope);
+        return;
+      }
       const bridge = bridgeTerminal(webSocket, route.key, options.terminals, options.keyRules);
       bridges.add(bridge);
       void bridge.then(() => bridges.delete(bridge));
@@ -359,6 +387,10 @@ async function serve(
         };
         return answer;
       });
+    case 'answer':
+      return await answeredWithNothing(request, ANSWER_BODY, ({ id, answer }) =>
+        operations.answer(id, answer),
+      );
     case 'jobs': {
       const answer: JobsResponse = { jobs: operations.jobs() };
       return json(answer);
@@ -404,6 +436,13 @@ const OPTIONS_BODY: z.ZodType<OptionsRequest> = z.object({
 });
 
 /**
+ * The body of an answer to an ask: its answer of any shape, even missing,
+ * which the operation checks against the ask's kind once it knows the ask
+ * (an unknown id is refused before an answer that does not fit).
+ */
+const ANSWER_BODY = z.object({ id: z.string(), answer: z.unknown().optional() });
+
+/**
  * Reads a request's body as its route takes it, then answers with what the
  * operation gives.
  */
@@ -412,9 +451,30 @@ async function answered<Body>(
   shape: z.ZodType<Body>,
   operation: (body: Body) => Promise<unknown>,
 ): Promise<WireAnswer> {
+  return await servedWith(request, shape, async (body) => json(await operation(body)));
+}
+
+/** As {@link answered}, for an operation that gives nothing: `204`, with no body. */
+async function answeredWithNothing<Body>(
+  request: IncomingMessage,
+  shape: z.ZodType<Body>,
+  operation: (body: Body) => Promise<void>,
+): Promise<WireAnswer> {
+  return await servedWith(request, shape, async (body) => {
+    await operation(body);
+    return NO_CONTENT;
+  });
+}
+
+/** Reads a request's body as its route takes it, then serves it; a body over the limit is refused. */
+async function servedWith<Body>(
+  request: IncomingMessage,
+  shape: z.ZodType<Body>,
+  serveBody: (body: Body) => Promise<WireAnswer>,
+): Promise<WireAnswer> {
   const text = await readBodyWithin(request, MAX_BODY_BYTES);
   if (text === undefined) return { status: 413 };
-  return json(await operation(bodyOf(text, shape)));
+  return await serveBody(bodyOf(text, shape));
 }
 
 /**
@@ -439,6 +499,8 @@ function bodyOf<Body>(text: string, shape: z.ZodType<Body>): Body {
 
 const UPGRADE_REQUIRED: WireAnswer = { status: 426, headers: { upgrade: 'websocket' } };
 
+const NO_CONTENT: WireAnswer = { status: 204 };
+
 function json(value: unknown): WireAnswer {
   return { status: 200, body: JSON.stringify(value) };
 }
@@ -450,4 +512,29 @@ function followSessions(socket: WebSocket, sessions: HandlerOptions['sessions'])
     socket.send(JSON.stringify(message));
   });
   socket.once('close', stop);
+}
+
+/**
+ * Sends where the asks of the scope stand — the pending ones, then the
+ * settlements remembered — then each ask that opens or changes and each
+ * settlement of the scope, until the socket closes.
+ */
+function followAsks(socket: WebSocket, asks: FollowedAsks, scope: string): void {
+  const send = (message: AsksServerMessage): void => socket.send(JSON.stringify(message));
+  // The follow gives the pending asks at once: they make the first message, the later ones their own.
+  const pending: Ask[] = [];
+  let streaming = false;
+  const stopFollowing = asks.follow(scope, (ask) => {
+    if (streaming) send({ type: 'ask', ask });
+    else pending.push(ask);
+  });
+  send({ type: 'asks', pending, settled: asks.settled(scope) });
+  streaming = true;
+  const stopTelling = asks.on('settled', (settled) => {
+    if (scope === EVERY_SESSION || settled.key === scope) send({ type: 'settled', ...settled });
+  });
+  socket.once('close', () => {
+    stopFollowing();
+    stopTelling();
+  });
 }
