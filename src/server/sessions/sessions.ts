@@ -21,7 +21,7 @@ import {
   type Session,
 } from '../../shared/session.js';
 import type { HeldHook, HookHold } from '../agent-listener/agent-listener.js';
-import type { Answering, Asks } from '../asks/asks.js';
+import type { Answering, Asks, SettledByAgent } from '../asks/asks.js';
 import {
   type AgentEndReason,
   type AskOfCall,
@@ -353,7 +353,8 @@ export interface Sessions {
    * Forgets a key whose session ended, as a unit of work removed: it is no
    * longer listed, and its conversation is unknown, so that its next launch
    * replaces nothing and follows on from no conversation. Its followers are
-   * told when there was a session to forget.
+   * told when there was a session to forget. The asks drop its settled
+   * asks: a later answer to one of them is refused `unknown-id`.
    *
    * @param key - The key.
    * @returns Whether the core had a session of the key to forget.
@@ -443,7 +444,8 @@ export interface Sessions {
    * Stops watching: no timer of the core runs any more, and none starts.
    * Every launch still pending settles with `SessionsClosedError`; a launch
    * not yet on the host goes no further. The sessions themselves go on, on
-   * the host: nothing is killed.
+   * the host: nothing is killed. No pending ask is settled and nobody is
+   * told: their held hooks are the listener's to drop as it closes.
    */
   close(): void;
 }
@@ -552,7 +554,7 @@ interface Asked {
 interface Settlement {
   readonly id: string;
   readonly open: OpenAsk;
-  readonly by: 'terminal' | 'cancelled';
+  readonly by: SettledByAgent;
 }
 
 class SessionRegistry implements Sessions {
@@ -905,7 +907,8 @@ class SessionRegistry implements Sessions {
         settled.map(({ id }) => id),
         at,
       );
-      if (event.type === 'asked-in-terminal' && this.#opensAsks(entry)) asked.push(event);
+      if (event.type === 'asked-in-terminal' && this.#opensAsks(entry))
+        asked.push({ ask: event.ask });
       course = courseAfter(course, event, entry.launchedWithPrompt, at);
     }
     this.#take(entry, course);

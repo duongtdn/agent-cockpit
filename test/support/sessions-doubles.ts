@@ -400,6 +400,12 @@ export const ASK_PATH = '/ask:';
 export const CALL_FINISHED_PATH = '/call-finished:';
 
 /**
+ * The start of the path of a stub hook that tells a call ran (`PostToolUse`):
+ * the turn works, and the call finished; the call's reference follows it.
+ */
+export const TOOL_RAN_PATH = '/tool-ran:';
+
+/**
  * The start of the path of a stub hook that tells a permission asked in
  * the terminal only: the call's reference follows it.
  */
@@ -416,6 +422,10 @@ export function stubAsk(ref: string): AskOfCall {
 /** What a stub hook whose path names a call tells: its ask, its end, or its ask in the terminal. */
 function readCallHook(path: string): HookOutcome | undefined {
   if (path.startsWith(ASK_PATH)) return { events: [], ask: stubAsk(path.slice(ASK_PATH.length)) };
+  if (path.startsWith(TOOL_RAN_PATH)) {
+    const ref = path.slice(TOOL_RAN_PATH.length);
+    return { events: [{ type: 'working' }, { type: 'call-finished', ref }] };
+  }
   if (path.startsWith(CALL_FINISHED_PATH)) {
     return { events: [{ type: 'call-finished', ref: path.slice(CALL_FINISHED_PATH.length) }] };
   }

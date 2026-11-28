@@ -507,6 +507,10 @@ async function openCockpit(
     const appPorts = createAppPorts(checked.ports);
     // The core holds a key while it types a prompt; the pty bridge's terminals join it.
     const holds = createTerminalHolds();
+    const asks = new Asks({
+      clock: () => new Date(),
+      handlerThrew: (thrown) => console.error(thrown),
+    });
     const sessions = createSessions({
       host,
       driver: checked.driver,
@@ -521,7 +525,7 @@ async function openCockpit(
         listener: { host: '127.0.0.1', port: listener.port },
       }),
       holds,
-      asks: new Asks({ clock: () => new Date(), handlerThrew: (thrown) => console.error(thrown) }),
+      asks,
     });
     receiver.sessions = sessions;
     const jobs = new Map<string, Job>(checked.jobs.map((job) => [job.id, job]));
@@ -539,7 +543,7 @@ async function openCockpit(
       ...unitsOfWorkLimits(checked),
     });
     const descriptions = checked.jobs.map(describeJob);
-    const asks = asksNoneOpened();
+    const appAsks = asksNoneOpened();
     const operations = {
       run: (jobId: string, args: unknown, options?: RunOptions): Promise<RunResult> =>
         units.run(jobId, args, options),
@@ -558,10 +562,13 @@ async function openCockpit(
     const handler = createHandler({
       tokenMatches: appToken.matches,
       // The handler's answer takes the body as parsed: the asks check its shape.
-      operations: { ...operations, answer: (id, answer) => asks.answer(id, answer as AskAnswer) },
+      operations: {
+        ...operations,
+        answer: (id, answer) => appAsks.answer(id, answer as AskAnswer),
+      },
       sessions: units,
       // No settlement is remembered while the core opens no ask.
-      asks: { ...asks, settled: () => [] },
+      asks: { ...appAsks, settled: () => [] },
       terminals: {
         attach: (key, size) => sessions.attach(key, size),
         isLive: (key) => host.isLive(key),
@@ -583,7 +590,7 @@ async function openCockpit(
     return {
       ...operations,
       sessions: { list: () => units.list(), follow: (handler) => units.follow(handler) },
-      asks,
+      asks: appAsks,
       link: (pageUrl) => linkTo(pageUrl, appToken.value),
       verify: (request) => carriesAppToken(request, appToken.matches),
       on: eventsOf(failures, agentStatus),

@@ -5,6 +5,7 @@ import type {
   Session,
   WaitingSession,
 } from '../../shared/session.js';
+import type { SettledByAgent } from '../asks/asks.js';
 import type { DriverEvent } from '../driver.js';
 
 /**
@@ -177,7 +178,7 @@ export function courseSettled(
 export function asksSettledBy(
   course: SessionCourse,
   event: DriverEvent,
-): 'terminal' | 'cancelled' | undefined {
+): SettledByAgent | undefined {
   switch (event.type) {
     case 'batch-ended':
     case 'turn-ended':

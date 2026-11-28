@@ -64,6 +64,7 @@ import {
   type StubDriver,
   stubFolders,
   stubScreen,
+  TOOL_RAN_PATH,
   TYPING_PATIENCE_MS,
   withdrawnScreen,
 } from '../support/sessions-doubles.ts';
@@ -417,13 +418,14 @@ class World {
 
   /**
    * A person answers Yes in the terminal: the oldest call of the key whose
-   * ask is pending finishes (or its last call, its ask settled already).
+   * ask is pending finishes (or its last call, its ask settled already),
+   * told by the hook whose path begins so.
    */
-  finishCall(key: string): void {
+  finishCall(key: string, hook: string): void {
     const calls = this.#calls.get(key) ?? [];
     const pending = new Set(this.asks.pending(key).map((ask) => ask.id));
     const call = calls.find((each) => pending.has(this.#askOfCall.get(each) ?? '')) ?? calls.at(-1);
-    if (call !== undefined) this.receive(key, `${CALL_FINISHED_PATH}${call}`);
+    if (call !== undefined) this.receive(key, `${hook}${call}`);
   }
 
   /** A person answers a plain "No" in the terminal: the agent closes the oldest hook of the key it holds open. */
@@ -829,8 +831,9 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
           if (act === 'asked' || act === 'asked-in-terminal') {
             world.ask(key, act === 'asked-in-terminal');
           }
-          // A tool that fails after a Yes ends its call as one that ran: the driver tells both `call-finished`.
-          else if (act === 'yes' || act === 'yes-failing') world.finishCall(key);
+          // A tool that ran tells the turn works too (`PostToolUse`); one that failed only its end (`PostToolUseFailure`).
+          else if (act === 'yes') world.finishCall(key, TOOL_RAN_PATH);
+          else if (act === 'yes-failing') world.finishCall(key, CALL_FINISHED_PATH);
           else if (act === 'plain-no') world.closeHeld(key);
           else world.receive(key, '/batch-ended');
         }),
