@@ -416,13 +416,18 @@ export interface ScreenStateSigns {
    * every run of whitespace left out (the box breaks a wrapped line where
    * a space was), and the screen shows no sign above the box that the
    * agent works. A prompt taller than the box shows scrolled to its end,
-   * rows hidden above: the rows shown must then be the prompt's end. Over a draft the same Esc interrupts instead, and the box
-   * holds the draft alone: never read so. Nor is a box under a dialog, an
+   * rows hidden above: the rows shown must then be the prompt's end. Over
+   * a draft the same Esc interrupts instead, and the box holds the draft
+   * alone: never read so. Nor is a box under a dialog, in shell mode, an
    * entry recalled from the history, or a screen the driver cannot read.
+   * A prompt holding text a terminal does not draw (zero-width
+   * characters) never reads so either: the interrupt then fails
+   * unconfirmed rather than take the session for idle on a guess.
    *
    * @param text - The screen, row by row, as the terminal shows it: never
    * a person's scrolling back, which the core does not read.
-   * @param prompt - The turn's prompt, as the agent took it.
+   * @param prompt - The turn's prompt, as the agent's `UserPromptSubmit`
+   * carried it.
    * @returns `true` when the box holds the prompt withdrawn.
    */
   promptWithdrawn(text: string, prompt: string): boolean;
@@ -546,7 +551,8 @@ export type InputBoxClearing =
   | 'no-input-box'
   /**
    * The keys did not empty the box: two in a row changed nothing on it,
-   * or as many as its rows take changed it but left text in it.
+   * or two that changed it for each row it held, shown or scrolled out,
+   * left text in it.
    */
   | 'not-emptied';
 
@@ -699,9 +705,10 @@ export interface Driver {
    * Clears the agent's input box, the cursor at the end of its text: what
    * an early Esc put back there once {@link ScreenStateSigns.promptWithdrawn}
    * read it. It presses nothing on a box already empty, or where no box
-   * shows; it stops after a bounded number of keys, as many as the box's
-   * rows take, and says so. Each write goes through the terminal, which the
-   * core checks.
+   * shows. It stops, and says so, after two keys in a row that change
+   * nothing, or after up to two keys that change the box for each row it
+   * holds, shown or scrolled out. Each write goes through the terminal,
+   * which the core checks.
    *
    * @param terminal - The session's terminal, through the core.
    * @returns Whether the box is empty, showed none, or was not emptied.

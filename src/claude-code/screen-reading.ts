@@ -107,18 +107,20 @@ export const SCREEN_STATE_SIGNS: ScreenStateSigns = {
   promptWithdrawn(text, prompt) {
     const rows = text.split('\n');
     const box = readBoxRows(rows);
-    if (box === undefined || box.recalled || showsSpinner(rows, box)) return false;
-    return holdsExactly(box, prompt);
+    // A withdrawn prompt is never in shell mode: the driver types a leading `!` after a space.
+    if (box === undefined || box.recalled || box.sign === '!') return false;
+    return !showsSpinner(rows, box) && showsWholeOrEnd(box, prompt);
   },
 };
 
 /**
- * Tells whether the box holds exactly a text, every run of whitespace left
- * out. A text taller than the box shows scrolled to its end, the cursor
- * there, its rule telling the rows hidden above (`─── ↑ 5 more ───`): the
- * rows shown are then the text's end, and the text is longer than they are.
+ * Tells whether the box shows a text, every run of whitespace left out:
+ * the whole of it, or its end. A text taller than the box shows scrolled
+ * to its end, the cursor there, its rule telling the rows hidden above
+ * (`─── ↑ 5 more ───`): the rows shown are then the text's end, and the
+ * text is longer than they are.
  */
-function holdsExactly(box: InputBoxView, text: string): boolean {
+function showsWholeOrEnd(box: InputBoxView, text: string): boolean {
   const shown = withoutWhitespace(box.text);
   const whole = withoutWhitespace(text);
   if (shown === '' || box.hiddenBelow > 0) return false;

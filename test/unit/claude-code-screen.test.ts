@@ -12,8 +12,9 @@ import type { ScreenReading } from '../../src/server/driver.ts';
  * (`s7-`) the panels a launch prompt opens and the box once one closed, and
  * (`s8-`) an early Esc's screens: the prompt withdrawn into the empty box,
  * the turn interrupted over a draft, the busy screens before it, a prompt
- * glued to a draft, a permission dialog, a prompt taller than the box withdrawn. Named `<case>-<step>`: `-0` after the launch, `-1` after the first keys, and so
- * on; the temporary paths in them differ per capture.
+ * glued to a draft, a permission dialog, a prompt taller than the box
+ * withdrawn. Named `<case>-<step>`: `-0` after the launch, `-1` after the
+ * first keys, and so on; the temporary paths in them differ per capture.
  */
 const SCREENS = fileURLToPath(new URL('../fixtures/screens/', import.meta.url));
 
@@ -368,20 +369,21 @@ describe("the Claude Code driver's sign on screen that an early Esc withdrew the
     expect(withdrawn('s8-busy-a-draft-in-the-box', 'my one-line draft')).toBe(false);
   });
 
-  it("reads the spinner's row, never the footer: the box under a spinner's row holds no withdrawn prompt", () => {
-    const spinnerOverThePrompt = screen('s8-busy-a-draft-in-the-box').replace(
-      '❯ my one-line draft',
-      '❯ withdraw me',
-    );
+  it("reads the spinner's row, never the footer: its hint alone does not keep a withdrawal from reading", () => {
     const footerHintOnly = screen('s8-withdrawn-one-line').replace(
       '⏸ manual mode on',
       '⏸ manual mode on · esc to interrupt · ← for agents',
     );
 
-    expect(claudeCode().screenStateSigns.promptWithdrawn(spinnerOverThePrompt, 'withdraw me')).toBe(
-      false,
-    );
     expect(claudeCode().screenStateSigns.promptWithdrawn(footerHintOnly, 'withdraw me')).toBe(true);
+  });
+
+  it('reads no withdrawal from a box in shell mode, its text the prompt', () => {
+    const shell = screen('s8-withdrawn-one-line').replace(/^❯(.)withdraw me$/mu, '!$1withdraw me');
+
+    expect(shell).not.toBe(screen('s8-withdrawn-one-line'));
+
+    expect(claudeCode().screenStateSigns.promptWithdrawn(shell, 'withdraw me')).toBe(false);
   });
 
   it('reads no withdrawal where no input box shows: a dialog over it, a blank screen, one it does not know', () => {

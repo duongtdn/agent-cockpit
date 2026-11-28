@@ -413,6 +413,23 @@ describe('clearing the input box', () => {
     expect(box.text()).toBe('withdraw me');
   });
 
+  it('empties the box when every other kill is lost: a lost kill counts toward no bound', async () => {
+    const box = inputBoxModel({ draft: 'line one\nline two' });
+    let pressed = 0;
+    const terminal = {
+      ...box.terminal,
+      pressKeys: async (keys: readonly string[]) => {
+        pressed += 1;
+        if (pressed % 2 === 1) return;
+        await box.terminal.pressKeys(keys);
+      },
+    };
+
+    expect(await clearInputBoxAt(testClock(), terminal)).toBe('cleared');
+    expect(pressed).toBe(6);
+    expect(box.text()).toBe('');
+  });
+
   it('stops after two kills for each row the box held, where every kill changes it and none empties it', async () => {
     const box = inputBoxModel({ draft: 'line one\nline two' });
     let typed = 0;

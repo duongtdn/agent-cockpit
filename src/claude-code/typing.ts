@@ -456,8 +456,9 @@ class PromptTyping {
  * @param terminal - The session's terminal, through the core.
  * @returns `cleared`, also for a box already empty, where nothing is
  * pressed; `no-input-box` when none shows, before a kill or after one;
- * `not-emptied` when the kills stopped changing the box, or reached their
- * bound with text left in it.
+ * `not-emptied` when two kills in a row changed nothing, or up to two
+ * kills that changed it for each row it held (shown or scrolled out)
+ * left text in it.
  * @throws What the terminal rejects with.
  */
 export function clearInputBox(terminal: ClearingTerminal): Promise<InputBoxClearing> {
@@ -493,9 +494,10 @@ type KillsOutcome = 'empty' | 'gone' | 'stuck';
 /**
  * Presses Ctrl+U at least once, then until the box is empty: each kills
  * one row, then its line break, and successive kills are one entry of
- * the kill ring. A box takes at most two kills a row (one a wrapped row,
- * two a line's last row and its line break); more means something else
- * writes into it.
+ * the kill ring. A box takes at most two kills that change it a row (one
+ * a wrapped row, two a line's last row and its line break); more means
+ * something else writes into it. A kill lost, which changes nothing,
+ * counts only toward two in a row.
  *
  * @param clock - What paces the reads of the screen.
  * @param terminal - Where the kills go.
@@ -506,7 +508,8 @@ type KillsOutcome = 'empty' | 'gone' | 'stuck';
  * entry is then still an earlier kill of the person's.
  * @returns `empty`; `gone` when the box is; `stuck` when two kills in a
  * row changed nothing on the screen (the first may kill only the sentinel),
- * or two kills for each row the box first held left text in it.
+ * or two kills that changed the box for each row it first held left text
+ * in it: something else writes into it.
  */
 async function killUntilEmpty(
   clock: TypingClock,
@@ -516,7 +519,8 @@ async function killUntilEmpty(
   let unchanged = 0;
   let seen = await read(terminal);
   const most = 2 * Math.max(1, rowsHeld(seen.box));
-  for (let kills = 1; ; kills++) {
+  let changes = 0;
+  for (;;) {
     const before = drawn(seen.box);
     const boundMs =
       seen.box !== undefined && isEmptyBox(seen.box) ? QUIET_KILL_SETTLE_MS : SETTLE_MS;
@@ -530,7 +534,8 @@ async function killUntilEmpty(
     if (changed || isEmptyBox(seen.box)) killed();
     if (isEmptyBox(seen.box)) return 'empty';
     unchanged = changed ? 0 : unchanged + 1;
-    if (unchanged === 2 || kills === most) return 'stuck';
+    if (changed) changes += 1;
+    if (unchanged === 2 || changes === most) return 'stuck';
   }
 }
 
