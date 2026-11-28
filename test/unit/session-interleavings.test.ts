@@ -16,8 +16,11 @@
  * since the timeout or longer, as its end began. The agent's asks: each
  * settled once and told once, a session `waiting` exactly while it lists
  * an ask still pending (and listing every one), no hook held once its ask
- * settled or its session ended, and every answer resolved or refused for
- * a reason the app is told.
+ * settled or its session ended (but those an interrupt's reply settled,
+ * until that interrupt is over), every answer resolved or refused for a
+ * reason the app is told, an answer to an ask settled before refused
+ * `already-settled` with what settled it, and no key pressed into a
+ * session while an ask the app can answer is pending in it.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -43,7 +46,7 @@ import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/uni
 import type { UnitRecord } from '../../src/server/state/records.ts';
 import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
 import type { Ask } from '../../src/shared/ask.ts';
-import { CockpitError } from '../../src/shared/cockpit-error.ts';
+import { CockpitError, isCockpitError } from '../../src/shared/cockpit-error.ts';
 import type { Session } from '../../src/shared/session.ts';
 import { DRIVER_DEFAULTS } from '../support/driver-defaults.ts';
 import {
@@ -171,10 +174,19 @@ class World {
   readonly holds: FakeHolds = createFakeHolds();
   /** Each breach of the asks' properties, as it was seen: `<what> <id or key>`. */
   readonly askBreaches: string[] = [];
+  /** Each write into a session while an ask the app can answer was pending in it: `<key> <write>`. */
+  readonly writesWhileAsked: string[] = [];
   /** The id of each ask opened, by the call it is about. */
   readonly #askOfCall = new Map<string, string>();
   /** How many times each ask opened was told settled. */
   readonly #settledTold = new Map<string, number>();
+  /** What settled each ask, as it was told. */
+  readonly #settledBy = new Map<string, string>();
+  /**
+   * The asks of each key settled `cancelled` while an interrupt ran on it:
+   * their hooks may stay open, the agent closing them, until it is over.
+   */
+  readonly #settledInInterrupt = new Map<string, Set<string>>();
   /** The calls each key's agent asked about, in order. */
   readonly #calls = new Map<string, string[]>();
   /** The call each held hook is about. */
@@ -445,10 +457,21 @@ class World {
         ? 'no-such-ask'
         : (this.asks.pending(key)[0]?.id ?? opened.at(-1) ?? 'no-such-ask');
     const answer = given === 'unknown-id' ? ANSWERS.allow : ANSWERS[given];
-    this.asks.answer(id, answer).catch((refused: unknown) => {
-      if (refused instanceof CockpitError && ANSWER_REFUSALS.includes(refused.code)) return;
-      this.askBreaches.push(`answer ${id} failed: ${String(refused)}`);
-    });
+    const remembered = this.asks.settled(key).some((settled) => settled.id === id);
+    const settledBy = remembered ? this.#settledBy.get(id) : undefined;
+    this.asks.answer(id, answer).then(
+      () => {
+        if (settledBy !== undefined)
+          this.askBreaches.push(`answer ${id} settled ${settledBy} taken`);
+      },
+      (refused: unknown) => {
+        if (!(refused instanceof CockpitError && ANSWER_REFUSALS.includes(refused.code))) {
+          this.askBreaches.push(`answer ${id} failed: ${String(refused)}`);
+        } else if (settledBy !== undefined && !isSettledBy(refused, settledBy)) {
+          this.askBreaches.push(`answer ${id} settled ${settledBy} refused ${refused.message}`);
+        }
+      },
+    );
   }
 
   /** Sends a hook of a key's agent, held when the core holds it. */
@@ -477,8 +500,17 @@ class World {
     for (const [hook, call] of this.#callOfHeld) {
       if (hook.end !== 'open') continue;
       const id = this.#askOfCall.get(call) ?? call;
-      if (!pending.has(id)) this.askBreaches.push(`held after settled ${id}`);
+      if (!pending.has(id) && !this.#settledInARunningInterrupt(id)) {
+        this.askBreaches.push(`held after settled ${id}`);
+      }
     }
+  }
+
+  /** Whether an ask was settled by an interrupt still running on a session not ended. */
+  #settledInARunningInterrupt(id: string): boolean {
+    return [...this.#settledInInterrupt].some(
+      ([key, ids]) => ids.has(id) && this.sessions.session(key)?.state !== 'ended',
+    );
   }
 
   /** Checks, once every agent exited, that every ask opened was told settled exactly once. */
@@ -491,10 +523,12 @@ class World {
 
   #watchTheAsks(): void {
     this.asks.follow('*', (ask) => void this.#askOfCall.set(refOf(ask), ask.id));
-    this.asks.on('settled', ({ id }) => {
+    this.asks.on('settled', ({ id, key, by }) => {
       const told = (this.#settledTold.get(id) ?? 0) + 1;
       this.#settledTold.set(id, told);
+      this.#settledBy.set(id, by);
       if (told > 1) this.askBreaches.push(`told again ${id}`);
+      if (by === 'cancelled') this.#settledInInterrupt.get(key)?.add(id);
     });
   }
 
@@ -615,11 +649,17 @@ class World {
    */
   async #whileInterrupting<T>(key: string, run: () => Promise<T>): Promise<T> {
     const outermost = !this.#interrupting.has(key);
-    if (outermost) this.#interrupting.set(key, 0);
+    if (outermost) {
+      this.#interrupting.set(key, 0);
+      this.#settledInInterrupt.set(key, new Set());
+    }
     try {
       return await run();
     } finally {
-      if (outermost) this.#interrupting.delete(key);
+      if (outermost) {
+        this.#interrupting.delete(key);
+        this.#settledInInterrupt.delete(key);
+      }
     }
   }
 
@@ -627,6 +667,9 @@ class World {
     if (write === INTERRUPT_KEYS) this.#pressedToInterrupt(key, write);
     // A write to a session gone is refused by the host: nothing reaches an agent.
     if (this.host.pidOf(key) === undefined) return;
+    if (this.asks.pending(key).some((ask) => ask.answerable === 'app')) {
+      this.writesWhileAsked.push(`${key} ${write}`);
+    }
     if (this.#ending.has(key)) this.writesAfterEnd.push(`${key} ${write}`);
     else if (this.#endsAsked.has(key) && write !== INTERRUPT_KEYS) {
       this.writesAfterEndAsked.push(`${key} ${write}`);
@@ -663,6 +706,11 @@ function conversationsOf(record: UnitRecord): string[] {
     ...record.earlierConversations,
     ...record.history.map((entry) => entry.conversationId),
   ];
+}
+
+/** Whether an answer's refusal says the ask was settled before, by what settled it. */
+function isSettledBy(refused: CockpitError, by: string): boolean {
+  return isCockpitError(refused, 'already-settled') && refused.by === by;
 }
 
 /** Whether an error is one a call tells the app: a refusal, the close, the host's failure. */
@@ -755,6 +803,16 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
   {
     weight: 2,
     arbitrary: file.map((file) =>
+      command(`interrupt ${file}, the app answering just after`, async (world) => {
+        world.call(`interrupt ${file}`, world.unitsOfWork.interrupt(keyOf(file)));
+        await vi.advanceTimersByTimeAsync(0);
+        world.answer(keyOf(file), 'allow');
+      }),
+    ),
+  },
+  {
+    weight: 2,
+    arbitrary: file.map((file) =>
       command(`marker ${file}`, (world) => world.recordInterruption(keyOf(file))),
     ),
   },
@@ -819,6 +877,7 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
         fc.constantFrom(
           'asked',
           'asked-in-terminal',
+          'asked-of-concurrent-calls',
           'yes',
           'yes-failing',
           'plain-no',
@@ -830,6 +889,11 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
           const key = keyOf(file);
           if (act === 'asked' || act === 'asked-in-terminal') {
             world.ask(key, act === 'asked-in-terminal');
+          } else if (act === 'asked-of-concurrent-calls') {
+            // Concurrent calls of one batch: two held, one in the terminal only.
+            world.ask(key, false);
+            world.ask(key, false);
+            world.ask(key, true);
           }
           // A tool that ran tells the turn works too (`PostToolUse`); one that failed only its end (`PostToolUseFailure`).
           else if (act === 'yes') world.finishCall(key, TOOL_RAN_PATH);
@@ -926,7 +990,7 @@ afterEach(() => {
 });
 
 describe('the sessions, whatever the order of what happens to them', () => {
-  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known nor its record come back, no session held ended for idleness, every ask settled and told once, a session waiting exactly on its pending asks, no hook held past its ask', async () => {
+  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known nor its record come back, no session held ended for idleness, every ask settled and told once, a session waiting exactly on its pending asks, no hook held past its ask, no key pressed while an ask the app can answer is pending, a late answer refused with what settled its ask', async () => {
     const { parameters, replayPath } = replay();
     await fc.assert(
       fc.asyncProperty(
@@ -955,6 +1019,7 @@ describe('the sessions, whatever the order of what happens to them', () => {
             expect(world.idleEndsOfHeld).toEqual([]);
             if (!world.closed) world.checkEveryAskSettled();
             expect(world.askBreaches).toEqual([]);
+            expect(world.writesWhileAsked).toEqual([]);
             if (!world.closed) {
               expect(world.sessions.liveKeys()).toEqual([]);
               const notEnded = world.sessions.list().filter((each) => each.state !== 'ended');

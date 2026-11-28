@@ -32,6 +32,7 @@ import {
   type DriverPart,
   type HookAddress,
   type HookRequest,
+  type JsonValue,
   type ScreenReading,
   type TypingOutcome,
   TypingStoppedError,
@@ -531,6 +532,12 @@ interface Entry {
   readonly stopFollowingLeft: (() => void)[];
   /** Its agent's asks still pending, by id: the call each is about, and its held hook. */
   readonly asks: Map<string, OpenAsk>;
+  /**
+   * The hooks of asks an interrupt's reply settled, by id, still open: the
+   * agent closes them as it reads the reply; those left are let go once
+   * that interrupt is over, or as the session ends.
+   */
+  readonly hooksLeftOpen: Map<string, HeldHook>;
   /** The host's kill of the session while it is out: settled, whether it killed or failed. */
   killOut?: Promise<unknown>;
 }
@@ -775,7 +782,42 @@ class SessionRegistry implements Sessions {
       takesKeys: () => this.#takesInput(entry),
       sendKeys: (keys) => this.#options.host.sendKeys(key, keys),
       gone: () => this.#gone(entry),
+      stopByReply: (reply) => this.#stopByReply(entry, reply),
+      releaseHooksLeftOpen: () => releaseHooksLeftOpen(entry),
     };
+  }
+
+  /**
+   * Stops a session's turn by the driver's reply, written to its oldest
+   * ask the app can answer, as `InterruptedSession.stopByReply` says.
+   */
+  #stopByReply(entry: Entry, reply: JsonValue): boolean {
+    const taker = this.#replyToTheOldestHeld(entry, reply);
+    if (taker === undefined) return false;
+    const settlements = takeAsks(entry, () => true, 'cancelled');
+    const ids = settlements.map(({ id }) => id);
+    this.#take(entry, courseSettled(courseOf(entry), ids, now()));
+    // Told once the session changed, as the agent's settlements are.
+    for (const { id, open } of settlements) {
+      if (open.held !== undefined && id !== taker) entry.hooksLeftOpen.set(id, open.held);
+      this.#options.asks.settle(id, 'cancelled');
+    }
+    return true;
+  }
+
+  /**
+   * Writes a reply to the hook of the session's oldest ask the app can
+   * answer that takes it; one found closed was let go by the agent.
+   *
+   * @returns The id of the ask whose hook took it, if one did.
+   */
+  #replyToTheOldestHeld(entry: Entry, reply: JsonValue): string | undefined {
+    for (const [id, { held }] of [...entry.asks]) {
+      if (held === undefined) continue;
+      if (held.reply(reply) === 'written') return id;
+      this.#heldClosed(entry, id);
+    }
+    return undefined;
   }
 
   firstPrompt(key: string): Promise<Session> | undefined {
@@ -979,7 +1021,9 @@ class SessionRegistry implements Sessions {
 
   /** The agent closed the hook of a pending ask: it let the ask go (a "No" in the terminal, an Esc). */
   #heldClosed(entry: Entry, id: string | undefined): void {
-    if (id === undefined || this.#closing.signal.aborted || !entry.asks.delete(id)) return;
+    if (id === undefined || this.#closing.signal.aborted) return;
+    entry.hooksLeftOpen.delete(id);
+    if (!entry.asks.delete(id)) return;
     this.#take(entry, courseSettled(courseOf(entry), [id], now()));
     // Closed by the agent: there is no hook left to let go.
     this.#options.asks.settle(id, 'cancelled');
@@ -998,12 +1042,13 @@ class SessionRegistry implements Sessions {
 
   /**
    * Settles every pending ask of a session that ended, `cancelled`, each
-   * hook still open let go.
+   * hook still open let go, those an interrupt left open among them.
    */
   #cancelAsks(entry: Entry): void {
     for (const settlement of takeAsks(entry, () => true, 'cancelled')) {
       this.#tellSettled(settlement);
     }
+    releaseHooksLeftOpen(entry);
   }
 
   /** Takes the course the session is on now. */
@@ -1076,6 +1121,7 @@ class SessionRegistry implements Sessions {
     for (const entry of this.#entries.values()) {
       // Settled by nobody, told to nobody: the listener drops their connections.
       entry.asks.clear();
+      entry.hooksLeftOpen.clear();
       entry.typing?.close();
       entry.firstPrompt.stop();
       stopReadingTheScreen(entry);
@@ -1115,6 +1161,7 @@ class SessionRegistry implements Sessions {
       heard: false,
       stopFollowingLeft: [],
       asks: new Map(),
+      hooksLeftOpen: new Map(),
       ...(replaces === undefined ? {} : { replaces }),
     };
     return entry;
@@ -1397,6 +1444,12 @@ function takeAsks(
     .map(([id, open]) => ({ id, open, by }));
   for (const { id } of taken) entry.asks.delete(id);
   return taken;
+}
+
+/** Lets go, with `{}`, of each hook an interrupt's reply left open: the agent reads no reply on it. */
+function releaseHooksLeftOpen(entry: Entry): void {
+  for (const held of entry.hooksLeftOpen.values()) held.release();
+  entry.hooksLeftOpen.clear();
 }
 
 /**

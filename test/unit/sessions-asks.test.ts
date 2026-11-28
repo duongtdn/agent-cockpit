@@ -12,7 +12,7 @@ import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/uni
 import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
 import type { AskSettled } from '../../src/shared/ask.ts';
 import { CockpitError } from '../../src/shared/cockpit-error.ts';
-import type { Session } from '../../src/shared/session.ts';
+import type { EndResult, InterruptResult, Session } from '../../src/shared/session.ts';
 import {
   ASK_PATH,
   ASKED_IN_TERMINAL_PATH,
@@ -48,6 +48,8 @@ let holds: FakeHolds;
 let sessions: Sessions;
 /** Every settlement the asks told, in order. */
 let told: AskSettled[];
+/** Every signal sent to an agent: `<pid> <signal>`. */
+let signals: string[];
 
 beforeEach(() => {
   vi.useFakeTimers({ now: T0 });
@@ -56,6 +58,7 @@ beforeEach(() => {
   asks = createTestAsks();
   holds = createFakeHolds();
   told = [];
+  signals = [];
   asks.on('settled', (settled) => void told.push(settled));
   sessions = createSessions({
     host,
@@ -72,7 +75,7 @@ beforeEach(() => {
     holds: createTerminalHolds(),
     asks,
     // An agent signalled stays until the test makes it go.
-    signal: () => {},
+    signal: (pid, signal) => void signals.push(`${pid} ${signal}`),
   });
 });
 
@@ -134,6 +137,27 @@ async function exits(key = KEY): Promise<void> {
 
 function sessionOf(key = KEY): Session | undefined {
   return sessions.session(key);
+}
+
+/** Interrupts the key's session, the outcome kept for the test to look at. */
+function interrupting(): Promise<InterruptResult> {
+  const result = sessions.interrupt(KEY);
+  result.catch(() => {});
+  return result;
+}
+
+/** Ends the key's session as an app asks, the outcome kept for the test to look at. */
+function ending(): Promise<EndResult> {
+  const result = sessions.interruptAndEnd(KEY, 'app');
+  result.catch(() => {});
+  return result;
+}
+
+/** The writes into the key's session, without its name. */
+function writes(): string[] {
+  return host.writes
+    .filter((write) => write.startsWith(`${KEY} `))
+    .map((write) => write.slice(KEY.length + 1));
 }
 
 describe('a permission the agent asks', () => {
@@ -594,6 +618,264 @@ describe('a session while asks are pending', () => {
   });
 });
 
+/** Esc by another name: the stub's plan for an ask answerable in the terminal only, told apart from the busy plan's. */
+const TERMINAL_ASK_KEYS = ['C-['];
+
+/** Makes the stub driver stop a turn waiting on an ask answerable in the terminal only by {@link TERMINAL_ASK_KEYS}. */
+function tellTheKeysApart(): void {
+  Object.assign(driver, {
+    interrupting: { ...driver.interrupting, terminalAsk: { keys: TERMINAL_ASK_KEYS } },
+  });
+}
+
+describe('an interrupt of a session waiting on asks', () => {
+  const { appAsk, busy, boundMs } = createStubDriver().interrupting;
+
+  beforeEach(tellTheKeysApart);
+
+  it('answers the oldest ask the app can answer with the driver’s interrupt reply, in the step that reads the session, and settles every ask of the turn `cancelled`, each told: no key', async () => {
+    await busySession();
+    const first = asked('call-1');
+    const second = asked('call-2');
+    const inTerminal = askedInTerminal('call-3');
+    await later();
+
+    interrupting();
+    await settle();
+
+    expect(first.held.replies).toEqual([appAsk.reply]);
+    expect(second.held.replies).toEqual([]);
+    expect(second.held.end).toBe('open');
+    expect(told).toEqual(
+      [first.id, second.id, inTerminal].map((id) => ({ id, key: KEY, by: 'cancelled' })),
+    );
+    expect(asks.pending('*')).toEqual([]);
+    expect(sessionOf()).toEqual({ key: KEY, state: 'busy', since: nowIso() });
+    expect(writes()).toEqual([]);
+  });
+
+  it('resolves `interrupted` at the marker, a hook still open then let go with `{}`; one the agent closed meanwhile is neither let go nor told again', async () => {
+    await busySession();
+    const first = asked('call-1');
+    const second = asked('call-2');
+    const third = asked('call-3');
+    const result = interrupting();
+    await settle();
+
+    second.held.closeByAgent();
+    expect(third.held.end).toBe('open');
+    recordInterruption();
+
+    await expect(result).resolves.toEqual({ action: 'interrupted', state: 'idle' });
+    expect(third.held.end).toBe('released');
+    expect(second.held.releases).toBe(0);
+    expect(first.held.releases).toBe(0);
+    expect(told).toHaveLength(3);
+    expect(sessionOf()?.state).toBe('idle');
+    expect(writes()).toEqual([]);
+  });
+
+  it('fails `interrupt-unconfirmed` when the marker does not come within the bound: the asks stay settled `cancelled`, the hooks left open let go, no key pressed', async () => {
+    await busySession();
+    const first = asked('call-1');
+    const second = asked('call-2');
+    const result = interrupting();
+
+    await vi.advanceTimersByTimeAsync(boundMs);
+
+    await expect(result).rejects.toMatchObject({
+      code: 'interrupt-unconfirmed',
+      key: KEY,
+      state: 'busy',
+    });
+    expect(told).toEqual([first.id, second.id].map((id) => ({ id, key: KEY, by: 'cancelled' })));
+    expect(second.held.end).toBe('released');
+    expect(asks.pending('*')).toEqual([]);
+    expect(writes()).toEqual([]);
+  });
+
+  it('refuses an app answer queued just after it `already-settled` (`cancelled`), nothing written', async () => {
+    await busySession();
+    const first = asked('call-1');
+    const second = asked('call-2');
+    interrupting();
+    await settle();
+
+    for (const { id } of [first, second]) {
+      await expect(asks.answer(id, { allow: true })).rejects.toMatchObject({
+        code: 'already-settled',
+        id,
+        by: 'cancelled',
+      });
+    }
+    expect(first.held.replies).toEqual([appAsk.reply]);
+    expect(second.held.replies).toEqual([]);
+  });
+
+  it('gives the reply to the next ask the app can answer when the oldest’s hook is found closed', async () => {
+    await busySession();
+    const first = asked('call-1');
+    const second = asked('call-2');
+    first.held.breakUnseen();
+
+    interrupting();
+    await settle();
+
+    expect(second.held.replies).toEqual([appAsk.reply]);
+    expect(told).toEqual([first.id, second.id].map((id) => ({ id, key: KEY, by: 'cancelled' })));
+    expect(writes()).toEqual([]);
+  });
+
+  it('presses the busy plan’s keys once when every hook is found closed: the agent let each ask go, settled `cancelled`', async () => {
+    await busySession();
+    const { id, held } = asked('call-1');
+    held.breakUnseen();
+
+    interrupting();
+    await settle();
+
+    expect(told).toEqual([{ id, key: KEY, by: 'cancelled' }]);
+    expect(writes()).toEqual([busy.keys.join(' ')]);
+  });
+
+  it('presses the driver’s keys for an ask answerable in the terminal only, once, when no ask the app can answer is held: the ask settled `cancelled` at the marker', async () => {
+    await busySession();
+    const id = askedInTerminal('call-1');
+    const result = interrupting();
+    await settle();
+
+    expect(writes()).toEqual([TERMINAL_ASK_KEYS.join(' ')]);
+    expect(told).toEqual([]);
+    recordInterruption();
+
+    await expect(result).resolves.toEqual({ action: 'interrupted', state: 'idle' });
+    expect(told).toEqual([{ id, key: KEY, by: 'cancelled' }]);
+    expect(writes()).toEqual([TERMINAL_ASK_KEYS.join(' ')]);
+  });
+
+  it('presses the busy plan’s keys once when every ask settled before it ran', async () => {
+    await busySession();
+    const { held } = asked('call-1');
+    hook(`${CALL_FINISHED_PATH}call-1`);
+
+    interrupting();
+    await settle();
+
+    expect(held.replies).toEqual([]);
+    expect(writes()).toEqual([busy.keys.join(' ')]);
+  });
+
+  it('chooses its plan as it acts: an ask opened after it was asked, before it acted, gets the reply, no key', async () => {
+    await busySession();
+
+    interrupting();
+    const { held } = asked('call-1');
+    await settle();
+
+    expect(held.replies).toEqual([appAsk.reply]);
+    expect(writes()).toEqual([]);
+  });
+
+  it('chooses its plan as it acts: an ask settled after it was asked, before it acted, gets no reply; the busy plan’s keys', async () => {
+    await busySession();
+    const { held } = asked('call-1');
+
+    interrupting();
+    hook(`${CALL_FINISHED_PATH}call-1`);
+    await settle();
+
+    expect(held.replies).toEqual([]);
+    expect(writes()).toEqual([busy.keys.join(' ')]);
+  });
+
+  it('resolves `nothing-to-interrupt` with the ended state when the agent dies meanwhile: the asks settled once, the hooks left open let go', async () => {
+    await busySession();
+    const first = asked('call-1');
+    const second = asked('call-2');
+    const result = interrupting();
+    await settle();
+
+    await exits();
+
+    await expect(result).resolves.toEqual({ action: 'nothing-to-interrupt', state: 'ended' });
+    expect(told).toEqual([first.id, second.id].map((id) => ({ id, key: KEY, by: 'cancelled' })));
+    expect(second.held.end).toBe('released');
+  });
+});
+
+describe('an end of a session waiting on asks', () => {
+  const { appAsk, boundMs } = createStubDriver().interrupting;
+
+  beforeEach(tellTheKeysApart);
+
+  it('interrupts by the reply first, no key, then signals the agent once the marker confirmed it: no ask pending once `ended`', async () => {
+    await busySession();
+    const first = asked('call-1');
+    const second = asked('call-2');
+    const result = ending();
+    await settle();
+
+    expect(first.held.replies).toEqual([appAsk.reply]);
+    expect(told).toEqual([first.id, second.id].map((id) => ({ id, key: KEY, by: 'cancelled' })));
+    expect(signals).toEqual([]);
+    recordInterruption();
+    await settle();
+
+    expect(signals).toEqual([`${host.pidOf(KEY)} SIGTERM`]);
+    expect(second.held.end).toBe('released');
+    await exits();
+    await expect(result).resolves.toEqual({ action: 'ended', stoppedTasks: [] });
+    expect(asks.pending('*')).toEqual([]);
+    expect(told).toHaveLength(2);
+    expect(writes()).toEqual([]);
+  });
+
+  it('signals the agent anyway when the interrupt is not confirmed within its bound', async () => {
+    await busySession();
+    asked('call-1');
+    const result = ending();
+
+    await vi.advanceTimersByTimeAsync(boundMs);
+    expect(signals).toHaveLength(1);
+    await exits();
+
+    await expect(result).resolves.toMatchObject({ action: 'ended' });
+    expect(told).toHaveLength(1);
+    expect(writes()).toEqual([]);
+  });
+
+  it('settles each ask `cancelled` once when the agent exits during the interrupt: nothing signalled', async () => {
+    await busySession();
+    const first = asked('call-1');
+    const second = asked('call-2');
+    const result = ending();
+    await settle();
+
+    await exits();
+
+    await expect(result).resolves.toMatchObject({ action: 'ended' });
+    expect(told).toEqual([first.id, second.id].map((id) => ({ id, key: KEY, by: 'cancelled' })));
+    expect(second.held.end).toBe('released');
+    expect(signals).toEqual([]);
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'app' });
+  });
+
+  it('with only an ask answerable in the terminal: one press of the driver’s keys, then the signal; the ask settled `cancelled` once, as the session ends', async () => {
+    await busySession();
+    const id = askedInTerminal('call-1');
+    const result = ending();
+
+    await vi.advanceTimersByTimeAsync(boundMs);
+    expect(writes()).toEqual([TERMINAL_ASK_KEYS.join(' ')]);
+    expect(signals).toHaveLength(1);
+    await exits();
+
+    await expect(result).resolves.toMatchObject({ action: 'ended' });
+    expect(told).toEqual([{ id, key: KEY, by: 'cancelled' }]);
+    expect(asks.pending('*')).toEqual([]);
+  });
+});
+
 describe('the cockpit closed with asks pending', () => {
   it('settles nothing, tells nobody, and lets go of no hook: the listener drops them', async () => {
     await busySession();
@@ -657,6 +939,36 @@ describe('a unit of work whose session waits on an ask', () => {
     await expect(units.send(KEY, 'And then?')).rejects.toMatchObject(refusal);
     await expect(units.open(KEY)).resolves.toEqual({ action: 'nothing-to-open', state: 'waiting' });
   });
+
+  it.each([
+    ['a remove', () => units.remove(KEY)],
+    ['a fresh run', () => units.run('explain', { file: 'readme' }, { fresh: true })],
+  ])(
+    'has %s interrupt the turn by the reply first, no key, then end the session: each ask settled `cancelled` once, none pending once ended',
+    async (_, act) => {
+      const first = asked('call-1');
+      const second = asked('call-2');
+      const done: Promise<unknown> = act();
+      done.catch(() => {});
+      await settle();
+
+      expect(first.held.replies).toEqual([driver.interrupting.appAsk.reply]);
+      expect(told).toEqual([first.id, second.id].map((id) => ({ id, key: KEY, by: 'cancelled' })));
+      expect(signals).toEqual([]);
+      recordInterruption();
+      await settle();
+      expect(signals).toHaveLength(1);
+      expect(second.held.end).toBe('released');
+      await exits();
+      expect(asks.pending('*')).toEqual([]);
+      // A fresh run launches the key's session anew.
+      hook('/start-and-take');
+
+      await expect(done).resolves.toBeDefined();
+      expect(told).toHaveLength(2);
+      expect(writes()).toEqual([]);
+    },
+  );
 
   it('is never ended for idleness, nor for the cap', async () => {
     asked('call-1');

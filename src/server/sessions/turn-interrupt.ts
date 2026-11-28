@@ -1,6 +1,6 @@
 import { CockpitError } from '../../shared/cockpit-error.js';
 import type { InterruptResult, Session } from '../../shared/session.js';
-import type { InputBoxClearing, SessionInterrupting } from '../driver.js';
+import type { InputBoxClearing, JsonValue, SessionInterrupting } from '../driver.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
 import { fulfilledWithin } from './abort-race.js';
 import { wrongState } from './refusals.js';
@@ -64,6 +64,22 @@ export interface InterruptedSession {
   /** Ends a session found gone from the host, as the next list of the host would. */
   gone(): Promise<void>;
   /**
+   * Stops the turn by a reply when it holds an ask the app can answer, in
+   * one synchronous step: the reply written to the oldest such ask whose
+   * hook takes it, then every ask of the turn settled `cancelled` and
+   * told. The others' hooks are left open, for the agent closes them as
+   * it reads the reply, until {@link releaseHooksLeftOpen}. An ask whose
+   * hook is found closed was let go by the agent: it is settled
+   * `cancelled`, and the next one tried.
+   *
+   * @param reply - The driver's reply that stops a turn.
+   * @returns Whether a hook took the reply: false when the turn holds no
+   * ask the app can answer, or each one's hook was found closed.
+   */
+  stopByReply(reply: JsonValue): boolean;
+  /** Ends with `{}` each hook {@link stopByReply} left open that the agent has not closed since. */
+  releaseHooksLeftOpen(): void;
+  /**
    * Clears the agent's input box, the page's terminals' keys held
    * meanwhile. Rejects with what the host fails with. Absent for the
    * interrupt an end asks first: its process is signalled next, and no
@@ -86,8 +102,16 @@ export interface InterruptOptions {
  * Interrupts a session's turn, as {@link interruptionOf} says, and resolves
  * once that is confirmed.
  *
- * A turn is stopped by the driver's keys, pressed once and never again,
- * whatever follows. The session then has the driver's bound to be `idle`:
+ * A turn is stopped once, never again whatever follows, by what the
+ * session waits on as the interrupt reads it, in that same step:
+ *
+ * | The turn | Stopped by |
+ * |---|---|
+ * | holds an ask the app can answer | The driver's reply, written to the oldest such ask's hook; every ask of the turn settled `cancelled`; no key. |
+ * | else waits on an ask answerable in the terminal only | The driver's keys for it. |
+ * | else | The driver's keys for a `busy` turn. |
+ *
+ * The session then has the driver's bound to be `idle`:
  * the turn ended, the transcript recorded the interruption, or the screen
  * showed the prompt withdrawn, which is then cleared from the input box,
  * since the app asked to stop, when the target can clear it (an end's
@@ -121,10 +145,10 @@ async function stopTheTurn(
   target: InterruptedSession,
   { interrupting, closing, refusal }: InterruptOptions,
 ): Promise<InterruptResult> {
-  // Listened to before the keys, which the turn's end may answer at once.
+  // Listened to before the turn is stopped, which its end may answer at once.
   const rest = restingState(target);
   try {
-    await pressKeys(target, interrupting.busy.keys);
+    await stopNow(target, interrupting);
     const settled = await fulfilledWithin(rest.reached, interrupting.boundMs, closing);
     if (closing.aborted) throw refusal();
     if (settled === undefined) throw unconfirmed(target);
@@ -135,7 +159,27 @@ async function stopTheTurn(
     return { action: 'interrupted', state: 'idle' };
   } finally {
     rest.stop();
+    target.releaseHooksLeftOpen();
   }
+}
+
+/**
+ * Stops the turn by what the session waits on, as {@link interruptTurn}'s
+ * table says, chosen in the step that carries it out: nothing the session
+ * does in between can make it stale.
+ */
+function stopNow(target: InterruptedSession, interrupting: SessionInterrupting): Promise<void> {
+  if (target.stopByReply(interrupting.appAsk.reply)) return Promise.resolve();
+  const { terminalAsk, busy } = interrupting;
+  return pressKeys(target, waitsOnATerminalAsk(target.session()) ? terminalAsk.keys : busy.keys);
+}
+
+/** Whether a session waits on an ask answerable in the terminal only: an entry of kind `terminal` with an ask's id. */
+function waitsOnATerminalAsk(session: Session | undefined): boolean {
+  return (
+    session?.state === 'waiting' &&
+    session.pending.some((each) => each.kind === 'terminal' && each.id !== undefined)
+  );
 }
 
 /**
