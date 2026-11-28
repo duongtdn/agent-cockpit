@@ -1,6 +1,6 @@
 import type { Confinement } from '../server/driver.js';
 import { sandboxLines, startUpFileDenies, stateRootDenies } from './confinement-lines.js';
-import { HTTP_HOOK_EVENTS } from './hook-payloads.js';
+import { HOOK_TIMEOUTS, HTTP_HOOK_EVENTS } from './hook-payloads.js';
 import type { ClaudeCodeSandbox, PermissionRules } from './options.js';
 import type { PersonsStartUpFiles } from './persons-files.js';
 
@@ -47,7 +47,8 @@ export interface SettingsParts extends PersonsStartUpFiles {
  *
  * `SessionStart` is a command hook, since Claude Code never posts it as an
  * HTTP hook; the others are HTTP hooks with the token in their
- * `Authorization` header. A group with no matcher is for every tool.
+ * `Authorization` header, a permission's held up to 30 days. A group with
+ * no matcher is for every tool.
  *
  * The confinement is written into every session, sandboxed or not: the
  * person's own settings may turn the sandbox on, and without it the
@@ -76,9 +77,13 @@ function hooksOf(parts: SettingsParts): object {
     url: parts.hookUrl,
     headers: { Authorization: `Bearer ${parts.token}` },
   };
+  const hookOf = (event: string) => {
+    const timeout = HOOK_TIMEOUTS[event];
+    return timeout === undefined ? httpHook : { ...httpHook, timeout };
+  };
   return {
     SessionStart: [{ hooks: [{ type: 'command', command: parts.sessionStartCommand }] }],
-    ...Object.fromEntries(HTTP_HOOK_EVENTS.map((event) => [event, [{ hooks: [httpHook] }]])),
+    ...Object.fromEntries(HTTP_HOOK_EVENTS.map((event) => [event, [{ hooks: [hookOf(event)] }]])),
   };
 }
 

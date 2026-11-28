@@ -248,12 +248,19 @@ describe('the settings of a launch', () => {
       'SubagentStart',
       'SubagentStop',
       'SessionEnd',
+      'PostToolUseFailure',
+      'PostToolBatch',
+      'Notification',
     ];
 
-    expect(Object.keys(hooks).sort()).toEqual(['SessionStart', ...httpEvents].sort());
+    expect(Object.keys(hooks).sort()).toEqual(
+      ['SessionStart', 'PermissionRequest', ...httpEvents].sort(),
+    );
     for (const event of httpEvents) {
       expect(hooks[event]).toEqual([{ hooks: [httpHook] }]);
     }
+    // A permission's hook is held until a person answers it: 30 days, the only bound the agent keeps.
+    expect(hooks.PermissionRequest).toEqual([{ hooks: [{ ...httpHook, timeout: 2_592_000 }] }]);
   });
 
   it('post under a hook address given with a trailing slash too', async () => {

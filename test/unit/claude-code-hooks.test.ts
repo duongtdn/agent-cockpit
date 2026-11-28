@@ -303,12 +303,15 @@ describe("what Claude Code's hooks tell the core", () => {
         'SubagentStart',
         'SubagentStop',
         'SessionEnd',
+        'PermissionRequest',
+        'PostToolUseFailure',
+        'PostToolBatch',
+        'Notification',
       ].sort(),
     );
   });
 
   it('the events the driver does not configure tell nothing', () => {
-    expect(eventsOfPayload(payload('PostToolBatch'))).toEqual([]);
     expect(eventsOfPayload(payload('MessageDisplay'))).toEqual([]);
   });
 

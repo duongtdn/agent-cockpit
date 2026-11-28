@@ -5,6 +5,7 @@ import {
   type HookRequest,
 } from '../server/driver.js';
 import type { BackgroundTask, TurnError } from '../shared/session.js';
+import { createAskReader } from './ask-reading.js';
 
 /** The events posted to the cockpit as HTTP hooks: every one the driver reads but `SessionStart`. */
 export const HTTP_HOOK_EVENTS: readonly string[] = [
@@ -18,7 +19,18 @@ export const HTTP_HOOK_EVENTS: readonly string[] = [
   'SubagentStart',
   'SubagentStop',
   'SessionEnd',
+  'PermissionRequest',
+  'PostToolUseFailure',
+  'PostToolBatch',
+  'Notification',
 ];
+
+/**
+ * The timeout, in seconds, of the hooks that do not keep the agent's
+ * default. A permission's hook is held until a person answers it, and the
+ * agent never closes a held hook before its timeout: 30 days.
+ */
+export const HOOK_TIMEOUTS: Readonly<Record<string, number>> = { PermissionRequest: 2_592_000 };
 
 /** What tells nothing. */
 const NOTHING: HookOutcome = { events: [] };
@@ -66,12 +78,17 @@ export type HookReader = (request: HookRequest) => HookOutcome;
  * and starts with no `SubagentStart`: a `StopFailure` with an `agent_id` no
  * task of the session's has is the compaction's, which failed, and ended.
  *
- * @returns The reader: for a request, the events it tells, none for a path
- * that is not the hooks', a body that is no payload, a hook the driver does
- * not configure, and a background task's hook.
+ * The session's own hooks are read for its asks too (`createAskReader`):
+ * a permission it asks opens an ask, held until settled.
+ *
+ * @returns The reader: for a request, the events it tells and the ask it
+ * opens; no event for a path that is not the hooks', a body that is no
+ * payload, a hook the driver does not configure, and a background task's
+ * hook, whose `PermissionRequest` opens no ask either.
  */
 export function createHookReader(): HookReader {
   const tasksBySession = new Map<string, Set<string>>();
+  const readAsks = createAskReader();
   const tasksOf = (key: string) => tasksBySession.get(key) ?? new Set<string>();
 
   return ({ key, path, body }) => {
@@ -87,7 +104,9 @@ export function createHookReader(): HookReader {
       return compactionFailed ? { events: [{ type: 'compaction-ended' }] } : NOTHING;
     }
     if (startsAProcess(body) || endsTheProcess(body)) tasksBySession.delete(key);
-    return { events: eventsOf(body) };
+    const { events, ask } = readAsks(key, body);
+    const outcome = { events: [...eventsOf(body), ...events] };
+    return ask === undefined ? outcome : { ...outcome, ask };
   };
 }
 
