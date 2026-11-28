@@ -278,17 +278,20 @@ export type OpenResult =
     };
 
 /**
- * What an interrupt did: the turn of a `busy` or `waiting` session stopped,
- * the session confirmed `idle` (`interrupted`), or no turn to stop
- * (`nothing-to-interrupt`: the session is `idle` or `ended`, or the key has
- * no record). Background tasks go on either way.
+ * What an interrupt did: the turn of a `busy` session, or of a `waiting`
+ * one whose wait is an ask or a channel request, stopped and the session
+ * confirmed `idle` (`interrupted`); or no turn to stop
+ * (`nothing-to-interrupt`: the session is `idle` or `ended`, it waits in
+ * the terminal for a dialog, a panel or a screen the driver cannot read,
+ * where no key is sent, or the key has no record). Background tasks go on
+ * either way.
  */
 export type InterruptResult =
   | {
       /** The turn was stopped, and the session seen `idle`. */
       readonly action: 'interrupted';
-      /** The state the session is in: `idle`. */
-      readonly state: SessionState;
+      /** The state the session is in. */
+      readonly state: 'idle';
     }
   | {
       /** No turn ran: there was nothing to interrupt. */

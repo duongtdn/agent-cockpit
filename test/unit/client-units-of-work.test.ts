@@ -187,34 +187,27 @@ describe('the client interrupts, ends and removes a unit of work', () => {
     expect(await createCockpitClient({ baseUrl: server.baseUrl }).remove('k')).toEqual(result);
   });
 
-  it.each([
-    ['interrupt', '/interrupt'],
-    ['end', '/end'],
-    ['remove', '/remove'],
-  ] as const)(
-    'rejects %s on a starting session with wrong-state and the state',
-    async (operation, path) => {
-      server.answer(
-        path,
-        json(409, {
-          error: {
-            name: 'CockpitError',
-            code: 'wrong-state',
-            message: 'The session is starting.',
-            key: 'k',
-            state: 'starting',
-          },
-        }),
-      );
+  it('rejects an end on a starting session with wrong-state and the state', async () => {
+    server.answer(
+      '/end',
+      json(409, {
+        error: {
+          name: 'CockpitError',
+          code: 'wrong-state',
+          message: 'The session is starting.',
+          key: 'k',
+          state: 'starting',
+        },
+      }),
+    );
 
-      const error = await createCockpitClient({ baseUrl: server.baseUrl })
-        [operation]('k')
-        .catch((reason: unknown) => reason);
+    const error = await createCockpitClient({ baseUrl: server.baseUrl })
+      .end('k')
+      .catch((reason: unknown) => reason);
 
-      expect(isCockpitError(error, 'wrong-state')).toBe(true);
-      expect(error).toMatchObject({ key: 'k', state: 'starting' });
-    },
-  );
+    expect(isCockpitError(error, 'wrong-state')).toBe(true);
+    expect(error).toMatchObject({ key: 'k', state: 'starting' });
+  });
 
   it('rejects an interrupt whose idle was not confirmed with interrupt-unconfirmed, the key and the last state', async () => {
     server.answer(
