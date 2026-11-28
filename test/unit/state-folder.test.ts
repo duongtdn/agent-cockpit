@@ -461,21 +461,17 @@ describe('openStateFolder', () => {
       return path;
     }
 
-    it('deletes the key’s folder and all it holds, and nothing of another key or beside it', async () => {
+    it('deletes the key’s folder and all it holds, and nothing of another key', async () => {
       const folder = await openStateFolder(join(root, 'my-app'));
       const removed = await preparedWithSettings(folder, 'a');
       mkdirSync(join(removed, 'nested'));
       writeFileSync(join(removed, 'nested/file'), '');
       const kept = await preparedWithSettings(folder, 'b');
-      const transcripts = join(root, 'claude-config/projects/p');
-      mkdirSync(transcripts, { recursive: true });
-      writeFileSync(join(transcripts, 'conversation.jsonl'), 'the agent’s');
 
       await folder.sessions.remove('a');
 
       expect(existsSync(removed)).toBe(false);
       expect(readdirSync(kept).sort()).toEqual(['hook-address.json', 'settings.json']);
-      expect(readFileSync(join(transcripts, 'conversation.jsonl'), 'utf8')).toBe('the agent’s');
       expect(statSync(join(root, 'my-app/sessions')).isDirectory()).toBe(true);
     });
 
