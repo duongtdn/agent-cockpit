@@ -340,12 +340,13 @@ export interface Sessions {
    *
    * @param key - The session's key.
    * @param reason - Why the cockpit ends it.
-   * @returns The end to carry out: `end` ends the session as {@link end}
-   * does, the tasks it stopped given (none when no live session is left),
-   * once it interrupted, as the first half does, a session changed since
-   * that half and in a turn again (a person's prompt, an ask), nothing
-   * pressed into the turn that half could not confirm stopped; `abandon` lets the reason go when the caller will
-   * not end it. Either settles the reason; the other does nothing then.
+   * @returns The end to carry out. `end` ends the session as {@link end}
+   * does and gives the tasks it stopped (none when no live session is
+   * left); a session changed since the first half and in a turn again (a
+   * person's prompt, an ask) is interrupted first, as that half does,
+   * while a turn that half could not confirm stopped gets nothing more
+   * pressed. `abandon` lets the reason go when the caller will not end
+   * it. Either settles the reason; the other then does nothing.
    * @throws `CockpitError` `wrong-state` on a `starting` session.
    * @throws `SessionsClosedError` when the core is closed, or is closed
    * before the interrupt settles: nothing more is pressed.
