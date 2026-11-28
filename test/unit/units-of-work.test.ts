@@ -787,17 +787,22 @@ describe('a run on a live session', () => {
 describe('a run with `fresh` on a live session', () => {
   beforeEach(() => open());
 
+  /** Lets the interrupt of a busy session's turn go unconfirmed: the end goes on all the same. */
+  const pastTheInterrupt = () => vi.advanceTimersByTimeAsync(driver.interrupting.boundMs);
+
   it.each([
-    ['idle', () => idle()],
-    ['busy', () => {}],
+    ['idle', () => idle(), []],
+    ['busy', () => {}, [`${KEY} Escape`]],
   ])(
-    'ends the `%s` session, then starts a new conversation: `fresh-on-request`',
-    async (_state, bring) => {
+    'ends the `%s` session, a turn interrupted first, then starts a new conversation: `fresh-on-request`',
+    async (_state, bring, interruptKeys) => {
       await started();
       bring();
       const old = driver.launches[0]?.conversationId;
+      const written = host.writes.length;
 
       const ran = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+      await pastTheInterrupt();
       await listHost();
       hook('/start-and-take');
 
@@ -810,6 +815,7 @@ describe('a run with `fresh` on a live session', () => {
       expect(fresh).not.toBe(old);
       expect(driver.launches[1]).not.toHaveProperty('resume');
       expect(recordOf()).toMatchObject({ conversationId: fresh, earlierConversations: [old] });
+      expect(host.writes.slice(written)).toEqual(interruptKeys);
     },
   );
 
@@ -832,6 +838,7 @@ describe('a run with `fresh` on a live session', () => {
     await started();
 
     const ran = pending(units.run('books', { file: 'a' }, { fresh: true }));
+    await pastTheInterrupt();
     await listHost();
     hook('/start-and-take');
 

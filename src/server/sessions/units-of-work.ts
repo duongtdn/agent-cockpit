@@ -731,14 +731,15 @@ class Units implements UnitsOfWork {
 
   /**
    * Admits a launch, one admission at a time cockpit-wide: the key's live
-   * session ended first when the plan says so, the conversation to take up
+   * session ended first when the plan says so, its turn interrupted as an
+   * app's end interrupts it, the conversation to take up
    * chosen once it has, room made under the cap, and the launch begun, its
    * key taken, before the next admission counts the live sessions.
    */
   async #admit(plan: Plan, folder: JobFolder): Promise<Admitted> {
     return this.#admissions.run(ADMISSION, async () => {
       const stoppedTasks =
-        plan.endFirst === undefined ? [] : await this.#sessions.end(plan.key, plan.endFirst);
+        plan.endFirst === undefined ? [] : await this.#endFirst(plan.key, plan.endFirst);
       const before = this.#sessions.conversationOf(plan.key);
       const { take, conversationId } = await this.#takeUp(plan, folder);
       await this.#makeRoom(plan.key);
@@ -755,6 +756,12 @@ class Units implements UnitsOfWork {
       launching.catch(() => {});
       return { take, conversationId, before, stoppedTasks, launching };
     });
+  }
+
+  /** Ends the key's session before a launch replaces it, its turn interrupted first: the tasks stopped with it. */
+  async #endFirst(key: string, reason: EndReason): Promise<readonly BackgroundTask[]> {
+    const ended = await this.#sessions.interruptAndEnd(key, reason);
+    return ended.action === 'ended' ? ended.stoppedTasks : [];
   }
 
   /**
