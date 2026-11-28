@@ -93,21 +93,24 @@ export class Asks {
 
   /**
    * Opens an ask, pending until settled, and gives it to the followers of
-   * its key.
+   * its key. The ask is frozen, its input to its deepest field, in place
+   * before any follower sees it: the content's input is the one the driver
+   * builds its reply from, whose rule a follower must not change.
    *
    * @param key - The key of the unit of work whose session asks.
-   * @param content - What the agent asks, as the driver read it.
+   * @param content - What the agent asks, as the driver read it: its input
+   * frozen from now on.
    * @param answering - Who can answer it.
    * @returns The ask, with its new id.
    */
   open(key: string, content: AskContent, answering: Answering): Ask {
-    const ask: Ask = {
+    const ask: Ask = deepFrozen({
       id: randomUUID(),
       key,
       ...content,
       answerable: answering.answerable,
       since: this.#clock().toISOString(),
-    };
+    });
     this.#pending.set(ask.id, { ask, answering });
     this.#tellFollowers(ask);
     return ask;
@@ -318,4 +321,11 @@ function alreadySettled(id: string, by: AskSettled['by']): CockpitError<'already
     id,
     by,
   });
+}
+
+/** Freezes a value and every object or array it holds, in place, and gives it. */
+function deepFrozen<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
+  for (const field of Object.values(value)) deepFrozen(field);
+  return Object.freeze(value);
 }

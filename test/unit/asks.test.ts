@@ -82,6 +82,35 @@ describe('an ask opened', () => {
   });
 });
 
+describe('an ask given to its followers', () => {
+  it('is frozen, its input to its deepest field: what a follower changes throws, and the ask held stays as the agent asked it', () => {
+    const { asks, thrown } = registry();
+    const nested: AskContent = {
+      kind: 'permission',
+      tool: 'mcp__notes__save',
+      input: { note: { title: 'a', tags: ['x'] } },
+    };
+    asks.follow('*', (ask) => {
+      const note = ask.input.note as { title: string; tags: string[] };
+      note.title = 'changed';
+    });
+    asks.follow('*', (ask) => {
+      (ask.input.note as { tags: string[] }).tags.push('y');
+    });
+    asks.follow('*', (ask) => {
+      Object.assign(ask, { answerable: 'terminal' });
+    });
+
+    asks.open('k1', nested, connection().answering);
+
+    expect(thrown).toHaveLength(3);
+    expect(thrown.every((each) => each instanceof TypeError)).toBe(true);
+    expect(asks.pending('k1')).toMatchObject([
+      { input: { note: { title: 'a', tags: ['x'] } }, answerable: 'app' },
+    ]);
+  });
+});
+
 describe('answering an ask', () => {
   it('hands the answer to its connection, settles it app, tells each settled handler, then resolves', async () => {
     const { asks } = registry();

@@ -277,6 +277,32 @@ describe('a permission the agent asks', () => {
   });
 });
 
+describe('an ask a follower tries to change', () => {
+  it('keeps the input the agent asked with: the reply the app’s answer writes is built from it', async () => {
+    driver.answerReply = (ask, answer) => ({
+      command: ask.content.input.command as string,
+      answer,
+    });
+    await busySession();
+    const refused: unknown[] = [];
+    asks.follow(KEY, (ask) => {
+      try {
+        Object.assign(ask.input, { command: 'rm -rf /' });
+      } catch (error) {
+        refused.push(error);
+      }
+    });
+    const { id, held } = asked('call-1');
+
+    await asks.answer(id, { allow: true, remember: 'session' });
+
+    expect(refused).toEqual([expect.any(TypeError)]);
+    expect(held.replies).toEqual([
+      { command: 'touch call-1', answer: { allow: true, remember: 'session' } },
+    ]);
+  });
+});
+
 describe('a call of a pending ask that finished', () => {
   it('settles the ask `terminal`, lets its hook go with `{}`, and leaves the session `busy` from then', async () => {
     await busySession();
