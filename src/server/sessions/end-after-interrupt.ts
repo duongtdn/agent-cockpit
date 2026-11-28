@@ -4,8 +4,8 @@ import { SessionHostError } from '../session-host/session-host-error.js';
 import { wrongState } from './refusals.js';
 import { interruptionOf } from './turn-interrupt.js';
 
-/** What an end that stops the session's turn first works with: the session, as the sessions core keeps it. */
-export interface EndingSession {
+/** What the interrupt an end asks first works with: the session, as the sessions core keeps it. */
+export interface InterruptedBeforeEnd {
   /** The session as it is now: `undefined` when there is none. */
   session(): Session | undefined;
   /**
@@ -15,17 +15,17 @@ export interface EndingSession {
   hasEndUnderWay(): boolean;
   /** Interrupts the session's turn, as the core's interrupt does. */
   interrupt(): Promise<InterruptResult>;
+  /** Waits for the end under way. */
+  join(): Promise<unknown>;
+}
+
+/** What an end that stops the session's turn first works with: the session, as the sessions core keeps it. */
+export interface EndingSession extends InterruptedBeforeEnd {
   /**
    * Ends the session as the core's end does, or joins the end under way,
    * and gives the background tasks known as its process went.
    */
   end(): Promise<readonly BackgroundTask[]>;
-  /**
-   * Waits for the end under way, and gives the background tasks known as
-   * the process went: none when that end left the session live, its kill
-   * failed.
-   */
-  join(): Promise<readonly BackgroundTask[]>;
 }
 
 /**
@@ -44,34 +44,43 @@ export interface EndingSession {
  * tasks stopped with it; `nothing-to-end` with the session's state, none
  * when there is no session.
  * @throws `CockpitError` `wrong-state` on a `starting` session. What the
- * end throws. What the interrupt throws but its being unconfirmed and the
- * host's failure as the keys are pressed: the close's refusal among them.
+ * end throws. What {@link interruptBeforeEnd} throws.
  */
 export async function endAfterInterrupt(target: EndingSession): Promise<EndResult> {
   const session = target.session();
   if (session === undefined) return { action: 'nothing-to-end' };
   if (session.state === 'ended') return { action: 'nothing-to-end', state: 'ended' };
-  return { action: 'ended', stoppedTasks: await endLive(target, session) };
+  await interruptBeforeEnd(target);
+  return { action: 'ended', stoppedTasks: await target.end() };
 }
 
-/** Ends a session not yet ended, by its state, as {@link endAfterInterrupt}'s table says. */
-async function endLive(
-  target: EndingSession,
-  session: Session,
-): Promise<readonly BackgroundTask[]> {
+/**
+ * Does what an end asked by an app does before its signal, by what the
+ * session is, as {@link endAfterInterrupt}'s table says: interrupts its
+ * turn, whether or not that is confirmed, or joins the end under way, and
+ * then interrupts the turn of a session that end left live, its kill
+ * failed. Nothing for a session with no turn, none, or one ended.
+ *
+ * @param target - The session.
+ * @throws `CockpitError` `wrong-state` on a `starting` session. What the
+ * interrupt throws but its being unconfirmed and the host's failure as
+ * the keys are pressed: the close's refusal among them. What the join
+ * throws.
+ */
+export async function interruptBeforeEnd(target: InterruptedBeforeEnd): Promise<void> {
+  const session = target.session();
+  if (session === undefined || session.state === 'ended') return;
   const interruption = interruptionOf(session);
   if (interruption === 'refused') throw wrongState(session);
   if (target.hasEndUnderWay()) {
-    const stopped = await target.join();
-    const now = target.session();
-    return now === undefined || now.state === 'ended' ? stopped : endLive(target, now);
+    await target.join();
+    return interruptBeforeEnd(target);
   }
   if (interruption === 'stop-the-turn') await interruptAnyway(target);
-  return target.end();
 }
 
 /** Interrupts the session's turn; an interrupt that cannot be confirmed does not keep the end from going on. */
-async function interruptAnyway(target: EndingSession): Promise<void> {
+async function interruptAnyway(target: InterruptedBeforeEnd): Promise<void> {
   try {
     await target.interrupt();
   } catch (error) {

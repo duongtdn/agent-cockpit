@@ -41,7 +41,11 @@ import type { Attachment, SessionHost, TerminalSize } from '../session-host/sess
 import { SessionHostError } from '../session-host/session-host-error.js';
 import type { TerminalHold } from '../terminal-hold.js';
 import { fulfilledWithin, settlesBeforeAbort } from './abort-race.js';
-import { endAfterInterrupt } from './end-after-interrupt.js';
+import {
+  endAfterInterrupt,
+  type InterruptedBeforeEnd,
+  interruptBeforeEnd,
+} from './end-after-interrupt.js';
 import { FirstPrompt, type StartingSession } from './first-prompt.js';
 import { Followers } from './followers.js';
 import { Launches } from './launch.js';
@@ -326,10 +330,34 @@ export interface Sessions {
    */
   interruptAndEnd(key: string, reason: EndReason): Promise<EndResult>;
   /**
-   * Interrupts the turn of a key's session, as `interruptTurn` does: the
-   * driver's keys pressed once, never twice, on a `busy` session or one
-   * waiting on more than the terminal, then the driver's bound for it to
-   * be `idle`; nothing pressed where no turn runs. A session the cockpit is
+   * Does the first half of {@link interruptAndEnd}, and gives the second
+   * to carry out later: the session's turn interrupted as that end
+   * interrupts it, or the end under way joined, the reason prevailing
+   * from now on over the agent's word, as it does there. What waits
+   * between the halves is the caller's: a launch that replaces the
+   * session interrupts it before it is admitted, so that no other key's
+   * start waits behind the interrupt, and ends it once admitted.
+   *
+   * @param key - The session's key.
+   * @param reason - Why the cockpit ends it.
+   * @returns The end to carry out: `end` ends the session as {@link end}
+   * does, no key pressed, the tasks it stopped given (none when no live
+   * session is left); `abandon` lets the reason go when the caller will
+   * not end it. Either settles the reason; the other does nothing then.
+   * @throws `CockpitError` `wrong-state` on a `starting` session.
+   * @throws `SessionsClosedError` when the core is closed, or is closed
+   * before the interrupt settles: nothing more is pressed.
+   */
+  interruptToEnd(key: string, reason: EndReason): Promise<EndToCarryOut>;
+  /**
+   * Interrupts the turn of a key's session, as `interruptTurn` does, once,
+   * never twice, on a `busy` session or one waiting on more than the
+   * terminal: the driver's reply written to the hook of its oldest ask
+   * the app can answer, no key pressed, every ask of the turn settled
+   * `cancelled`; else the driver's keys for an ask answerable in the
+   * terminal only (one Esc); else the driver's keys for a `busy` turn (one
+   * Esc). Then the driver's bound for it to be `idle`; nothing pressed
+   * where no turn runs. A session the cockpit is
    * ending is first awaited ended, then read again. Background tasks go
    * on: the `idle` session lists those it listed before the turn and the
    * subagents the turn started; a shell or a monitor the turn started
@@ -535,11 +563,25 @@ interface Entry {
   /**
    * The hooks of asks an interrupt's reply settled, by id, still open: the
    * agent closes them as it reads the reply; those left are let go once
-   * that interrupt is over, or as the session ends.
+   * that interrupt is over, or as the session's end begins or it ends.
    */
   readonly hooksLeftOpen: Map<string, HeldHook>;
   /** The host's kill of the session while it is out: settled, whether it killed or failed. */
   killOut?: Promise<unknown>;
+}
+
+/** The second half of an end asked by an app, its turn interrupted already: see `Sessions.interruptToEnd`. */
+export interface EndToCarryOut {
+  /**
+   * Ends the session as `Sessions.end` does, no key pressed.
+   *
+   * @returns The background tasks stopped with it; none when no live
+   * session is left.
+   * @throws What `Sessions.end` throws.
+   */
+  end(): Promise<readonly BackgroundTask[]>;
+  /** Lets the end's reason go: the caller will not end the session. */
+  abandon(): void;
 }
 
 /** An ask of a session's agent, pending, as the core keeps it. */
@@ -636,9 +678,13 @@ class SessionRegistry implements Sessions {
   async end(key: string, reason: EndReason): Promise<readonly BackgroundTask[]> {
     this.#refuseIfClosed(key);
     const entry = this.#entries.get(key);
-    if (entry === undefined || !(entry.lifecycle.isLive || entry.lifecycle.hasEndUnderWay)) {
-      return [];
-    }
+    return entry === undefined ? [] : this.#endIfLive(entry, reason);
+  }
+
+  /** Ends a session live or being ended, as {@link end} does: none with neither. */
+  #endIfLive(entry: Entry, reason: EndReason): Promise<readonly BackgroundTask[]> {
+    const { lifecycle } = entry;
+    if (!(lifecycle.isLive || lifecycle.hasEndUnderWay)) return Promise.resolve([]);
     return this.#endOrJoin(entry, reason);
   }
 
@@ -646,28 +692,69 @@ class SessionRegistry implements Sessions {
     this.#refuseIfClosed(key);
     const entry = this.#entries.get(key);
     if (entry === undefined) return { action: 'nothing-to-end' };
-    // A process that goes while its turn is interrupted goes because the cockpit asked it to.
-    const askToEnd = () => {
-      if (entry.lifecycle.isLive) entry.endAskedBecause = reason;
-    };
-    askToEnd();
+    const asked = this.#askToEnd(entry, reason);
     try {
       return await endAfterInterrupt({
-        session: () => this.session(key),
+        ...asked.interruptedBeforeEnd,
+        end: () => this.#endOrJoin(entry, reason),
+      });
+    } finally {
+      asked.letGo();
+    }
+  }
+
+  async interruptToEnd(key: string, reason: EndReason): Promise<EndToCarryOut> {
+    this.#refuseIfClosed(key);
+    const entry = this.#entries.get(key);
+    if (entry === undefined) return { end: async () => [], abandon: () => {} };
+    const asked = this.#askToEnd(entry, reason);
+    try {
+      await interruptBeforeEnd(asked.interruptedBeforeEnd);
+    } catch (error) {
+      asked.letGo();
+      throw error;
+    }
+    return {
+      end: async () => {
+        try {
+          return await this.#endIfLive(entry, reason);
+        } finally {
+          asked.letGo();
+        }
+      },
+      abandon: () => asked.letGo(),
+    };
+  }
+
+  /**
+   * Asks a session to end for a reason, from now until {@link letGo}: a
+   * process that goes meanwhile goes because the cockpit asked it to.
+   * Gives what the interrupt the end asks first works with.
+   */
+  #askToEnd(
+    entry: Entry,
+    reason: EndReason,
+  ): { readonly interruptedBeforeEnd: InterruptedBeforeEnd; letGo(): void } {
+    const ask = () => {
+      if (entry.lifecycle.isLive) entry.endAskedBecause = reason;
+    };
+    ask();
+    return {
+      interruptedBeforeEnd: {
+        session: () => this.session(entry.key),
         hasEndUnderWay: () => entry.lifecycle.hasEndUnderWay,
         // The prompt it may withdraw is left in the box: no key goes in once the end was asked.
         interrupt: () => this.#interruptTurn(entry, this.#interruptTarget(entry)),
-        end: () => this.#endOrJoin(entry, reason),
         join: async () => {
-          const stopped = await this.#join(entry);
+          await this.#join(entry);
           // Live again, its kill failed: this end is the one asked now.
-          askToEnd();
-          return stopped;
+          ask();
         },
-      });
-    } finally {
-      delete entry.endAskedBecause;
-    }
+      },
+      letGo: () => {
+        delete entry.endAskedBecause;
+      },
+    };
   }
 
   /**
@@ -685,6 +772,8 @@ class SessionRegistry implements Sessions {
     entry.endedBecause = reason;
     // From the moment it is asked, before the signal: no send types into it meanwhile.
     entry.lifecycle.move('ending');
+    // Signalled, the agent reads no reply on them: an interrupt that left them may still wait.
+    releaseHooksLeftOpen(entry);
     const { signal, boundMs } = this.#options.driver.ending;
     await this.#signal(entry.key, signal);
     const ended = entry.lifecycle.ended.then(() => true);
@@ -1008,6 +1097,7 @@ class SessionRegistry implements Sessions {
             answerable: 'app',
             handOff: (answer) => held.reply(this.#options.driver.answerReply(ask, answer)),
           };
+    entry.firstPrompt.agentAsked();
     const { id } = this.#options.asks.open(entry.key, ask.content, answering);
     opening.id = id;
     if (!this.#options.asks.pending(entry.key).some((each) => each.id === id)) return;

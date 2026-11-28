@@ -159,8 +159,13 @@ export interface Cockpit {
   /**
    * Interrupts the turn of a unit of work's session, once the calls asked
    * before it on the key settled: a send under way is waited for, and the
-   * turn it began is the one interrupted. The driver presses its keys once
-   * (for Claude Code, one Esc) and never again, whatever follows.
+   * turn it began is the one interrupted. The turn is stopped once, never
+   * again whatever follows: a turn that holds an ask the app can answer by
+   * the driver's reply to the oldest such ask (for Claude Code, a denial
+   * that interrupts), no key pressed, every ask of the turn settled
+   * `cancelled`; else, one waiting on an ask answerable in the terminal
+   * only, by the driver's keys for it (one Esc); else by its keys for a
+   * `busy` turn (one Esc).
    *
    * | State | Interrupt |
    * |---|---|

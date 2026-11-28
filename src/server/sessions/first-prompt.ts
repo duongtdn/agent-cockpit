@@ -62,6 +62,8 @@ export class FirstPrompt {
   #toType: string | undefined;
   /** Whether the launch waits for the prompt to be typed. */
   #awaitsTyping: boolean;
+  /** Whether the agent asked a person: it works on something, and its first prompt is never typed. */
+  #agentAsked = false;
   #inputBoxWait: InputBoxWait | undefined;
 
   /** @param toType - A first prompt too long for the command line; none for any other launch. */
@@ -108,6 +110,16 @@ export class FirstPrompt {
     this.#toType = undefined;
     void this.#type(session, prompt);
     return true;
+  }
+
+  /**
+   * Takes it that the agent asked a person: its first prompt is not typed
+   * from now on, though the ask is settled before the box shows (an
+   * interrupt cancelled it); the box showing does not make the session
+   * `starting` again, and the first prompt fails `wrong-state`.
+   */
+  agentAsked(): void {
+    this.#agentAsked = true;
   }
 
   /** Stops waiting for the input box: the session ended, or the core closed. */
@@ -217,7 +229,7 @@ export class FirstPrompt {
     this.#inputBoxWait = undefined;
     if (!shown || !session.takesInput()) return shown;
     keys.hold();
-    if (waitsOnlyInTheTerminal(session.session())) {
+    if (!this.#agentAsked && waitsOnlyInTheTerminal(session.session())) {
       session.update({ key: session.key, state: 'starting', since: new Date().toISOString() });
     }
     return shown;

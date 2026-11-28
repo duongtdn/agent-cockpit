@@ -150,6 +150,8 @@ async function stopTheTurn(
   try {
     await stopNow(target, interrupting);
     const settled = await fulfilledWithin(rest.reached, interrupting.boundMs, closing);
+    // Confirmed or not, the agent reads no reply on them from now on.
+    target.releaseHooksLeftOpen();
     if (closing.aborted) throw refusal();
     if (settled === undefined) throw unconfirmed(target);
     if (settled.state === 'ended') return nothingToInterrupt(settled);
@@ -159,6 +161,7 @@ async function stopTheTurn(
     return { action: 'interrupted', state: 'idle' };
   } finally {
     rest.stop();
+    // Also when the turn could not be stopped: the host failed, the core closed.
     target.releaseHooksLeftOpen();
   }
 }

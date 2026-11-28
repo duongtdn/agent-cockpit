@@ -36,7 +36,13 @@ import { Followers } from './followers.js';
 import { createIdleTimeout, type IdleTimeout } from './idle-timeout.js';
 import type { JobRun, JobRuns } from './job-runs.js';
 import { type FreeTurn, KeyQueue } from './key-queue.js';
-import { type SessionFolders, type Sessions, SessionsClosedError, wrongState } from './sessions.js';
+import {
+  type EndToCarryOut,
+  type SessionFolders,
+  type Sessions,
+  SessionsClosedError,
+  wrongState,
+} from './sessions.js';
 
 /** What the units of work work with. */
 export interface UnitsOfWorkOptions {
@@ -162,8 +168,11 @@ export interface UnitsOfWork {
    * Interrupts the turn of a unit of work's session, once the operations
    * asked before it on the key settled: a send under way is waited for,
    * and the turn it began is the one interrupted. The sessions core's
-   * `interrupt` does the rest: one press of the driver's keys on a `busy`
-   * session or one waiting on more than the terminal, confirmed `idle`
+   * `interrupt` does the rest, once, on a `busy` session or one waiting on
+   * more than the terminal: the driver's reply to its oldest ask the app
+   * can answer, no key pressed, every ask of the turn settled `cancelled`;
+   * else the driver's keys for an ask answerable in the terminal only (one
+   * Esc); else its keys for a `busy` turn (one Esc). Then confirmed `idle`
    * within the driver's bound; nothing pressed where no turn runs.
    *
    * @param key - The unit of work's key.
@@ -731,15 +740,29 @@ class Units implements UnitsOfWork {
 
   /**
    * Admits a launch, one admission at a time cockpit-wide: the key's live
-   * session ended first when the plan says so, its turn interrupted as an
-   * app's end interrupts it, the conversation to take up
+   * session ended first when the plan says so, the conversation to take up
    * chosen once it has, room made under the cap, and the launch begun, its
-   * key taken, before the next admission counts the live sessions.
+   * key taken, before the next admission counts the live sessions. The
+   * turn of a session ended first is interrupted, as an app's end
+   * interrupts it, before the admission: that frees no room, and no other
+   * key's start waits behind it. The key's turn is held meanwhile, so no
+   * other operation acts on the session, and the cap passes over it.
    */
   async #admit(plan: Plan, folder: JobFolder): Promise<Admitted> {
+    const { endFirst } = plan;
+    const ending =
+      endFirst === undefined ? undefined : await this.#sessions.interruptToEnd(plan.key, endFirst);
+    try {
+      return await this.#admitted(plan, folder, ending);
+    } finally {
+      ending?.abandon();
+    }
+  }
+
+  /** Admits a launch once the turn of the session it replaces, if any, was interrupted: see {@link #admit}. */
+  #admitted(plan: Plan, folder: JobFolder, ending: EndToCarryOut | undefined): Promise<Admitted> {
     return this.#admissions.run(ADMISSION, async () => {
-      const stoppedTasks =
-        plan.endFirst === undefined ? [] : await this.#endFirst(plan.key, plan.endFirst);
+      const stoppedTasks = (await ending?.end()) ?? [];
       const before = this.#sessions.conversationOf(plan.key);
       const { take, conversationId } = await this.#takeUp(plan, folder);
       await this.#makeRoom(plan.key);
@@ -756,12 +779,6 @@ class Units implements UnitsOfWork {
       launching.catch(() => {});
       return { take, conversationId, before, stoppedTasks, launching };
     });
-  }
-
-  /** Ends the key's session before a launch replaces it, its turn interrupted first: the tasks stopped with it. */
-  async #endFirst(key: string, reason: EndReason): Promise<readonly BackgroundTask[]> {
-    const ended = await this.#sessions.interruptAndEnd(key, reason);
-    return ended.action === 'ended' ? ended.stoppedTasks : [];
   }
 
   /**

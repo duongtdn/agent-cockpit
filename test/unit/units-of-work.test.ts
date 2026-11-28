@@ -819,6 +819,24 @@ describe('a run with `fresh` on a live session', () => {
     },
   );
 
+  it('holds no other key’s start behind the interrupt of its turn: only the end takes the admission', async () => {
+    await started();
+
+    const ran = pending(units.run('explain', { file: 'a' }, { fresh: true }));
+    await settle();
+    expect(host.writes.at(-1)).toBe(`${KEY} Escape`);
+    const other = pending(units.run('explain', { file: 'b' }));
+    await settle();
+
+    expect(driver.launches.map((launch) => launch.key)).toEqual([KEY, 'explain-b']);
+    hook('/start-and-take', 'explain-b');
+    await expect(other).resolves.toMatchObject({ action: 'started', state: 'busy' });
+    await pastTheInterrupt();
+    await listHost();
+    hook('/start-and-take');
+    await expect(ran).resolves.toMatchObject({ action: 'started', reason: 'fresh-on-request' });
+  });
+
   it('lists the background tasks stopped with the old session', async () => {
     await started();
     hook('/turn-ended-with-a-task');

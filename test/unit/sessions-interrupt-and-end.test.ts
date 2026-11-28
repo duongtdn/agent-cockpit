@@ -282,6 +282,55 @@ describe('an end of a session in a turn', () => {
   });
 });
 
+describe('an end in two halves: its interrupt, then its signal', () => {
+  it('interrupts the turn as an end does, and signals only once its end is carried out: no key then', async () => {
+    await busySession();
+
+    const interrupted = sessions.interruptToEnd(KEY, 'restarted');
+    await settle();
+    expect(writes()).toEqual(['Escape']);
+    recorded({ type: 'interrupted' });
+    const ending = await interrupted;
+    expect(signals).toEqual([]);
+
+    const stopped = ending.end();
+    await settle();
+    expect(signals).toHaveLength(1);
+    await exits();
+
+    await expect(stopped).resolves.toEqual([TASK]);
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'restarted' });
+    expect(writes()).toEqual(['Escape']);
+  });
+
+  it('keeps its reason between the halves: an agent that exits then ended for it, nothing signalled', async () => {
+    await busySession();
+    const interrupted = sessions.interruptToEnd(KEY, 'restarted');
+    await settle();
+    recorded({ type: 'interrupted' });
+    const ending = await interrupted;
+
+    await exits();
+
+    await expect(ending.end()).resolves.toEqual([]);
+    expect(signals).toEqual([]);
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'restarted' });
+  });
+
+  it('lets its reason go once abandoned: the agent exiting later ends for its own', async () => {
+    await busySession();
+    const interrupted = sessions.interruptToEnd(KEY, 'restarted');
+    await settle();
+    recorded({ type: 'interrupted' });
+    (await interrupted).abandon();
+
+    await exits();
+
+    expect(sessions.session(KEY)).toMatchObject({ state: 'ended', reason: 'lost' });
+    expect(signals).toEqual([]);
+  });
+});
+
 describe('an end asked while another is under way', () => {
   it('waits for it, presses no key, signals nothing more, and gives the tasks it stopped: its reason kept', async () => {
     await busySession();

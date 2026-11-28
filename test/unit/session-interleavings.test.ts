@@ -28,8 +28,10 @@
  * A feature that adds an event adds its command to {@link COMMANDS}.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { HeldHook } from '../../src/server/agent-listener/agent-listener.ts';
 import type { Asks } from '../../src/server/asks/asks.ts';
 import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import type { JobRuns } from '../../src/server/sessions/job-runs.ts';
@@ -100,6 +102,9 @@ const LAUNCH_FAILS_AFTER_MS = 200;
 
 /** The stub driver's interrupt keys, as a write of them reads. */
 const INTERRUPT_KEYS = DRIVER_DEFAULTS.interrupting.busy.keys.join(' ');
+
+/** The stub driver's reply that stops a turn holding an ask the app can answer. */
+const INTERRUPT_REPLY = DRIVER_DEFAULTS.interrupting.appAsk.reply;
 
 /** Waits on the fake clock: a double's call that takes time. */
 function elapsed(ms: number): Promise<void> {
@@ -183,10 +188,13 @@ class World {
   /** What settled each ask, as it was told. */
   readonly #settledBy = new Map<string, string>();
   /**
-   * The asks of each key settled `cancelled` while an interrupt ran on it:
-   * their hooks may stay open, the agent closing them, until it is over.
+   * The asks of each key whose interrupt runs settled `cancelled` in the
+   * step another of its hooks was given the interrupt's reply: their hooks
+   * may stay open, the agent closing them, until that interrupt is over.
    */
-  readonly #settledInInterrupt = new Map<string, Set<string>>();
+  readonly #settledByTheReply = new Map<string, Set<string>>();
+  /** The key one of whose hooks was given the interrupt's reply in the step running now. */
+  #repliedToInterrupt: string | undefined;
   /** The calls each key's agent asked about, in order. */
   readonly #calls = new Map<string, string[]>();
   /** The call each held hook is about. */
@@ -476,7 +484,9 @@ class World {
 
   /** Sends a hook of a key's agent, held when the core holds it. */
   receive(key: string, path: string): void {
-    this.sessions.receive({ key, path, body: {} }, this.holds.hold);
+    this.sessions.receive({ key, path, body: {} }, (onClosed) =>
+      this.#seeingTheInterruptReply(key, this.holds.hold(onClosed)),
+    );
   }
 
   /**
@@ -506,11 +516,33 @@ class World {
     }
   }
 
-  /** Whether an ask was settled by an interrupt still running on a session not ended. */
+  /**
+   * Whether an ask was settled by an interrupt's reply, that interrupt
+   * still running and not yet past it to an end's signal or kill.
+   */
   #settledInARunningInterrupt(id: string): boolean {
-    return [...this.#settledInInterrupt].some(
-      ([key, ids]) => ids.has(id) && this.sessions.session(key)?.state !== 'ended',
+    return [...this.#settledByTheReply].some(
+      ([key, ids]) =>
+        ids.has(id) && !this.#ending.has(key) && this.sessions.session(key)?.state !== 'ended',
     );
+  }
+
+  /** A held hook that marks the step in which the core writes the interrupt's reply on it. */
+  #seeingTheInterruptReply(key: string, hook: HeldHook): HeldHook {
+    return {
+      reply: (body) => {
+        const outcome = hook.reply(body);
+        if (outcome === 'written' && isDeepStrictEqual(body, INTERRUPT_REPLY)) {
+          this.#repliedToInterrupt = key;
+          // The step ends with the synchronous code that wrote it.
+          void Promise.resolve().then(() => {
+            this.#repliedToInterrupt = undefined;
+          });
+        }
+        return outcome;
+      },
+      release: () => hook.release(),
+    };
   }
 
   /** Checks, once every agent exited, that every ask opened was told settled exactly once. */
@@ -528,7 +560,9 @@ class World {
       this.#settledTold.set(id, told);
       this.#settledBy.set(id, by);
       if (told > 1) this.askBreaches.push(`told again ${id}`);
-      if (by === 'cancelled') this.#settledInInterrupt.get(key)?.add(id);
+      if (by === 'cancelled' && this.#repliedToInterrupt === key) {
+        this.#settledByTheReply.get(key)?.add(id);
+      }
     });
   }
 
@@ -594,6 +628,9 @@ class World {
     const interruptAndEnd = this.sessions.interruptAndEnd.bind(this.sessions);
     this.sessions.interruptAndEnd = (key, reason) =>
       this.#whileInterrupting(key, () => interruptAndEnd(key, reason));
+    const interruptToEnd = this.sessions.interruptToEnd.bind(this.sessions);
+    this.sessions.interruptToEnd = (key, reason) =>
+      this.#whileInterrupting(key, () => interruptToEnd(key, reason));
     const interrupt = this.sessions.interrupt.bind(this.sessions);
     this.sessions.interrupt = (key) =>
       this.#whileInterrupting(key, async () => {
@@ -623,24 +660,56 @@ class World {
     };
   }
 
-  /** Marks each end asked of the core, from its call until it settled. */
+  /**
+   * Marks each end asked of the core, from its call until it settled: an
+   * end in two halves, from its interrupt until its end ran or was
+   * abandoned.
+   */
   #watchTheEndsAsked(): void {
     const interruptAndEnd = this.sessions.interruptAndEnd.bind(this.sessions);
     this.sessions.interruptAndEnd = (key, reason) =>
       this.#whileEnding(key, () => interruptAndEnd(key, reason));
     const end = this.sessions.end.bind(this.sessions);
     this.sessions.end = (key, reason) => this.#whileEnding(key, () => end(key, reason));
+    const interruptToEnd = this.sessions.interruptToEnd.bind(this.sessions);
+    this.sessions.interruptToEnd = async (key, reason) => {
+      const settled = this.#endAsked(key);
+      try {
+        const ending = await interruptToEnd(key, reason);
+        return {
+          end: () => ending.end().finally(settled),
+          abandon: () => {
+            ending.abandon();
+            settled();
+          },
+        };
+      } catch (error) {
+        settled();
+        throw error;
+      }
+    };
   }
 
   async #whileEnding<T>(key: string, run: () => Promise<T>): Promise<T> {
-    this.#endsAsked.set(key, (this.#endsAsked.get(key) ?? 0) + 1);
+    const settled = this.#endAsked(key);
     try {
       return await run();
     } finally {
+      settled();
+    }
+  }
+
+  /** Marks an end asked of the core on a key: the function given marks it settled, once. */
+  #endAsked(key: string): () => void {
+    this.#endsAsked.set(key, (this.#endsAsked.get(key) ?? 0) + 1);
+    let settled = false;
+    return () => {
+      if (settled) return;
+      settled = true;
       const left = (this.#endsAsked.get(key) ?? 1) - 1;
       if (left === 0) this.#endsAsked.delete(key);
       else this.#endsAsked.set(key, left);
-    }
+    };
   }
 
   /**
@@ -651,14 +720,14 @@ class World {
     const outermost = !this.#interrupting.has(key);
     if (outermost) {
       this.#interrupting.set(key, 0);
-      this.#settledInInterrupt.set(key, new Set());
+      this.#settledByTheReply.set(key, new Set());
     }
     try {
       return await run();
     } finally {
       if (outermost) {
         this.#interrupting.delete(key);
-        this.#settledInInterrupt.delete(key);
+        this.#settledByTheReply.delete(key);
       }
     }
   }

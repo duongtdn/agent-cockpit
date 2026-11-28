@@ -507,6 +507,32 @@ describe('a session while asks are pending', () => {
     expect(sessionOf()).toMatchObject({ state: 'waiting', pending: [{ kind: 'ask', id }] });
   });
 
+  it('takes no first prompt typed after the start once its agent asked, though an interrupt settled the ask before the box showed', async () => {
+    driver.promptFitsLaunch = () => false;
+    host.show(KEY, stubScreen('onboarding'));
+    const launched = sessions.launch({
+      key: KEY,
+      directory: DIRECTORY,
+      conversationId: 'c-1',
+      prompt: PROMPT,
+    });
+    await settle();
+    hook('/ready');
+    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
+    asked('call-1');
+    await launched;
+    const typed = sessions.firstPrompt(KEY);
+    typed?.catch(() => {});
+    interrupting();
+    await settle();
+
+    host.show(KEY, stubScreen('input-box'));
+    await vi.advanceTimersByTimeAsync(2 * SCREEN_INTERVAL_MS + TYPING_PATIENCE_MS);
+
+    await expect(typed).rejects.toMatchObject({ code: 'wrong-state' });
+    expect(host.writes).toEqual([]);
+  });
+
   it('waits on its ask, not on a dialog read on screen while its first prompt waits for the box: the dialog is the ask’s', async () => {
     driver.promptFitsLaunch = () => false;
     const launched = sessions.launch({
@@ -692,6 +718,21 @@ describe('an interrupt of a session waiting on asks', () => {
     expect(second.held.end).toBe('released');
     expect(asks.pending('*')).toEqual([]);
     expect(writes()).toEqual([]);
+  });
+
+  it('lets the hooks it left open go as an end the cockpit begins meanwhile signals the agent', async () => {
+    await busySession();
+    asked('call-1');
+    const second = asked('call-2');
+    interrupting();
+    await settle();
+
+    const ended = sessions.end(KEY, 'app');
+    ended.catch(() => {});
+    await settle();
+
+    expect(signals).toHaveLength(1);
+    expect(second.held.end).toBe('released');
   });
 
   it('refuses an app answer queued just after it `already-settled` (`cancelled`), nothing written', async () => {
