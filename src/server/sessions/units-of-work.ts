@@ -52,7 +52,12 @@ export interface UnitsOfWorkOptions {
    * given it: where the agent keeps its conversations may follow from it.
    */
   readonly environment: () => Readonly<Record<string, string>>;
-  /** The sessions' folders, which a remove deletes with the key's record. */
+  /**
+   * The sessions' folders, which a remove deletes with the key's record:
+   * the sessions core's own. The units of work run a remove on the key's
+   * queue, as every launch that prepares a folder through the core, which
+   * is what keeps a folder from being deleted under a launch.
+   */
   readonly folders: Pick<SessionFolders, 'remove'>;
   /**
    * The most sessions live at once; no cap when left out. At the cap, a
@@ -189,17 +194,21 @@ export interface UnitsOfWork {
   /**
    * Removes a unit of work, once the operations asked before it on the key
    * settled: what the cockpit wrote for it — its session's folder, then its
-   * record — deleted, and the key forgotten. The key is unknown from then
+   * record, if it has one — deleted, and the key forgotten. The key is unknown from then
    * on: it is no longer listed, and its next run starts a new
    * conversation. The agent's own files, its transcripts, are left where
    * the agent keeps them.
    *
    * | State | Remove |
    * |---|---|
-   * | no record | Nothing to remove. |
+   * | no record, no session in this process | Nothing to remove. |
    * | `starting` | Refused `wrong-state`. |
    * | `idle`, `busy`, `waiting` | Ended first as `end` ends it (`reason: 'app'`), then removed. |
    * | `ended` | Removed. |
+   *
+   * A key listed with no record — a first launch that failed, a session
+   * whose record could not be written — is removed as any other: its
+   * session's folder, its hook token in it, is the cockpit's to delete.
    *
    * A remove that fails keeps the key's record: the key stays known, and a
    * remove asked again finishes.
@@ -207,7 +216,7 @@ export interface UnitsOfWork {
    * @param key - The unit of work's key.
    * @returns `removed`, with the background tasks stopped with the session
    * ended first, absent when none ran; `nothing-to-remove` for a key with
-   * no record.
+   * no record and no session in this process.
    * @throws `CockpitError` `wrong-state` on `starting`.
    * @throws `SessionHostError` when the host cannot kill the session, as
    * `end` throws it: the session is left live, its record kept.
@@ -416,7 +425,9 @@ class Units implements UnitsOfWork {
   }
 
   async #remove(key: string): Promise<RemoveResult> {
-    if (this.#records.get(key) === undefined) return { action: 'nothing-to-remove' };
+    if (this.#records.get(key) === undefined && this.#sessions.session(key) === undefined) {
+      return { action: 'nothing-to-remove' };
+    }
     const end = await this.#sessions.interruptAndEnd(key, 'app');
     await this.#tracked(key, () =>
       removeUnitFiles(key, { records: this.#records, folders: this.#options.folders }),

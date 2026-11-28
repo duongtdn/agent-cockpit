@@ -335,7 +335,7 @@ export type RemoveResult =
       readonly stoppedTasks?: readonly BackgroundTask[];
     }
   | {
-      /** The key has no record: there was nothing to remove. */
+      /** The key has no record and no session: there was nothing to remove. */
       readonly action: 'nothing-to-remove';
     };
 

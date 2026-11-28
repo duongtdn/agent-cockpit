@@ -146,9 +146,10 @@ class World {
   readonly #idleSeen = new Set<string>();
   /**
    * Each key whose last run or remove asked was a remove, with whether it
-   * resolved `removed`: no run asked before it can record the key after it.
+   * resolved, `removed` or with nothing to remove: no run asked before it
+   * can record the key after it.
    */
-  readonly #removals = new Map<string, { removed: boolean }>();
+  readonly #removals = new Map<string, { resolved: boolean }>();
   /** The conversations of every record removed, by key: those its current one, earlier ones and history name. */
   readonly #removedConversations = new Map<string, Set<string>>();
 
@@ -252,10 +253,10 @@ class World {
 
   /** Removes a unit of work, as the app asks. */
   remove(key: string): void {
-    const removal = { removed: false };
+    const removal = { resolved: false };
     this.#removals.set(key, removal);
-    const removing = this.unitsOfWork.remove(key).then((result) => {
-      removal.removed = result.action === 'removed';
+    const removing = this.unitsOfWork.remove(key).then(() => {
+      removal.resolved = true;
     });
     this.call(`remove ${key}`, removing);
   }
@@ -275,7 +276,7 @@ class World {
   removedButKnown(): string[] {
     const listed = new Set(this.unitsOfWork.list().map((session) => session.key));
     return [...this.#removals]
-      .filter(([key, { removed }]) => removed && (listed.has(key) || this.records.get(key)))
+      .filter(([key, { resolved }]) => resolved && (listed.has(key) || this.records.get(key)))
       .map(([key]) => key);
   }
 

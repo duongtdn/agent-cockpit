@@ -9,6 +9,7 @@ import {
   SCREEN_INTERVAL_MS,
   type Sessions,
   SessionsClosedError,
+  START_DEADLINE_MS,
 } from '../../src/server/sessions/sessions.ts';
 import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/units-of-work.ts';
 import type { UnitRecord } from '../../src/server/state/records.ts';
@@ -1433,6 +1434,42 @@ describe('a remove', () => {
     expect(recordOf()).toBeUndefined();
     expect(units.list()).toEqual([]);
     expect(signals).toEqual([]);
+  });
+
+  it('removes a key with no record whose first launch failed: its session folder deleted, the key no longer listed', async () => {
+    await open();
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS);
+    await expect(ran).rejects.toMatchObject({ code: 'unobservable' });
+    expect(recordOf()).toBeUndefined();
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'unobservable' });
+
+    await expect(units.remove(KEY)).resolves.toEqual({ action: 'removed' });
+    expect(foldersRemoved).toEqual([KEY]);
+    expect(units.list()).toEqual([]);
+    expect(sessions.list()).toEqual([]);
+  });
+
+  it('ends and removes a live session whose record could not be written', async () => {
+    await open();
+    const put = records.put.bind(records);
+    const failure = new Error('No space left on the device.');
+    records.put = async () => {
+      throw failure;
+    };
+    const ran = pending(units.run('explain', { file: 'a' }));
+    await settle();
+    hook('/start-and-take');
+    await expect(ran).rejects.toBe(failure);
+    records.put = put;
+    idle();
+    expect(recordOf()).toBeUndefined();
+    expect(sessionOf()?.state).toBe('idle');
+
+    await expect(removed()).resolves.toEqual({ action: 'removed' });
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+    expect(foldersRemoved).toEqual([KEY]);
+    expect(units.list()).toEqual([]);
   });
 
   it('removes a key whose session ended in this process: the sessions core no longer knows it either', async () => {
