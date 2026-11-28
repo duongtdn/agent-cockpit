@@ -3,8 +3,9 @@
  * the sessions, against the sessions core and the units of work on their
  * test doubles, with fake timers. Whatever the order, once time has passed
  * every bound and every agent has exited: no session is left between two
- * phases, every call settled, each session's end was told once, and
- * nothing was typed into a session after the cockpit asked it to end.
+ * phases, every call settled, each session's end was told once, nothing
+ * was typed into a session after the cockpit asked it to end, and no
+ * interrupt pressed its keys twice.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -37,9 +38,11 @@ import {
   createStubDriver,
   type FakeHost,
   PROMPT_PATH,
+  type StubDriver,
   stubFolders,
   stubScreen,
   TYPING_PATIENCE_MS,
+  withdrawnScreen,
 } from '../support/sessions-doubles.ts';
 
 const T0 = new Date('2026-11-27T10:00:00.000Z');
@@ -58,11 +61,15 @@ const PAST_EVERY_BOUND_MS =
   PROMPT_BOUND_MS +
   TYPING_PATIENCE_MS +
   DRIVER_DEFAULTS.ending.boundMs +
+  DRIVER_DEFAULTS.interrupting.boundMs +
   2 * LIVENESS_INTERVAL_MS;
 /** How long the drain lets time pass: every bound, for each of a few launches queued one after another. */
 const DRAIN_MS = 3 * PAST_EVERY_BOUND_MS;
 /** How often the drain makes every agent exit: within the liveness watch's interval. */
 const DRAIN_STEP_MS = LIVENESS_INTERVAL_MS / 2;
+
+/** The stub driver's interrupt keys, as a write of them reads. */
+const INTERRUPT_KEYS = DRIVER_DEFAULTS.interrupting.busy.keys.join(' ');
 
 /** Waits on the fake clock: a double's call that takes time. */
 function elapsed(ms: number): Promise<void> {
@@ -113,14 +120,22 @@ class World {
   readonly writesAfterEnd: string[] = [];
   /** The last prompt passed to each key's session, which its hook tells taken. */
   readonly lastPrompt = new Map<string, string>();
+  /**
+   * Each press of the interrupt's keys that its interrupt had pressed
+   * already, or that no interrupt pressed: `<key> <keys>`.
+   */
+  readonly keysPressedAgain: string[] = [];
   units: UnitsOfWork | undefined;
   closed = false;
   /** The keys whose agent the cockpit asked to end or killed, until their next start. */
   readonly #ending = new Set<string>();
   readonly #lastSeen = new Map<string, Session>();
+  readonly #driver: StubDriver = createStubDriver();
+  /** The keys whose interrupt runs in the core, with how many times it pressed the interrupt's keys. */
+  readonly #interrupting = new Map<string, number>();
 
   constructor({ exitOnSignal, slowness }: Setting) {
-    const driver = createStubDriver();
+    const driver = this.#driver;
     driver.promptFitsLaunch = (prompt) => prompt.length <= COMMAND_LINE_LIMIT;
     const canResume = driver.canResume.bind(driver);
     driver.canResume = async (conversation) => {
@@ -151,6 +166,7 @@ class World {
       },
     });
     this.sessions.follow((list) => this.#seeEnds(list));
+    this.#watchTheInterrupts();
   }
 
   async open({ maxSessions }: Setting): Promise<void> {
@@ -169,10 +185,25 @@ class World {
     return this.units;
   }
 
-  /** Shows a screen in a session: its input box, a start-up dialog, or nothing yet. */
-  show(key: string, screen: 'input-box' | 'dialog' | 'blank'): void {
+  /**
+   * Shows a screen in a session: its input box, a start-up dialog, the
+   * last prompt passed withdrawn into the box by an early Esc, or nothing
+   * yet.
+   */
+  show(key: string, screen: 'input-box' | 'dialog' | 'withdrawn' | 'blank'): void {
     if (screen === 'blank') this.host.show(key, '');
-    else this.host.show(key, stubScreen(screen === 'dialog' ? 'onboarding' : 'input-box'));
+    else if (screen === 'withdrawn') {
+      this.host.show(key, withdrawnScreen(this.lastPrompt.get(key) ?? ''));
+    } else this.host.show(key, stubScreen(screen === 'dialog' ? 'onboarding' : 'input-box'));
+  }
+
+  /** Makes the transcript of the key's session record an interruption, as the driver reports it. */
+  recordInterruption(key: string): void {
+    const conversationId = this.sessions.conversationOf(key);
+    const following = this.#driver.follows.findLast(
+      (each) => !each.stopped && each.conversation.conversationId === conversationId,
+    );
+    following?.report([{ type: 'interrupted' }]);
   }
 
   /** Makes a call, kept to see whether it settles. */
@@ -250,11 +281,31 @@ class World {
     };
   }
 
+  /** Marks each interrupt the core runs, from its start until it settled. */
+  #watchTheInterrupts(): void {
+    const interrupt = this.sessions.interrupt.bind(this.sessions);
+    this.sessions.interrupt = async (key) => {
+      this.#interrupting.set(key, 0);
+      try {
+        return await interrupt(key);
+      } finally {
+        this.#interrupting.delete(key);
+      }
+    };
+  }
+
   #write(key: string, write: string): void {
+    if (write === INTERRUPT_KEYS) this.#pressedToInterrupt(key, write);
     // A write to a session gone is refused by the host: nothing reaches an agent.
     if (this.#ending.has(key) && this.host.pidOf(key) !== undefined) {
       this.writesAfterEnd.push(`${key} ${write}`);
     }
+  }
+
+  #pressedToInterrupt(key: string, keys: string): void {
+    const pressed = this.#interrupting.get(key);
+    if (pressed !== 0) this.keysPressedAgain.push(`${key} ${keys}`);
+    if (pressed !== undefined) this.#interrupting.set(key, pressed + 1);
   }
 
   #seeEnds(list: readonly Session[]): void {
@@ -349,6 +400,20 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
   {
     weight: 2,
     arbitrary: file.map((file) =>
+      command(`interrupt ${file}`, (world) =>
+        world.call(`interrupt ${file}`, world.unitsOfWork.interrupt(keyOf(file))),
+      ),
+    ),
+  },
+  {
+    weight: 2,
+    arbitrary: file.map((file) =>
+      command(`marker ${file}`, (world) => world.recordInterruption(keyOf(file))),
+    ),
+  },
+  {
+    weight: 2,
+    arbitrary: file.map((file) =>
       command(`end ${file}`, (world) =>
         world.call(`end ${file}`, world.sessions.end(keyOf(file), 'app')),
       ),
@@ -371,7 +436,7 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
   {
     weight: 2,
     arbitrary: fc
-      .tuple(file, fc.constantFrom('input-box', 'dialog', 'blank'))
+      .tuple(file, fc.constantFrom('input-box', 'dialog', 'withdrawn', 'blank'))
       .map(([file, screen]) =>
         command(`screen ${file} ${screen}`, (world) => world.show(keyOf(file), screen)),
       ),
@@ -426,7 +491,7 @@ afterEach(() => {
 });
 
 describe('the sessions, whatever the order of what happens to them', () => {
-  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended', async () => {
+  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice', async () => {
     const { parameters, replayPath } = replay();
     await fc.assert(
       fc.asyncProperty(
@@ -447,6 +512,7 @@ describe('the sessions, whatever the order of what happens to them', () => {
             expect(world.faults()).toEqual([]);
             expect(world.endsToldTwice).toEqual([]);
             expect(world.writesAfterEnd).toEqual([]);
+            expect(world.keysPressedAgain).toEqual([]);
             if (!world.closed) {
               expect(world.sessions.liveKeys()).toEqual([]);
               const notEnded = world.sessions.list().filter((each) => each.state !== 'ended');
