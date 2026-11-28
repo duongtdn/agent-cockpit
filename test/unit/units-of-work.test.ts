@@ -159,7 +159,7 @@ afterEach(() => {
 });
 
 async function open(
-  options: { records?: readonly UnitRecord[]; maxSessions?: number } = {},
+  options: { records?: readonly UnitRecord[]; maxSessions?: number; idleTimeoutMs?: number } = {},
 ): Promise<UnitsOfWork> {
   records = createMemoryRecords(options.records);
   units = await openUnitsOfWork({
@@ -177,6 +177,7 @@ async function open(
       },
     },
     ...(options.maxSessions === undefined ? {} : { maxSessions: options.maxSessions }),
+    ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
   });
   return units;
 }
@@ -2020,6 +2021,203 @@ describe('the cap on live sessions', () => {
 
     await expect(opened).resolves.toEqual({ action: 'resumed', state: 'idle' });
     expect(sessions.session('explain-b')).toMatchObject({ state: 'ended', reason: 'session-cap' });
+  });
+});
+
+describe('the idle timeout', () => {
+  const TIMEOUT_MS = 60_000;
+
+  /** Opens the units of work with the idle timeout, a session of the key `idle` from now. */
+  async function idleSession(): Promise<void> {
+    await open({ idleTimeoutMs: TIMEOUT_MS });
+    await started();
+    idle();
+  }
+
+  it('ends a session `idle` for the timeout since it became so: `idle-timeout`', async () => {
+    await idleSession();
+
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1);
+    expect(signals).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+    await listHost();
+
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'idle-timeout' });
+  });
+
+  it('ends nothing when it is off', async () => {
+    await open();
+    await started();
+    idle();
+
+    await vi.advanceTimersByTimeAsync(10 * TIMEOUT_MS);
+
+    expect(signals).toEqual([]);
+    expect(sessionOf()?.state).toBe('idle');
+  });
+
+  it('starts the count again at any other state, and at each new `idle`', async () => {
+    await idleSession();
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS / 2);
+    hook('/working');
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+    expect(sessionOf()?.state).toBe('busy');
+
+    idle();
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1);
+    expect(signals).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+  });
+
+  it('holds a session with a background task running, and tries it again a full timeout later', async () => {
+    await open({ idleTimeoutMs: TIMEOUT_MS });
+    await started();
+    hook('/turn-ended-with-a-task');
+    host.show(KEY, stubScreen('input-box'));
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+    expect(signals).toEqual([]);
+
+    hook('/task-finished');
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1);
+    expect(signals).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+  });
+
+  it('holds a session with a terminal attached, and tries it again a full timeout later', async () => {
+    await idleSession();
+    host.attachTerminals(KEY, 1);
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+    expect(signals).toEqual([]);
+
+    host.attachTerminals(KEY, 0);
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1);
+    expect(signals).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+  });
+
+  it('takes a count of terminals that fails as a terminal attached', async () => {
+    await idleSession();
+    const counted = host.holdNextCount();
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+    counted.fail(new SessionHostError('host-failed', 'tmux failed.'));
+    await settle();
+    expect(signals).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+  });
+
+  it('holds a session whose key has an operation under way, and tries it again a full timeout later', async () => {
+    await idleSession();
+    let check = () => {};
+    checking = new Promise((resolve) => {
+      check = resolve;
+    });
+    const typed = pending(units.run('type', { file: 'a' }));
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+    expect(signals).toEqual([]);
+
+    check();
+    await expect(typed).resolves.toEqual({ action: 'nothing-to-send', state: 'idle' });
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1);
+    expect(signals).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+  });
+
+  it('reads the state once the terminals are counted: a session made `busy` meanwhile is not ended', async () => {
+    await idleSession();
+    const counted = host.holdNextCount();
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+
+    hook('/working');
+    counted.open();
+    await vi.advanceTimersByTimeAsync(2 * TIMEOUT_MS);
+
+    expect(signals).toEqual([]);
+    expect(sessionOf()?.state).toBe('busy');
+  });
+
+  it('ends with `idle-timeout` a session whose turn begins once its end has begun', async () => {
+    await idleSession();
+    exitOnSignal = false;
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+
+    hook('/working');
+    await exits();
+
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'idle-timeout' });
+  });
+
+  it('makes an end the app asks while its end runs join that end, its reason kept', async () => {
+    await idleSession();
+    exitOnSignal = false;
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+
+    const ended = pending(units.end(KEY));
+    await settle();
+    await exits();
+
+    await expect(ended).resolves.toEqual({ action: 'ended', stoppedTasks: [] });
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'idle-timeout' });
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
+  });
+
+  it('reports a kill that fails, and tries the session again a full timeout later', async () => {
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await idleSession();
+    exitOnSignal = false;
+    const failure = new SessionHostError('host-failed', 'tmux failed.');
+    host.failNextKill(failure);
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS + driver.ending.boundMs);
+    expect(reported).toHaveBeenCalledWith(failure);
+    expect(sessionOf()?.state).toBe('idle');
+
+    exitOnSignal = true;
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+    await listHost();
+
+    expect(signals).toEqual([`${KEY} SIGTERM`, `${KEY} SIGTERM`]);
+    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'idle-timeout' });
+  });
+
+  it('times no session once closed: its timer cleared, nothing ended', async () => {
+    await idleSession();
+    const timers = vi.getTimerCount();
+
+    await units.close();
+
+    expect(vi.getTimerCount()).toBe(timers - 1);
+    await vi.advanceTimersByTimeAsync(2 * TIMEOUT_MS);
+    expect(signals).toEqual([]);
+  });
+
+  it('forgets a removed key: its next session is timed from its own `idle`', async () => {
+    await idleSession();
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS / 2);
+    const removed = pending(units.remove(KEY));
+    await listHost();
+    await expect(removed).resolves.toEqual({ action: 'removed' });
+    signals.length = 0;
+
+    await started();
+    idle();
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1);
+    expect(signals).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
   });
 });
 

@@ -33,6 +33,7 @@ import { refuseUnfitPrompt } from '../prompt-length.js';
 import type { RecordStore, UnitRecord } from '../state/records.js';
 import { removeUnitFiles } from '../state/unit-files.js';
 import { Followers } from './followers.js';
+import { createIdleTimeout, type IdleTimeout } from './idle-timeout.js';
 import type { JobRun, JobRuns } from './job-runs.js';
 import { type FreeTurn, KeyQueue } from './key-queue.js';
 import { type SessionFolders, type Sessions, SessionsClosedError, wrongState } from './sessions.js';
@@ -67,6 +68,19 @@ export interface UnitsOfWorkOptions {
    * or run until it is gone.
    */
   readonly maxSessions?: number;
+  /**
+   * How long a session stays `idle` before it is ended, `reason:
+   * 'idle-timeout'`, in milliseconds: an integer from 1 to 2,147,483,647;
+   * no session is ended for idleness when left out. The time counts from
+   * when the session became `idle`; any other state, and every new `idle`,
+   * starts it again. A session the cap could not end either — with a
+   * background task, a terminal attached (a count that fails counts as
+   * one) or an operation under way on its key — is not ended then, and is
+   * tried again one full timeout later. The state is read once the
+   * terminals are counted, and its end begins at once: a turn that begins
+   * after that ends with it.
+   */
+  readonly idleTimeoutMs?: number;
 }
 
 /**
@@ -362,6 +376,8 @@ class Units implements UnitsOfWork {
   readonly #stops: (() => void)[];
   /** The writes of the state folder under way, each settled whatever its outcome: what the close waits for. */
   readonly #writes = new Set<Promise<void>>();
+  /** Ends the sessions left `idle` for the app's timeout; none when the app set none. */
+  readonly #idleTimeout: IdleTimeout | undefined;
 
   constructor(options: UnitsOfWorkOptions, loaded: Map<string, EndedSession>) {
     this.#options = options;
@@ -369,8 +385,18 @@ class Units implements UnitsOfWork {
     this.#records = options.records;
     this.#jobs = options.jobs;
     this.#loaded = loaded;
+    this.#idleTimeout =
+      options.idleTimeoutMs === undefined
+        ? undefined
+        : createIdleTimeout({
+            timeoutMs: options.idleTimeoutMs,
+            tryEnd: (key) => this.#endForIdleness(key),
+          });
     this.#stops = [
-      this.#sessions.follow(() => this.#notify()),
+      this.#sessions.follow((list) => {
+        for (const session of list) this.#idleTimeout?.observe(session);
+        this.#notify();
+      }),
       this.#sessions.onConversation((key, conversationId, left) => {
         void this.#queue.run(key, () => this.#moved(key, conversationId, left)).catch(() => {});
       }),
@@ -433,6 +459,7 @@ class Units implements UnitsOfWork {
       removeUnitFiles(key, { records: this.#records, folders: this.#options.folders }),
     );
     this.#loaded.delete(key);
+    this.#idleTimeout?.forget(key);
     // The core tells its followers, these units of work among them, when it forgets a session.
     if (!this.#sessions.forget(key)) this.#notify();
     return {
@@ -461,6 +488,7 @@ class Units implements UnitsOfWork {
   }
 
   close(): Promise<void> {
+    this.#idleTimeout?.close();
     this.#closing.abort();
     for (const stop of this.#stops.splice(0)) stop();
     this.#followers.clear();
@@ -779,30 +807,57 @@ class Units implements UnitsOfWork {
    */
   async #endIdlest(keys: readonly string[]): Promise<boolean> {
     for (const key of await this.#endableByIdleness(keys)) {
-      const ending = this.#queue.tryRun(key, () => this.#beginEndIfEndable(key));
-      const end = ending === undefined ? undefined : await ending;
-      if (end === undefined) continue;
-      await end.ended;
+      const begun = await this.#queue.tryRun(key, () =>
+        this.#beginEndIfEndable(key, 'session-cap'),
+      );
+      if (begun?.endability !== 'endable') continue;
+      await begun.ended;
       return true;
     }
     return false;
   }
 
   /**
-   * Begins the cap's end of a session still endable. Its end is handed back
-   * unawaited, so that the key's turn is freed once the end is begun: an
-   * operation on the key then finds it being ended, and is refused.
+   * The idle timeout's try of a session: ended as the cap would end it,
+   * when the cap could. A key whose turn is taken is held; the units of
+   * work closed meanwhile end nothing more, and their idle timeout tries
+   * nothing more either.
    */
-  async #beginEndIfEndable(key: string): Promise<{ ended: Promise<unknown> } | undefined> {
-    if (!(await this.#isEndable(key))) return undefined;
-    return { ended: this.#sessions.end(key, 'session-cap') };
+  async #endForIdleness(key: string): Promise<'ended' | 'held' | 'not-idle'> {
+    try {
+      const begun = await this.#queue.tryRun(key, () =>
+        this.#beginEndIfEndable(key, 'idle-timeout'),
+      );
+      if (begun === undefined) return 'held';
+      if (begun.endability !== 'endable') return begun.endability;
+      await begun.ended;
+      return 'ended';
+    } catch (error) {
+      if (error instanceof SessionsClosedError) return 'held';
+      throw error;
+    }
+  }
+
+  /**
+   * Begins the end of a session still endable, for the reason given. Its
+   * end is handed back unawaited, so that the key's turn is freed once the
+   * end is begun: an operation on the key then finds it being ended, and is
+   * refused, or joins that end.
+   */
+  #beginEndIfEndable(key: string, reason: EndReason): Promise<BegunEnd> {
+    return this.#checkEndability(key, (endability) =>
+      endability === 'endable'
+        ? { endability, ended: this.#sessions.end(key, reason) }
+        : { endability },
+    );
   }
 
   /** The keys whose session the cap may end, its operations' keys left out, idle longest first. */
   async #endableByIdleness(keys: readonly string[]): Promise<string[]> {
     const endable: Session[] = [];
     for (const key of keys) {
-      if (this.#queue.isBusy(key) || !(await this.#isEndable(key))) continue;
+      if (this.#queue.isBusy(key)) continue;
+      if ((await this.#checkEndability(key, (each) => each)) !== 'endable') continue;
       const session = this.#sessions.session(key);
       if (session !== undefined) endable.push(session);
     }
@@ -810,12 +865,20 @@ class Units implements UnitsOfWork {
     return endable.map((session) => session.key);
   }
 
-  /** Whether the cap may end the key's session: `idle`, with no background task and no terminal attached. */
-  async #isEndable(key: string): Promise<boolean> {
-    if (!isIdleWithNoTask(this.#sessions.session(key))) return false;
+  /**
+   * Tells whether the key's session may be ended, by the cap or for
+   * idleness, and hands it to `act` in the same step as the session is
+   * read: the state is read once the terminals are counted, with nothing
+   * run between that read and `act`, so that a session found endable is
+   * still so as `act` begins its end.
+   */
+  async #checkEndability<T>(key: string, act: (endability: Endability) => T): Promise<T> {
+    // A session that is not endable as it stands needs no count of its terminals.
+    const before = endabilityOf(this.#sessions.session(key), 0);
+    if (before !== 'endable') return act(before);
     // A count the host cannot give is a terminal that may be attached.
     const attached = await this.#sessions.terminalsAttached(key).catch(() => 1);
-    return attached === 0 && isIdleWithNoTask(this.#sessions.session(key));
+    return act(endabilityOf(this.#sessions.session(key), attached));
   }
 
   /**
@@ -916,8 +979,21 @@ function namesConversation(record: UnitRecord, conversationId: string): boolean 
   );
 }
 
-function isIdleWithNoTask(session: Session | undefined): boolean {
-  return session?.state === 'idle' && session.backgroundTasks === undefined;
+/**
+ * Whether a session may be ended by the cap or for idleness: `endable` when
+ * `idle` with no background task and no terminal attached, `held` when
+ * `idle` with one of them, `not-idle` otherwise.
+ */
+type Endability = 'endable' | 'held' | 'not-idle';
+
+/** An end the cap or the idle timeout began, unawaited, giving the tasks it stopped; or why none was. */
+type BegunEnd =
+  | { readonly endability: 'endable'; readonly ended: Promise<readonly BackgroundTask[]> }
+  | { readonly endability: Exclude<Endability, 'endable'> };
+
+function endabilityOf(session: Session | undefined, attached: number): Endability {
+  if (session?.state !== 'idle') return 'not-idle';
+  return session.backgroundTasks === undefined && attached === 0 ? 'endable' : 'held';
 }
 
 function closedRefusal(key: string): SessionsClosedError {
