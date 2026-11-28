@@ -29,21 +29,7 @@ const MESSAGES: Readonly<Record<FailureSite, string>> = {
   handler: "The cockpit's handler failed while serving a browser's request: it answered 500.",
   authorize: "The app's authorize threw or rejected: the request was refused.",
   'agent-listener': 'The agent-facing listener failed while serving a hook: it answered 500.',
-  'session-host': 'The session host failed to end a session: it is still live.',
 };
-
-/**
- * Makes the error an internal failure gives the app: what a report hands
- * each handler, and what an operation rejects with when the machine failed
- * under it.
- *
- * @param where - Where it happened.
- * @param cause - What was thrown.
- * @returns The `internal-failure` error.
- */
-export function internalFailure(where: FailureSite, cause: unknown): InternalFailure {
-  return new CockpitError('internal-failure', MESSAGES[where], { where, cause });
-}
 
 /**
  * Creates the report of internal failures: they reach the app, never the
@@ -58,7 +44,7 @@ export function createFailureReport(
   const handlers = new Set<(error: InternalFailure) => void>();
   return {
     report(where, cause) {
-      const error = internalFailure(where, cause);
+      const error = new CockpitError('internal-failure', MESSAGES[where], { where, cause });
       if (handlers.size === 0) return fallback(error);
       for (const handler of handlers) {
         try {

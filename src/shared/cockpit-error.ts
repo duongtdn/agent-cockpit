@@ -199,16 +199,14 @@ export interface CockpitErrorFields {
   /**
    * A failure inside the cockpit, or in a function of the app's it calls,
    * while it served a request: never sent on the wire, given to the app's
-   * `error` handlers; or a failure of the machine under an operation, which
-   * the operation rejects with. `cause` is what was thrown.
+   * `error` handlers. `cause` is what was thrown.
    */
   'internal-failure': {
     /**
-     * Where: the browser-facing handler, the app's `authorize`, the
-     * agent-facing listener, or the session host (tmux) failing to end a
-     * session, which it leaves live.
+     * Where: the browser-facing handler, the app's `authorize`, or the
+     * agent-facing listener.
      */
-    where: 'handler' | 'authorize' | 'agent-listener' | 'session-host';
+    where: 'handler' | 'authorize' | 'agent-listener';
   };
 }
 
