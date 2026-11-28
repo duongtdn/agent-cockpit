@@ -1191,6 +1191,107 @@ describe('the operations on one key', () => {
   });
 });
 
+describe('an interrupt', () => {
+  const RECORDED: UnitRecord = {
+    key: KEY,
+    conversationId: 'c-recorded',
+    earlierConversations: [],
+    history: [],
+    directory: '.',
+    launchSettings: { part: null },
+  };
+
+  /** Reports what the transcript records of the key's session, as the driver does outside the hooks. */
+  function interruptionRecorded(): void {
+    driver.follows.at(-1)?.report([{ type: 'interrupted' }]);
+  }
+
+  it('has nothing to interrupt on a key with no record: no state, no key sent', async () => {
+    await open();
+
+    await expect(units.interrupt(KEY)).resolves.toEqual({ action: 'nothing-to-interrupt' });
+    expect(host.writes).toEqual([]);
+  });
+
+  it('has nothing to interrupt on a recorded key with no session in this process: `ended`', async () => {
+    await open({ records: [RECORDED] });
+
+    await expect(units.interrupt(KEY)).resolves.toEqual({
+      action: 'nothing-to-interrupt',
+      state: 'ended',
+    });
+    expect(host.writes).toEqual([]);
+  });
+
+  it('has nothing to interrupt on an `idle` session', async () => {
+    await open();
+    await started();
+    idle();
+
+    await expect(units.interrupt(KEY)).resolves.toEqual({
+      action: 'nothing-to-interrupt',
+      state: 'idle',
+    });
+    expect(host.writes).toEqual([]);
+  });
+
+  it('stops the turn of a `busy` session: one Esc, `interrupted` once it is idle', async () => {
+    await open();
+    await started();
+
+    const interrupted = pending(units.interrupt(KEY));
+    await settle();
+    interruptionRecorded();
+
+    await expect(interrupted).resolves.toEqual({ action: 'interrupted', state: 'idle' });
+    expect(host.writes).toEqual([`${KEY} Escape`]);
+  });
+
+  it('asked while a send types, waits for that send, then stops the turn the send began', async () => {
+    await open();
+    await started();
+    idle();
+    const sent = pending(units.send(KEY, 'Hello'));
+    await settle();
+
+    const interrupted = pending(units.interrupt(KEY));
+    await settle();
+    expect(host.writes.at(-1)).not.toBe(`${KEY} Escape`);
+    hook(`${PROMPT_PATH}Hello`);
+    await expect(sent).resolves.toEqual({ action: 'sent', state: 'busy' });
+    await settle();
+    interruptionRecorded();
+
+    await expect(interrupted).resolves.toEqual({ action: 'interrupted', state: 'idle' });
+    expect(host.writes.slice(-2)).toEqual([`${KEY} C-y`, `${KEY} Escape`]);
+  });
+
+  it('makes the operations asked after it wait for it to settle, each then reading the state', async () => {
+    await open();
+    await started();
+
+    const interrupted = pending(units.interrupt(KEY));
+    const sent = pending(units.send(KEY, 'Hello'));
+    await settle();
+    host.show(KEY, stubScreen('input-box'));
+    interruptionRecorded();
+    await expect(interrupted).resolves.toEqual({ action: 'interrupted', state: 'idle' });
+    await settle();
+    hook(`${PROMPT_PATH}Hello`);
+
+    await expect(sent).resolves.toEqual({ action: 'sent', state: 'busy' });
+  });
+
+  it('is refused once the units of work are closed', async () => {
+    await open();
+    await started();
+    void units.close();
+
+    await expect(units.interrupt(KEY)).rejects.toBeInstanceOf(SessionsClosedError);
+    expect(host.writes).toEqual([]);
+  });
+});
+
 describe('closing the units of work', () => {
   beforeEach(() => open());
 

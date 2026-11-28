@@ -1,5 +1,5 @@
 /**
- * The units of work: what a run, a send and an open do in each state of a
+ * The units of work: what a run, a send, an open and an interrupt do in each state of a
  * key's session, on top of the sessions core — the conversation resumed
  * or started anew, a live session ended first, a prompt typed, the cap on
  * live sessions — and the records that keep each key's conversations,
@@ -16,6 +16,7 @@ import type {
   EndedSession,
   EndReason,
   HistoryEntry,
+  InterruptResult,
   OpenOptions,
   OpenResult,
   RunOptions,
@@ -130,6 +131,26 @@ export interface UnitsOfWork {
    * `folder-changed`; `session-cap-reached`; and what a launch throws.
    */
   open(key: string, options?: OpenOptions): Promise<OpenResult>;
+  /**
+   * Interrupts the turn of a unit of work's session, once the operations
+   * asked before it on the key settled: a send under way is waited for,
+   * and the turn it began is the one interrupted. The sessions core's
+   * `interrupt` does the rest: one press of the driver's keys on a `busy`
+   * session or one waiting on more than the terminal, confirmed `idle`
+   * within the driver's bound; nothing pressed where no turn runs.
+   *
+   * @param key - The unit of work's key.
+   * @returns `interrupted` once the session is `idle`;
+   * `nothing-to-interrupt` with the session's state when no turn runs
+   * (`idle`, `ended`, waiting in the terminal) or the session ended
+   * meanwhile, with none for a key with no record.
+   * @throws `CockpitError` `wrong-state` on `starting`;
+   * `interrupt-unconfirmed` with the key and the last state when the
+   * session was not seen `idle` in time. What the host fails with.
+   * `SessionsClosedError` once the units of work or the core are closed
+   * first.
+   */
+  interrupt(key: string): Promise<InterruptResult>;
   /**
    * Lists the units of work: each recorded key's session with its record,
    * `ended` when no session of this process lives, in the order the keys
@@ -301,6 +322,18 @@ class Units implements UnitsOfWork {
     return this.#queue.run(key, (freeTurn) =>
       this.#open(key, options.fresh === true, at, freeTurn),
     );
+  }
+
+  async interrupt(key: string): Promise<InterruptResult> {
+    return this.#queue.run(key, () => this.#interrupt(key));
+  }
+
+  async #interrupt(key: string): Promise<InterruptResult> {
+    if (this.#sessions.session(key) !== undefined) return this.#sessions.interrupt(key);
+    const record = this.#records.get(key);
+    return record === undefined
+      ? { action: 'nothing-to-interrupt' }
+      : { action: 'nothing-to-interrupt', state: this.#sessionOf(record).state };
   }
 
   list(): Session[] {
