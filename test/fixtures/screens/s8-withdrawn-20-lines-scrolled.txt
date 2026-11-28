@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/cockpit-real-agent-P0YTFs/work
+
+
+❯ get ready
+
+● Ready.
+
+✻ Brewed for 0s · done 8:54 AM
+
+
+
+
+
+
+
+
+
+
+                                                                                                 ctrl+g to edit in Vim
+─── ↑ 5 more ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tall line 06
+  tall line 07
+  tall line 08
+  tall line 09
+  tall line 10
+  tall line 11
+  tall line 12
+  tall line 13
+  tall line 14
+  tall line 15
+  tall line 16
+  tall line 17
+  tall line 18
+  tall line 19
+  tall line 20
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

@@ -415,7 +415,8 @@ export interface ScreenStateSigns {
    * other sign. The input box holds exactly the prompt, compared with
    * every run of whitespace left out (the box breaks a wrapped line where
    * a space was), and the screen shows no sign above the box that the
-   * agent works. Over a draft the same Esc interrupts instead, and the box
+   * agent works. A prompt taller than the box shows scrolled to its end,
+   * rows hidden above: the rows shown must then be the prompt's end. Over a draft the same Esc interrupts instead, and the box
    * holds the draft alone: never read so. Nor is a box under a dialog, an
    * entry recalled from the history, or a screen the driver cannot read.
    *

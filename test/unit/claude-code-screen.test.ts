@@ -12,7 +12,7 @@ import type { ScreenReading } from '../../src/server/driver.ts';
  * (`s7-`) the panels a launch prompt opens and the box once one closed, and
  * (`s8-`) an early Esc's screens: the prompt withdrawn into the empty box,
  * the turn interrupted over a draft, the busy screens before it, a prompt
- * glued to a draft, a permission dialog. Named `<case>-<step>`: `-0` after the launch, `-1` after the first keys, and so
+ * glued to a draft, a permission dialog, a prompt taller than the box withdrawn. Named `<case>-<step>`: `-0` after the launch, `-1` after the first keys, and so
  * on; the temporary paths in them differ per capture.
  */
 const SCREENS = fileURLToPath(new URL('../fixtures/screens/', import.meta.url));
@@ -140,6 +140,11 @@ const EXPECTED: Readonly<Record<string, ScreenReading>> = {
   's8-withdrawn-one-line': INPUT_BOX,
   's8-withdrawn-five-lines': INPUT_BOX,
   's8-withdrawn-wrapped-line': INPUT_BOX,
+  // A prompt taller than the box withdrawn (20 lines, 40 lines, one line wrapped over 20 rows):
+  // the box scrolled to its end, its rule saying how many rows are hidden above.
+  's8-withdrawn-20-lines-scrolled': INPUT_BOX,
+  's8-withdrawn-40-lines-scrolled': INPUT_BOX,
+  's8-withdrawn-wrapped-20-rows-scrolled': INPUT_BOX,
   's8-interrupted-over-a-draft': INPUT_BOX,
   's8-busy-prompt-above-an-empty-box': NOTHING,
   's8-busy-a-draft-in-the-box': NOTHING,
@@ -309,6 +314,12 @@ describe("the Claude Code driver's sign on screen that a panel a launch prompt o
 describe("the Claude Code driver's sign on screen that an early Esc withdrew the turn's prompt", () => {
   const FIVE_LINES = 'p-one first line\np-two\np-three\np-four\np-five last';
   const WRAPPED_LINE = Array.from({ length: 60 }, (_, index) => `word${index}`).join(' ');
+  const tallLines = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, index) => `tall line ${String(index + 1).padStart(2, '0')}`,
+    ).join('\n');
+  const LONG_WRAPPED_LINE = Array.from({ length: 480 }, (_, index) => `w${index}`).join(' ');
   const withdrawn = (name: string, prompt: string) =>
     claudeCode().screenStateSigns.promptWithdrawn(screen(name), prompt);
 
@@ -318,6 +329,23 @@ describe("the Claude Code driver's sign on screen that an early Esc withdrew the
     ['s8-withdrawn-wrapped-line', WRAPPED_LINE],
   ])('reads %s: the box holds the prompt, no spinner above it', (name, prompt) => {
     expect(withdrawn(name, prompt)).toBe(true);
+  });
+
+  it.each([
+    ['s8-withdrawn-20-lines-scrolled', tallLines(20)],
+    ['s8-withdrawn-40-lines-scrolled', tallLines(40)],
+    ['s8-withdrawn-wrapped-20-rows-scrolled', LONG_WRAPPED_LINE],
+  ])(
+    'reads %s: a box scrolled to its end, rows hidden above, shows the end of the prompt',
+    (name, prompt) => {
+      expect(withdrawn(name, prompt)).toBe(true);
+    },
+  );
+
+  it('reads no withdrawal from a box scrolled to its end whose text is not the end of the prompt', () => {
+    expect(withdrawn('s8-withdrawn-20-lines-scrolled', tallLines(19))).toBe(false);
+    expect(withdrawn('s8-withdrawn-20-lines-scrolled', `${tallLines(20)}\none more`)).toBe(false);
+    expect(withdrawn('s8-withdrawn-40-lines-scrolled', tallLines(20))).toBe(false);
   });
 
   it('compares with every run of whitespace left out: the box breaks a wrapped line where a space was', () => {
@@ -363,7 +391,7 @@ describe("the Claude Code driver's sign on screen that an early Esc withdrew the
     expect(withdrawn('s1-offline-nokey-0', 'withdraw me')).toBe(false);
   });
 
-  it('reads no withdrawal from a box scrolled: it holds more than it shows', () => {
+  it('reads no withdrawal from a box scrolled whose prompt is no longer than what it shows: the box holds more', () => {
     const scrolled = inputBoxScreen('a1-draft-25-lines-cursor-up-1-downs');
     const shown = Array.from(
       { length: 15 },
@@ -371,6 +399,17 @@ describe("the Claude Code driver's sign on screen that an early Esc withdrew the
     ).join('\n');
 
     expect(claudeCode().screenStateSigns.promptWithdrawn(scrolled, shown)).toBe(false);
+  });
+
+  it('reads no withdrawal from a box scrolled off its end, rows hidden below: the cursor is not at the end', () => {
+    const scrolled = inputBoxScreen('a1-draft-25-lines-cursor-up-0-setup');
+    // The rows it shows end the text compared: only the rows hidden below tell it is not the box's end.
+    const draft = Array.from(
+      { length: 22 },
+      (_, index) => `draft line ${String(index + 1).padStart(2, '0')}`,
+    ).join('\n');
+
+    expect(claudeCode().screenStateSigns.promptWithdrawn(scrolled, draft)).toBe(false);
   });
 
   it('reads no withdrawal of an empty prompt from an empty box: nothing was withdrawn', () => {

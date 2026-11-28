@@ -368,6 +368,14 @@ describe('clearing the input box', () => {
     expect(box.writes).toEqual(['C-u', 'C-u', 'C-u']);
   });
 
+  it('kills past the rows a box scrolled to its end shows: forty lines, seventy-nine Ctrl+U', async () => {
+    const box = inputBoxModel({ draft: lines(40), window: 15 });
+
+    expect(await clearInputBoxAt(testClock(), box.terminal)).toBe('cleared');
+    expect(box.writes).toEqual(Array<string>(79).fill('C-u'));
+    expect(box.text()).toBe('');
+  });
+
   it('presses nothing on a box already empty', async () => {
     const box = inputBoxModel({});
 

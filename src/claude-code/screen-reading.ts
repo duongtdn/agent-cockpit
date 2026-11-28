@@ -114,11 +114,16 @@ export const SCREEN_STATE_SIGNS: ScreenStateSigns = {
 
 /**
  * Tells whether the box holds exactly a text, every run of whitespace left
- * out. A box scrolled holds more than it shows, which cannot be told equal.
+ * out. A text taller than the box shows scrolled to its end, the cursor
+ * there, its rule telling the rows hidden above (`─── ↑ 5 more ───`): the
+ * rows shown are then the text's end, and the text is longer than they are.
  */
 function holdsExactly(box: InputBoxView, text: string): boolean {
-  const held = withoutWhitespace(box.text);
-  return held !== '' && box.hiddenAbove + box.hiddenBelow === 0 && held === withoutWhitespace(text);
+  const shown = withoutWhitespace(box.text);
+  const whole = withoutWhitespace(text);
+  if (shown === '' || box.hiddenBelow > 0) return false;
+  if (box.hiddenAbove === 0) return shown === whole;
+  return whole.length > shown.length && whole.endsWith(shown);
 }
 
 /**
