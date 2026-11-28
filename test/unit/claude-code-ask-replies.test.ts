@@ -9,7 +9,10 @@ import { recordedPayload, SAMPLE_VALUES } from '../support/recorded-hooks.ts';
 const driver = claudeCode();
 const { cwd } = SAMPLE_VALUES;
 
-/** The ask of a recorded PermissionRequest of a tool, its input changed as given. */
+/**
+ * The ask of a recorded PermissionRequest of a tool, its input's fields changed as given; for
+ * another tool, its input is the one given alone.
+ */
 function askOf(
   recordedTool: 'Bash' | 'Read' | 'Write',
   change: { tool?: string; input?: Record<string, unknown> } = {},
@@ -18,7 +21,9 @@ function askOf(
     'PermissionRequest',
     (each) => each.tool_name === recordedTool && !('agent_id' in each),
   );
-  const input = { ...(payload.tool_input as Record<string, unknown>), ...change.input };
+  const recordedInput =
+    change.tool === undefined ? (payload.tool_input as Record<string, unknown>) : {};
+  const input = { ...recordedInput, ...change.input };
   return {
     ref: 'call-1',
     content: { kind: 'permission', tool: change.tool ?? recordedTool, input },
@@ -181,9 +186,30 @@ describe('what "remember" adds for a file tool', () => {
     ['NotebookEdit', { notebook_path: `${cwd}/n.ipynb`, new_source: 'x' }],
     ['MultiEdit', { file_path: `${cwd}/written.txt`, edits: [] }],
     ['Grep', { pattern: 'x', path: `${SAMPLE_VALUES.root}/outside` }],
+    ['LS', { path: `${SAMPLE_VALUES.root}/outside` }],
   ])(
     'allows once, adding no rule, another tool on a file (%s): no rule of it is known to hold',
     (tool, input) => {
+      expect(driver.answerReply(askOf('Write', { tool, input }), REMEMBER)).toEqual(ALLOW);
+    },
+  );
+
+  it.each([
+    ['Grep', { pattern: 'x' }],
+    ['Glob', { pattern: `${SAMPLE_VALUES.root}/outside/**` }],
+  ])(
+    'allows once, adding no rule, a %s that names no path: its name alone would reach every file',
+    (tool, input) => {
+      expect(driver.answerReply(askOf('Write', { tool, input }), REMEMBER)).toEqual(ALLOW);
+    },
+  );
+
+  it.each([
+    ['a path', 'mcp__files__list', { path: `${SAMPLE_VALUES.root}/outside` }],
+    ['a local file', 'mcp__docs__upload', { local_path: `${cwd}/doc.md` }],
+  ])(
+    'allows once, adding no rule, a tool not known to work on files whose input names %s',
+    (_, tool, input) => {
       expect(driver.answerReply(askOf('Write', { tool, input }), REMEMBER)).toEqual(ALLOW);
     },
   );

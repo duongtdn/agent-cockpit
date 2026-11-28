@@ -27,8 +27,26 @@ const FILE_RULE_TOOLS: Readonly<Record<string, string>> = {
   Read: 'Read',
 };
 
-/** The input fields by which the agent's tools name the file or folder they work on. */
-const PATH_FIELDS = ['file_path', 'notebook_path', 'path'] as const;
+/**
+ * The agent's other tools that read or write files by path, whose rule's
+ * spelling no contract row holds: a rule of the tool's name alone would
+ * reach every file, whatever path the call named, or none (a `Glob` or a
+ * `Grep` may leave out its `path`).
+ */
+const UNSPELLED_FILE_TOOLS: ReadonlySet<string> = new Set([
+  'NotebookEdit',
+  'NotebookRead',
+  'MultiEdit',
+  'Glob',
+  'Grep',
+  'LS',
+]);
+
+/**
+ * The input fields by which a tool names a file or folder it works on: a
+ * tool not known to work on files is taken as one when its input has one.
+ */
+const PATH_FIELDS = ['file_path', 'notebook_path', 'path', 'local_path'] as const;
 
 /** A first word that names a program and nothing else: no path, no assignment, no quote. */
 const BARE_PROGRAM_NAME = /^[A-Za-z0-9._-]+$/;
@@ -90,7 +108,9 @@ function rememberedRule(
   if (tool === 'Bash') return commandRule(input.command);
   const fileRuleTool = FILE_RULE_TOOLS[tool];
   if (fileRuleTool !== undefined) return fileRule(fileRuleTool, input.file_path);
-  if (PATH_FIELDS.some((field) => field in input)) return undefined;
+  if (UNSPELLED_FILE_TOOLS.has(tool) || PATH_FIELDS.some((field) => field in input)) {
+    return undefined;
+  }
   return { toolName: tool };
 }
 
