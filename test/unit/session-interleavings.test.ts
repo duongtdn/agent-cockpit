@@ -518,7 +518,9 @@ class World {
 
   /**
    * Whether an ask was settled by an interrupt's reply, that interrupt
-   * still running and not yet past it to an end's signal or kill.
+   * still running, its session not ended, and no signal reached its
+   * agent's process nor kill its session since (as {@link #ending} marks
+   * them: an end whose signal found no process is not marked).
    */
   #settledInARunningInterrupt(id: string): boolean {
     return [...this.#settledByTheReply].some(
@@ -629,8 +631,14 @@ class World {
     this.sessions.interruptAndEnd = (key, reason) =>
       this.#whileInterrupting(key, () => interruptAndEnd(key, reason));
     const interruptToEnd = this.sessions.interruptToEnd.bind(this.sessions);
-    this.sessions.interruptToEnd = (key, reason) =>
-      this.#whileInterrupting(key, () => interruptToEnd(key, reason));
+    // Its end interrupts again a turn begun since its first half: a mark of its own.
+    this.sessions.interruptToEnd = async (key, reason) => {
+      const ending = await this.#whileInterrupting(key, () => interruptToEnd(key, reason));
+      return {
+        end: () => this.#whileInterrupting(key, () => ending.end()),
+        abandon: () => ending.abandon(),
+      };
+    };
     const interrupt = this.sessions.interrupt.bind(this.sessions);
     this.sessions.interrupt = (key) =>
       this.#whileInterrupting(key, async () => {

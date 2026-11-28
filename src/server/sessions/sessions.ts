@@ -341,8 +341,10 @@ export interface Sessions {
    * @param key - The session's key.
    * @param reason - Why the cockpit ends it.
    * @returns The end to carry out: `end` ends the session as {@link end}
-   * does, no key pressed, the tasks it stopped given (none when no live
-   * session is left); `abandon` lets the reason go when the caller will
+   * does, the tasks it stopped given (none when no live session is left),
+   * once it interrupted, as the first half does, a session changed since
+   * that half and in a turn again (a person's prompt, an ask), nothing
+   * pressed into the turn that half could not confirm stopped; `abandon` lets the reason go when the caller will
    * not end it. Either settles the reason; the other does nothing then.
    * @throws `CockpitError` `wrong-state` on a `starting` session.
    * @throws `SessionsClosedError` when the core is closed, or is closed
@@ -573,7 +575,8 @@ interface Entry {
 /** The second half of an end asked by an app, its turn interrupted already: see `Sessions.interruptToEnd`. */
 export interface EndToCarryOut {
   /**
-   * Ends the session as `Sessions.end` does, no key pressed.
+   * Ends the session as `Sessions.end` does, once it interrupted a turn
+   * begun since the first half, as that half does.
    *
    * @returns The background tasks stopped with it; none when no live
    * session is left.
@@ -714,9 +717,15 @@ class SessionRegistry implements Sessions {
       asked.letGo();
       throw error;
     }
+    const interrupted = this.session(key);
     return {
       end: async () => {
         try {
+          // Changed since, it may be in a turn again (a person's prompt, an ask): never one its
+          // interrupt left unconfirmed, which would get the keys twice.
+          if (this.session(key) !== interrupted) {
+            await interruptBeforeEnd(asked.interruptedBeforeEnd);
+          }
           return await this.#endIfLive(entry, reason);
         } finally {
           asked.letGo();

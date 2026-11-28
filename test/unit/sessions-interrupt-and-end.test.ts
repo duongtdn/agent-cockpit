@@ -303,6 +303,39 @@ describe('an end in two halves: its interrupt, then its signal', () => {
     expect(writes()).toEqual(['Escape']);
   });
 
+  it('interrupts again, before its signal, a turn begun between the halves', async () => {
+    await busySession();
+    const interrupted = sessions.interruptToEnd(KEY, 'restarted');
+    await settle();
+    recorded({ type: 'interrupted' });
+    const ending = await interrupted;
+    hook(`${PROMPT_PATH}${PROMPT}`);
+
+    const stopped = ending.end();
+    stopped.catch(() => {});
+    await settle();
+
+    expect(writes()).toEqual(['Escape', 'Escape']);
+    expect(signals).toEqual([]);
+    recorded({ type: 'interrupted' });
+    await settle();
+    expect(signals).toHaveLength(1);
+  });
+
+  it('presses nothing more at its signal on the turn its interrupt could not confirm stopped', async () => {
+    await busySession();
+    const interrupted = sessions.interruptToEnd(KEY, 'restarted');
+    await vi.advanceTimersByTimeAsync(INTERRUPT_BOUND_MS);
+    const ending = await interrupted;
+
+    const stopped = ending.end();
+    stopped.catch(() => {});
+    await settle();
+
+    expect(writes()).toEqual(['Escape']);
+    expect(signals).toHaveLength(1);
+  });
+
   it('keeps its reason between the halves: an agent that exits then ended for it, nothing signalled', async () => {
     await busySession();
     const interrupted = sessions.interruptToEnd(KEY, 'restarted');
