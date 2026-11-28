@@ -175,16 +175,19 @@ export function followAsksPath(scope: string): string {
  * {@link followAsksPath} made it.
  *
  * @param url - A request's URL under the mount, its query included.
- * @returns The session's key, or `'*'` when the query names none;
- * `undefined` for another path, or a query that names no single key.
+ * @returns The session's key, or `'*'` when the URL has no query;
+ * `undefined` for another path, or any query but exactly one key: a
+ * parameter of another name never widens the scope to every session.
  */
 export function scopeOfFollowAsks(url: string): string | undefined {
   const [path, query] = splitAtQuery(url);
   if (path !== FOLLOW_ASKS_PATH) return undefined;
-  const keys = new URLSearchParams(query).getAll(FOLLOW_ASKS_KEY);
-  if (keys.length === 0) return EVERY_SESSION;
-  const [key] = keys;
-  return keys.length === 1 && key !== undefined && isSessionKey(key) ? key : undefined;
+  const parameters = [...new URLSearchParams(query)];
+  if (parameters.length === 0) return EVERY_SESSION;
+  const [only] = parameters;
+  if (parameters.length !== 1 || only === undefined) return undefined;
+  const [name, key] = only;
+  return name === FOLLOW_ASKS_KEY && isSessionKey(key) ? key : undefined;
 }
 
 /** A URL's path and its query, the `?` between them dropped. */

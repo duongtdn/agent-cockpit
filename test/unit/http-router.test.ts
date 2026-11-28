@@ -117,6 +117,8 @@ describe('the routes of WebSocket upgrades, under the mount', () => {
     '/follow/sessions/x',
     '/follow/asks?key=',
     '/follow/asks?key=A',
+    '/follow/asks?foo=1',
+    '/follow/asks?key=a&x=1',
     '/follow/asks/x',
     '/asks/answer',
     '/',

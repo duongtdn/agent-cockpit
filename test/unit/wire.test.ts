@@ -141,10 +141,6 @@ describe('the path that follows the asks', () => {
     expect(scopeOfFollowAsks(followAsksPath(scope))).toBe(scope);
   });
 
-  it('reads the key among other parameters of the query', () => {
-    expect(scopeOfFollowAsks(`${FOLLOW_ASKS_PATH}?x=1&key=a`)).toBe('a');
-  });
-
   it.each([
     ['an empty key', ''],
     ['an upper-case letter', 'Chapter'],
@@ -160,6 +156,9 @@ describe('the path that follows the asks', () => {
     ['a key that is no key', `${FOLLOW_ASKS_PATH}?key=A`],
     ['the star as a key', `${FOLLOW_ASKS_PATH}?key=*`],
     ['two keys', `${FOLLOW_ASKS_PATH}?key=a&key=b`],
+    ['a key among other parameters', `${FOLLOW_ASKS_PATH}?x=1&key=a`],
+    ['a query of another parameter', `${FOLLOW_ASKS_PATH}?keys=a`],
+    ['a query with no key', `${FOLLOW_ASKS_PATH}?foo=1`],
   ])('reads no scope from %s', (_, url) => {
     expect(scopeOfFollowAsks(url)).toBeUndefined();
   });

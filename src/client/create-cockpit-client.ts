@@ -222,8 +222,10 @@ export interface CockpitClient {
     /**
      * Tells each settlement of an ask the client's follows gave, once,
      * the app's own answers included: from its own message, or, for one
-     * made while a follow's socket was down, as it reconnects. With no
-     * follow, none.
+     * made while a follow's socket was down, as it reconnects. An ask whose
+     * key was removed meanwhile is forgotten, its settlement never told
+     * (the server no longer remembers it): the page learns of the removal
+     * from `sessions.follow`. With no follow, none.
      *
      * @param event - `'settled'`.
      * @param handler - Receives the ask's id, its key and what settled it.
