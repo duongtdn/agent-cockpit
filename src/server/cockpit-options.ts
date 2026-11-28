@@ -105,6 +105,19 @@ export interface CockpitOptions {
    * is refused `session-cap-reached`.
    */
   readonly maxSessions?: number;
+  /**
+   * How long a session stays `idle` before the cockpit ends it (its
+   * `reason` `idle-timeout`): a whole number from 1 with its unit,
+   * `'<n>ms'`, `'<n>s'`, `'<n>m'` or `'<n>h'`, at most 2,147,483,647 ms
+   * (about 24.8 days); `false` ends no session for idleness. 30 minutes
+   * (`'30m'`) when left out. The time counts from when the session became
+   * `idle`; any other state, and every new `idle`, starts it again. A
+   * session with a background task running, a terminal attached or a call
+   * of the app's under way on its key is not ended then, and is looked at
+   * again one full timeout later: one may stay up to about twice the
+   * timeout after its last page closed.
+   */
+  readonly idleTimeout?: `${number}${'ms' | 's' | 'm' | 'h'}` | false;
 }
 
 /** The options once checked: the app's folder absolute, the access options with their values. */
@@ -117,6 +130,8 @@ export interface CheckedCockpitOptions extends CockpitOptions {
   readonly ports: readonly number[];
   /** The variables hidden from every session; none when left out. */
   readonly hiddenEnv: readonly string[];
+  /** The idle timeout in milliseconds; absent when the app turned it off. */
+  readonly idleTimeoutMs?: number;
 }
 
 const JOB_FIELDS: readonly string[] = [
@@ -145,6 +160,7 @@ const OPTION_NAMES: readonly string[] = [
   'terminal',
   'port',
   'maxSessions',
+  'idleTimeout',
 ];
 
 const isFunction = (value: unknown): boolean => typeof value === 'function';
@@ -211,6 +227,33 @@ function isWebOrigin(text: string): boolean {
   return (url?.protocol === 'http:' || url?.protocol === 'https:') && url.origin === text;
 }
 
+/** The idle timeout when the app gives none: 30 minutes. */
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
+
+/** The longest wait a timer of Node keeps: past it, it fires at once. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+const UNIT_MS = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 } as const;
+
+const DURATION = /^([1-9][0-9]*)(ms|s|m|h)$/;
+
+/** A duration's milliseconds; `undefined` for a text of another form. */
+function durationMs(text: string): number | undefined {
+  const match = DURATION.exec(text);
+  if (match === null) return undefined;
+  return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
+}
+
+const idleTimeout = z
+  .custom<string | false>(
+    (value) => value === false || (typeof value === 'string' && durationMs(value) !== undefined),
+    "Expected a duration, a whole number from 1 with its unit ('<n>ms', '<n>s', '<n>m' or '<n>h'), or false.",
+  )
+  .refine(
+    (value) => value === false || (durationMs(value) ?? Number.POSITIVE_INFINITY) <= MAX_TIMER_MS,
+    'Expected a duration of at most 2,147,483,647 ms (about 24.8 days): a longer one no timer waits.',
+  );
+
 const options = z.object({
   name: z.string().min(1),
   directory: z.string().min(1),
@@ -224,6 +267,7 @@ const options = z.object({
   terminal: z.enum(['on', 'loopback', 'off']).optional(),
   port: z.union([port, z.array(port).min(1)]).optional(),
   maxSessions: z.int().min(1).optional(),
+  idleTimeout: idleTimeout.optional(),
 });
 
 /**
@@ -264,6 +308,7 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
   if (!(await isFolder(directory))) {
     throw invalidOptions([{ path: ['directory'], message: `No folder at ${directory}.` }]);
   }
+  const idleTimeoutMs = idleTimeoutMsOf(checked.idleTimeout);
   return {
     ...checked,
     directory,
@@ -271,7 +316,14 @@ export async function checkCockpitOptions(given: unknown): Promise<CheckedCockpi
     terminal: checked.terminal ?? 'on',
     ports: checked.port === undefined ? [] : [checked.port].flat(),
     hiddenEnv: checked.hiddenEnv ?? [],
+    ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
   };
+}
+
+/** A checked idle timeout's milliseconds: the default when left out, none when off. */
+function idleTimeoutMsOf(given: CockpitOptions['idleTimeout']): number | undefined {
+  if (given === false) return undefined;
+  return given === undefined ? DEFAULT_IDLE_TIMEOUT_MS : durationMs(given);
 }
 
 /**

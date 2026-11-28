@@ -20,9 +20,9 @@ settings keep the agent from the cockpit's files, the app's port and the
 files the cockpit can name that would start code at its next launch. The Claude Code driver is complete: its options
 (mode, rules, model, plugin, sources of settings, the sandbox), a job's
 own driver part, the agent's version checked before each launch, start-up
-dialogs, failed turns, background tasks and compaction. Operations still
-to come: interrupt, end and remove, the idle timeout, asks, the channel,
-activity.
+dialogs, failed turns, background tasks and compaction. The app
+interrupts, ends and removes its units of work, and idle sessions end
+after a timeout. Still to come: asks, the channel, activity.
 Nothing is published to npm so far.
 
 This project is not affiliated with or endorsed by Anthropic. "Claude Code"

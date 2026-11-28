@@ -355,14 +355,44 @@ Nothing is published yet.
   drawn anew, and the lines that scrolled past meanwhile are missing from
   its scrollback.
 
+- `cockpit.interrupt(key)`, `end(key)` and `remove(key)`, the client's
+  too (`POST /interrupt`, `/end`, `/remove`, each `{ key }`), with the
+  types `InterruptResult`, `EndResult` and `RemoveResult` from `.` and
+  `./client`. Each runs on its key's queue after the calls asked before
+  it, and refuses `starting` with `wrong-state`. An interrupt presses the
+  driver's keys once on a `busy` session (one Esc) and resolves
+  `interrupted` once `idle` is confirmed, else rejects
+  `interrupt-unconfirmed` after 5 seconds; a prompt withdrawn by it into
+  an empty input box is cleared. An end interrupts a `busy` turn first,
+  then ends the session (`reason: 'app'`), resolving with the background
+  tasks it stopped; the conversation and record are kept. A remove ends a
+  live session the same way, then deletes the key's record and session
+  folder (the agent's transcripts are left) and forgets the key. A kill
+  that fails leaves the session live: `end` and `remove` reject with the
+  host's error (500 with no body on the wire, `internal-failure` to
+  `on('error')`).
+- `createCockpit({ idleTimeout })`: `'<n>ms'`, `'<n>s'`, `'<n>m'` or
+  `'<n>h'` (at most 2,147,483,647 ms), or `false`; `'30m'` by default. A
+  session `idle` that long is ended (`reason: 'idle-timeout'`), unless a
+  background task runs, a terminal is attached or a call of its key is
+  under way: it is then looked at again a full timeout later.
+- An Esc pressed in the terminal that withdraws a prompt the agent had
+  not begun on (the prompt back in the input box, no spinner) now reads as
+  `idle`; the prompt is left in the box.
+- A session `waiting` in the terminal (a start-up dialog, a panel, an
+  unread screen) gets no key from an interrupt (`nothing-to-interrupt`)
+  nor from an end (SIGTERM alone, `reason: 'app'`).
+- Ending a session that outlives its bound kills its tmux session, then
+  its process group if it is still alive: a process that ignores SIGTERM
+  and SIGHUP is gone too.
+
 ### Not yet: refused or missing in this version
 
 - `createCockpit` refuses every option but `name`, `directory`, `driver`,
   `jobs`, `hiddenEnv`, `stateDirectory`, `agentPort`, `authorize`,
-  `origins`, `terminal`, `port` and `maxSessions`, and every job field but
+  `origins`, `terminal`, `port`, `maxSessions` and `idleTimeout`, and every job field but
   `id`, `title`, `description`, `args`, `key`, `prompt`, `driver`,
   `options`, `directory` and `fresh`, with `invalid-options`.
-- There is no interrupt, end or remove, and no idle timeout.
 - A key whose tmux session an earlier process of the app left cannot be run:
   the run rejects with an error that is not a `CockpitError` (500 on the
   wire, `unreachable` in the client). Such sessions are not listed as

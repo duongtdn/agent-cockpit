@@ -5,8 +5,11 @@ import { z } from 'zod';
 import { CockpitError, isCockpitError } from '../../shared/cockpit-error.js';
 import type { Choice, JobDescription } from '../../shared/job.js';
 import type {
+  EndResult,
+  InterruptResult,
   OpenOptions,
   OpenResult,
+  RemoveResult,
   RunOptions,
   RunResult,
   SendResult,
@@ -15,6 +18,7 @@ import type {
 import {
   freshOf,
   type JobsResponse,
+  type KeyRequest,
   type KeyRule,
   type OpenRequest,
   type OptionsRequest,
@@ -69,6 +73,12 @@ export interface Operations {
   send(key: string, prompt: string): Promise<SendResult>;
   /** Opens a unit of work, as `cockpit.open` does. */
   open(key: string, options?: OpenOptions): Promise<OpenResult>;
+  /** Interrupts a unit of work's turn, as `cockpit.interrupt` does. */
+  interrupt(key: string): Promise<InterruptResult>;
+  /** Ends a unit of work's session, as `cockpit.end` does. */
+  end(key: string): Promise<EndResult>;
+  /** Removes a unit of work, as `cockpit.remove` does. */
+  remove(key: string): Promise<RemoveResult>;
   /** Describes the jobs, as `cockpit.jobs` does. */
   jobs(): readonly JobDescription[];
   /** Reads a field's choices, as `cockpit.options` does. */
@@ -334,6 +344,12 @@ async function serve(
       return await answered(request, SEND_BODY, ({ key, prompt }) => operations.send(key, prompt));
     case 'open':
       return await answered(request, OPEN_BODY, (body) => operations.open(body.key, freshOf(body)));
+    case 'interrupt':
+      return await answered(request, KEY_BODY, ({ key }) => operations.interrupt(key));
+    case 'end':
+      return await answered(request, KEY_BODY, ({ key }) => operations.end(key));
+    case 'remove':
+      return await answered(request, KEY_BODY, ({ key }) => operations.remove(key));
     case 'options':
       return await answered(request, OPTIONS_BODY, async ({ jobId, field, args }) => {
         const answer: OptionsResponse = {
@@ -375,6 +391,9 @@ const OPEN_BODY: z.ZodType<OpenRequest> = z.object({
   key: z.string(),
   fresh: z.boolean().optional(),
 }) as z.ZodType<OpenRequest>;
+
+/** The body of an interrupt, an end and a remove: the key alone. */
+const KEY_BODY: z.ZodType<KeyRequest> = z.object({ key: z.string() });
 
 const OPTIONS_BODY: z.ZodType<OptionsRequest> = z.object({
   jobId: z.string(),

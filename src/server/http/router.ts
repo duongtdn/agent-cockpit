@@ -1,16 +1,28 @@
 import {
+  END_PATH,
   FOLLOW_SESSIONS_PATH,
+  INTERRUPT_PATH,
   JOBS_PATH,
   keyOfTerminalPath,
   OPEN_PATH,
   OPTIONS_PATH,
+  REMOVE_PATH,
   RUN_PATH,
   SEND_PATH,
   SESSIONS_PATH,
 } from '../../shared/wire.js';
 
 /** The HTTP routes of the cockpit's operations, each on a path of its own. */
-type OperationRoute = 'run' | 'send' | 'open' | 'jobs' | 'options' | 'sessions';
+type OperationRoute =
+  | 'run'
+  | 'send'
+  | 'open'
+  | 'interrupt'
+  | 'end'
+  | 'remove'
+  | 'jobs'
+  | 'options'
+  | 'sessions';
 
 /** Where an HTTP request under the mount goes. */
 export type RequestRoute =
@@ -37,6 +49,9 @@ const REQUEST_PATHS: Readonly<Record<string, { method: string; route: OperationR
   [RUN_PATH]: { method: 'POST', route: 'run' },
   [SEND_PATH]: { method: 'POST', route: 'send' },
   [OPEN_PATH]: { method: 'POST', route: 'open' },
+  [INTERRUPT_PATH]: { method: 'POST', route: 'interrupt' },
+  [END_PATH]: { method: 'POST', route: 'end' },
+  [REMOVE_PATH]: { method: 'POST', route: 'remove' },
   [JOBS_PATH]: { method: 'GET', route: 'jobs' },
   [OPTIONS_PATH]: { method: 'POST', route: 'options' },
   [SESSIONS_PATH]: { method: 'GET', route: 'sessions' },

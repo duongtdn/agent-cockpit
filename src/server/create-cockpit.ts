@@ -3,8 +3,11 @@ import type { Duplex } from 'node:stream';
 import { CockpitError } from '../shared/cockpit-error.js';
 import type { Choice, JobDescription } from '../shared/job.js';
 import type {
+  EndResult,
+  InterruptResult,
   OpenOptions,
   OpenResult,
+  RemoveResult,
   RunOptions,
   RunResult,
   SendResult,
@@ -151,6 +154,95 @@ export interface Cockpit {
    */
   open(key: string, options?: OpenOptions): Promise<OpenResult>;
   /**
+   * Interrupts the turn of a unit of work's session, once the calls asked
+   * before it on the key settled: a send under way is waited for, and the
+   * turn it began is the one interrupted. The driver presses its keys once
+   * (for Claude Code, one Esc) and never again, whatever follows.
+   *
+   * | State | Interrupt |
+   * |---|---|
+   * | `busy` | The turn stopped: `interrupted` once the driver confirms the session `idle`. |
+   * | `waiting` in the terminal (a start-up dialog, a panel, a screen the driver cannot read) | Nothing to interrupt, no key pressed: a person must act there. |
+   * | `idle`, `ended`, no record | Nothing to interrupt. |
+   * | `starting` | Refused `wrong-state`. |
+   *
+   * A prompt the agent took but had not begun on, withdrawn by the
+   * interrupt into an empty input box, is cleared from the box. The
+   * background tasks go on.
+   *
+   * @param key - The unit of work's key.
+   * @returns `interrupted` with the state `idle`; `nothing-to-interrupt`
+   * with the session's state (none for a key with no record), also when
+   * the session ended meanwhile.
+   * @throws `CockpitError` `wrong-state` on `starting`;
+   * `interrupt-unconfirmed` (`key`, the last state known) when the session
+   * was not seen `idle` within the driver's bound (for Claude Code, 5
+   * seconds): nothing more was pressed. An `Error` with no code once the
+   * cockpit is closed (500 on the wire).
+   */
+  interrupt(key: string): Promise<InterruptResult>;
+  /**
+   * Ends a unit of work's session, once the calls asked before it on the
+   * key settled: its agent's process ended (for Claude Code, SIGTERM; after
+   * 5 seconds its tmux session killed, then its process group), the session
+   * `ended` with `reason: 'app'`, its conversation and record kept for a
+   * later run, send or open to resume.
+   *
+   * | State | End |
+   * |---|---|
+   * | `idle`, `waiting` in the terminal | Ended at once, no key pressed. |
+   * | `busy` | Its turn interrupted first, as `interrupt` does, then ended whether or not the interrupt was confirmed: the partial answer is kept in the conversation. |
+   * | `ended`, no record | Nothing to end. |
+   * | `starting` | Refused `wrong-state`. |
+   *
+   * A session the cockpit is ending already (the cap's end, a restart's,
+   * the idle timeout's) has that end awaited, its reason kept.
+   *
+   * @param key - The unit of work's key.
+   * @returns `ended` once the agent's process is gone, with the background
+   * tasks known running as it went, stopped with it (empty when none ran);
+   * `nothing-to-end` with the session's state, none for a key with no
+   * record.
+   * @throws `CockpitError` `wrong-state` on `starting`.
+   * @throws The session host's error, with no code, when the session
+   * outlived the bound and could not be killed: the session is left live,
+   * and a later end may kill it. On the wire, a 500 with no body, and the
+   * failure goes to `on('error')` as `internal-failure`. An `Error` with no
+   * code once the cockpit is closed.
+   */
+  end(key: string): Promise<EndResult>;
+  /**
+   * Removes a unit of work, once the calls asked before it on the key
+   * settled: a live session ended first as `end` ends it, then everything
+   * the cockpit wrote for the key deleted (its record, its session's
+   * folder) and the key forgotten: it is no longer listed, followers are
+   * told, and its next run starts a new conversation. The agent's own
+   * files, its transcripts, are left where the agent keeps them.
+   *
+   * | State | Remove |
+   * |---|---|
+   * | `idle`, `busy`, `waiting` | Ended first as `end` ends it (`reason: 'app'`), then removed. |
+   * | `ended` | Removed. |
+   * | no record and no session | Nothing to remove. |
+   * | `starting` | Refused `wrong-state`. |
+   *
+   * A key listed with no record (a first launch that failed) is removed as
+   * any other. A remove that fails keeps the key's record, and a remove
+   * asked again finishes.
+   *
+   * @param key - The unit of work's key.
+   * @returns `removed`, with the background tasks stopped with the session
+   * ended first (absent when none ran); `nothing-to-remove`.
+   * @throws `CockpitError` `wrong-state` on `starting`.
+   * @throws The session host's error, with no code, when the session could
+   * not be killed, as `end` throws it: the session is left live, its
+   * record kept. The file system's error when a file cannot be deleted:
+   * the session ended, its record kept. On the wire either is a 500 with
+   * no body, and goes to `on('error')` as `internal-failure`. An `Error`
+   * with no code once the cockpit is closed.
+   */
+  remove(key: string): Promise<RemoveResult>;
+  /**
    * Describes the app's jobs for the browser: each one's id, title,
    * description, schema as JSON Schema (the input it takes, each field's
    * `label` and `hint` kept), which fields have an option source and of
@@ -276,9 +368,9 @@ export interface Cockpit {
   /** Serves a WebSocket upgrade of the browser's, mounted as `handle` is. */
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
-   * Closes the cockpit: refuses every later request and run from the
-   * moment it is called (`run`, `send` and `open` reject with
-   * `SessionsClosedError`; one under way makes no folder and writes no
+   * Closes the cockpit: refuses every later request and call from the
+   * moment it is called (`run`, `send`, `open`, `interrupt`, `end` and
+   * `remove` reject with `SessionsClosedError`; one under way makes no folder and writes no
    * record from then on), answers 503 to each request whose admission is
    * still pending (an `authorize` still out among them), settles every run
    * still pending (it rejects), closes every WebSocket and detaches every
@@ -389,6 +481,7 @@ async function openCockpit(
       environment,
       folders: folder.sessions,
       ...(checked.maxSessions === undefined ? {} : { maxSessions: checked.maxSessions }),
+      ...(checked.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: checked.idleTimeoutMs }),
     });
     const descriptions = checked.jobs.map(describeJob);
     const operations = {
@@ -396,10 +489,16 @@ async function openCockpit(
         units.run(jobId, args, options),
       send: (key: string, prompt: string): Promise<SendResult> => units.send(key, prompt),
       open: (key: string, options?: OpenOptions): Promise<OpenResult> => units.open(key, options),
+      interrupt: (key: string): Promise<InterruptResult> => units.interrupt(key),
+      end: (key: string): Promise<EndResult> => units.end(key),
+      remove: (key: string): Promise<RemoveResult> => units.remove(key),
       jobs: (): readonly JobDescription[] => descriptions,
       options: async (jobId: string, field: string, argsSoFar?: unknown) =>
         choicesOf(jobOf(jobs, jobId), field, argsSoFar),
-    } satisfies Pick<Cockpit, 'run' | 'send' | 'open' | 'jobs' | 'options'>;
+    } satisfies Pick<
+      Cockpit,
+      'run' | 'send' | 'open' | 'interrupt' | 'end' | 'remove' | 'jobs' | 'options'
+    >;
     const handler = createHandler({
       tokenMatches: appToken.matches,
       operations,

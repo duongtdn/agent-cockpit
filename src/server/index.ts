@@ -11,10 +11,13 @@ export type { Choice, JobDescription } from '../shared/job.js';
 export type {
   BackgroundTask,
   EndReason,
+  EndResult,
   HistoryEntry,
+  InterruptResult,
   OpenOptions,
   OpenResult,
   Pending,
+  RemoveResult,
   RunOptions,
   RunResult,
   SendResult,

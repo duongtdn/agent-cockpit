@@ -3,14 +3,18 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHandler, type Handler, MAX_BODY_BYTES } from '../../src/server/http/handler.ts';
 import type { Attachment, TerminalSize } from '../../src/server/session-host/session-host.ts';
+import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import { CockpitError } from '../../src/shared/cockpit-error.ts';
 import type { JobDescription } from '../../src/shared/job.ts';
-import type { RunResult, Session } from '../../src/shared/session.ts';
+import type { EndResult, RunResult, Session } from '../../src/shared/session.ts';
 import {
+  END_PATH,
   FOLLOW_SESSIONS_PATH,
+  INTERRUPT_PATH,
   JOBS_PATH,
   OPEN_PATH,
   OPTIONS_PATH,
+  REMOVE_PATH,
   RUN_PATH,
   SEND_PATH,
   SESSION_ENDED_CLOSE_CODE,
@@ -39,6 +43,7 @@ let runs: { jobId: string; args: unknown; options?: unknown }[];
 /** Every other operation the handler asked for, with what it was given. */
 let asked: { operation: string; given: unknown[] }[];
 let runOutcome: () => Promise<RunResult>;
+let endOutcome: () => Promise<EndResult>;
 let followers: Set<(sessions: readonly Session[]) => void>;
 let attachOutcome: () => Promise<Attachment | undefined>;
 let attachedSizes: TerminalSize[];
@@ -57,6 +62,7 @@ beforeEach(async () => {
   runs = [];
   asked = [];
   runOutcome = async () => ({ action: 'started', state: 'busy' });
+  endOutcome = async () => ({ action: 'ended', stoppedTasks: [] });
   followers = new Set();
   attachedSizes = [];
   live = true;
@@ -76,6 +82,18 @@ beforeEach(async () => {
       async open(...given) {
         asked.push({ operation: 'open', given });
         return { action: 'resumed', state: 'idle' };
+      },
+      async interrupt(...given) {
+        asked.push({ operation: 'interrupt', given });
+        return { action: 'interrupted', state: 'idle' };
+      },
+      end(...given) {
+        asked.push({ operation: 'end', given });
+        return endOutcome();
+      },
+      async remove(...given) {
+        asked.push({ operation: 'remove', given });
+        return { action: 'nothing-to-remove' };
       },
       jobs: () => [explainJob],
       async options(...given) {
@@ -128,6 +146,9 @@ describe('the handler’s request checks', () => {
     ['POST', RUN_PATH],
     ['POST', SEND_PATH],
     ['POST', OPEN_PATH],
+    ['POST', INTERRUPT_PATH],
+    ['POST', END_PATH],
+    ['POST', REMOVE_PATH],
     ['GET', JOBS_PATH],
     ['POST', OPTIONS_PATH],
     ['GET', FOLLOW_SESSIONS_PATH],
@@ -289,6 +310,58 @@ describe('the handler’s routes', () => {
       { operation: 'open', given: ['explain-a', {}] },
       { operation: 'open', given: ['explain-a', { fresh: true }] },
     ]);
+  });
+
+  it.each([
+    [INTERRUPT_PATH, 'interrupt', { action: 'interrupted', state: 'idle' }],
+    [END_PATH, 'end', { action: 'ended', stoppedTasks: [] }],
+    [REMOVE_PATH, 'remove', { action: 'nothing-to-remove' }],
+  ])(
+    'on POST %s, asks the %s of the key and answers what it did',
+    async (path, operation, result) => {
+      const reply = await post(`${base}${path}`, { key: 'explain-a' }, { token: TOKEN });
+
+      expect(reply.status).toBe(200);
+      expect(JSON.parse(reply.body)).toEqual(result);
+      expect(asked).toEqual([{ operation, given: ['explain-a'] }]);
+    },
+  );
+
+  it.each([INTERRUPT_PATH, END_PATH, REMOVE_PATH])(
+    'refuses a body with no key on POST %s: invalid-arguments, nothing asked',
+    async (path) => {
+      for (const body of ['not json', '{}', '{"key":3}']) {
+        const reply = await call(`${base}${path}`, { method: 'POST', body, token: TOKEN });
+
+        expect(reply.status).toBe(400);
+        expect(errorOf(reply.body)).toMatchObject({ code: 'invalid-arguments' });
+      }
+      expect(asked).toEqual([]);
+    },
+  );
+
+  it('answers a refused end with the error and its status', async () => {
+    endOutcome = async () => {
+      throw new CockpitError('wrong-state', 'Starting.', { key: 'explain-a', state: 'starting' });
+    };
+
+    const reply = await post(`${base}${END_PATH}`, { key: 'explain-a' }, { token: TOKEN });
+
+    expect(reply.status).toBe(409);
+    expect(errorOf(reply.body)).toMatchObject({ code: 'wrong-state', state: 'starting' });
+    expect(failures).toEqual([]);
+  });
+
+  it('answers an end whose kill failed 500, with nothing of it, and reports it to the app', async () => {
+    const failed = new SessionHostError('host-failed', 'tmux could not kill the session.');
+    endOutcome = async () => {
+      throw failed;
+    };
+
+    const reply = await post(`${base}${END_PATH}`, { key: 'explain-a' }, { token: TOKEN });
+
+    expect(reply).toMatchObject({ status: 500, body: '' });
+    expect(failures).toEqual([{ where: 'handler', cause: failed }]);
   });
 
   it('describes the jobs', async () => {

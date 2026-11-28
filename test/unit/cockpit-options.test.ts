@@ -81,7 +81,7 @@ describe("createCockpit's options", () => {
     );
   });
 
-  it.each(['channel', 'idleTimeout', 'elicitations', 'typo'])(
+  it.each(['channel', 'elicitations', 'typo'])(
     'refuse %s, an option this version does not take, rather than ignore it',
     async (name) => {
       expect(await optionIssues({ ...valid(), [name]: undefined })).toEqual([
@@ -356,6 +356,71 @@ describe("createCockpit's options", () => {
         { path: ['maxSessions'], message: expect.any(String) },
       ]);
     }
+  });
+
+  describe('the idle timeout', () => {
+    it('is 30 minutes when left out', async () => {
+      expect((await checkCockpitOptions(valid())).idleTimeoutMs).toBe(30 * 60_000);
+    });
+
+    it.each([
+      ['1ms', 1],
+      ['250ms', 250],
+      ['90s', 90_000],
+      ['30m', 1_800_000],
+      ['2h', 7_200_000],
+      ['2147483647ms', 2_147_483_647],
+      ['596h', 2_145_600_000],
+    ])('takes %j as %d ms', async (idleTimeout, ms) => {
+      expect((await checkCockpitOptions({ ...valid(), idleTimeout })).idleTimeoutMs).toBe(ms);
+    });
+
+    it('is off with false: no session is ended for idleness', async () => {
+      const checked = await checkCockpitOptions({ ...valid(), idleTimeout: false });
+
+      expect(checked.idleTimeoutMs).toBeUndefined();
+    });
+
+    it.each([
+      '0ms',
+      '0m',
+      '030m',
+      '-5m',
+      '1.5m',
+      '1e3ms',
+      '30',
+      'm',
+      '30 m',
+      ' 30m',
+      '30M',
+      '30min',
+      '1d',
+      '',
+      30,
+      1_800_000,
+      true,
+      null,
+      {},
+    ])('refuses %j, which is no duration', async (idleTimeout) => {
+      expect(await optionIssues({ ...valid(), idleTimeout })).toEqual([
+        { path: ['idleTimeout'], message: expect.stringContaining("'<n>ms'") },
+      ]);
+    });
+
+    it.each(['2147483648ms', '2147484s', '35792m', '597h', '99999999999999999999999h'])(
+      'refuses %j, over 2,147,483,647 ms, which no timer of Node waits',
+      async (idleTimeout) => {
+        expect(await optionIssues({ ...valid(), idleTimeout })).toEqual([
+          { path: ['idleTimeout'], message: expect.stringContaining('2,147,483,647 ms') },
+        ]);
+      },
+    );
+
+    it('is refused alongside every other issue of the options', async () => {
+      const issues = await optionIssues({ ...valid(), idleTimeout: '1d', maxSessions: 0 });
+
+      expect(issues.map(({ path }) => path).sort()).toEqual([['idleTimeout'], ['maxSessions']]);
+    });
   });
 
   it('refuse two jobs of one id', async () => {

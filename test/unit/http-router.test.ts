@@ -11,6 +11,13 @@ describe('the routes of HTTP requests, under the mount', () => {
     expect(requestRouteOf('POST', '/open')).toEqual({ route: 'open' });
   });
 
+  it('interrupts on POST /interrupt, ends on POST /end, removes on POST /remove', () => {
+    expect(requestRouteOf('POST', '/interrupt')).toEqual({ route: 'interrupt' });
+    expect(requestRouteOf('POST', '/end')).toEqual({ route: 'end' });
+    expect(requestRouteOf('POST', '/remove')).toEqual({ route: 'remove' });
+    expect(requestRouteOf('GET', '/end')).toEqual({ route: 'wrong-method', allow: 'POST' });
+  });
+
   it('describes the jobs on GET /jobs, reads a field’s choices on POST /options', () => {
     expect(requestRouteOf('GET', '/jobs')).toEqual({ route: 'jobs' });
     expect(requestRouteOf('POST', '/options')).toEqual({ route: 'options' });
