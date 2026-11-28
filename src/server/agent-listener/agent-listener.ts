@@ -37,20 +37,22 @@ export type HeldReplyOutcome = 'written' | 'closed';
 export interface HeldHook {
   /**
    * Writes the reply as the response's body (`200`, `application/json`)
-   * and ends the response. Once `onClosed` was called, or after a first
-   * reply or release, it writes nothing.
+   * and ends the response. Once `onClosed` was called, after the
+   * listener's `close()`, or after a first reply or release, it writes
+   * nothing.
    *
    * @param body - The reply.
    * @returns `'written'` once it is handed to the connection; `'closed'`
-   * when nothing was written: the agent closed the connection first, or
-   * the request was already replied to or released.
+   * when nothing was written: the agent closed the connection first, the
+   * listener's `close()` dropped it, or the request was already replied to
+   * or released.
    */
   reply(body: JsonValue): HeldReplyOutcome;
   /**
    * Ends the response with the answer of nothing (`{}`), as a request not
    * held is answered: for a request whose reply the agent no longer reads.
-   * Once `onClosed` was called, or after a first reply or release, it does
-   * nothing.
+   * Once `onClosed` was called, after the listener's `close()`, or after a
+   * first reply or release, it does nothing.
    */
   release(): void;
 }
@@ -255,7 +257,9 @@ async function serve(
   } catch (error) {
     taken?.drop();
     reportFailure(error);
-    return answer(response, 500);
+    // A reply the sessions gave before failing stands: the agent reads it.
+    if (!response.headersSent) answer(response, 500);
+    return;
   }
   // A hook's answer of nothing: no decision of the cockpit's.
   if (taken === undefined) writeJson(response, '{}');
@@ -302,11 +306,15 @@ function holdResponse(
 }
 
 /**
- * Whether the connection can no longer carry the reply, though Node has not
- * yet told its close: the socket destroyed or no longer writable.
+ * Whether the response can no longer carry the reply: already begun (another
+ * hold of the same request replied), or its socket destroyed or no longer
+ * writable, though Node has not yet told its close. A response with no
+ * socket yet waits behind an earlier one on its connection, and Node writes
+ * it once that one ends.
  */
 function connectionGone(response: ServerResponse): boolean {
-  return response.destroyed || !(response.socket?.writable ?? false);
+  if (response.headersSent || response.destroyed) return true;
+  return response.socket !== null && !response.socket.writable;
 }
 
 function writeJson(response: ServerResponse, body: string): void {

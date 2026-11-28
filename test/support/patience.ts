@@ -70,6 +70,12 @@ export const PATIENCE = {
   exit: scaled(5_000),
   /** An example app started as its `DEMO.md` says, or a browser's step through it. */
   exampleApp: scaled(20_000),
+  /**
+   * A bound of Node's on a server's connections (a request's arrival, a
+   * kept-alive connection's idle time), shortened by a test that shows a
+   * held reply outlives it: room for a request sent at once to arrive whole.
+   */
+  serverTimeout: scaled(100),
   /** A test of real tmux, processes or sockets, whole. */
   integrationTest: scaled(15_000),
   /** A test of the real agent, whole. */

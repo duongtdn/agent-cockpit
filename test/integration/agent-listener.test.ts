@@ -24,6 +24,7 @@ import {
 } from '../../src/server/agent-listener/agent-listener.ts';
 import type { HookRequest } from '../../src/server/driver.ts';
 import { UntrustedStateError } from '../../src/server/state/own-files.ts';
+import { PATIENCE, POLL } from '../support/patience.ts';
 
 let folder: string;
 let received: HookRequest[];
@@ -507,10 +508,10 @@ describe('the agent-facing listener', () => {
       const listener = await open({
         receive: sessions.receive,
         serverTimeouts: {
-          headersTimeout: 50,
-          requestTimeout: 100,
-          keepAliveTimeout: 100,
-          connectionsCheckingInterval: 10,
+          headersTimeout: PATIENCE.serverTimeout,
+          requestTimeout: PATIENCE.serverTimeout,
+          keepAliveTimeout: PATIENCE.serverTimeout,
+          connectionsCheckingInterval: POLL.condition,
         },
       });
       const { token } = listener.hooks.grant('a');
@@ -535,6 +536,8 @@ describe('the agent-facing listener', () => {
       (await sessions.next()).hook.release();
       expect(String((await cut)[0])).toMatch(/^HTTP\/1\.1 408 /);
       await idleClosed;
+      // The request Node cut is no failure of the cockpit's.
+      expect(failures).toEqual([]);
 
       expect(responses.text()).toBe(answered);
       expect(hook.reply({ decision: 'late' })).toBe('written');
@@ -563,6 +566,63 @@ describe('the agent-facing listener', () => {
       expect(failures).toEqual([broken]);
       expect(hook.reply({ decision: 'late' })).toBe('closed');
       expect(closings()).toBe(0);
+    });
+
+    it('keeps the reply the sessions gave before failing, the failure reported', async () => {
+      const broken = new Error('broken');
+      const listener = await open({
+        receive: (_request, hold) => {
+          hold(() => {}).reply({ decision: 'given' });
+          throw broken;
+        },
+      });
+      const { token } = listener.hooks.grant('a');
+
+      const response = await post(listener, { token });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ decision: 'given' });
+      expect(failures).toEqual([broken]);
+    });
+
+    it('is written once when the sessions hold it twice', async () => {
+      const sessions = holdingSessions();
+      const listener = await open({
+        receive: (request, hold) => {
+          sessions.receive(request, hold);
+          sessions.receive(request, hold);
+        },
+      });
+      const { token } = listener.hooks.grant('a');
+
+      const answer = post(listener, { token });
+      const [first, second] = [await sessions.next(), await sessions.next()];
+
+      expect(first.hook.reply({ decision: 'first' })).toBe('written');
+      expect(second.hook.reply({ decision: 'second' })).toBe('closed');
+      second.hook.release();
+      expect(await (await answer).json()).toEqual({ decision: 'first' });
+    });
+
+    it('takes a reply while an earlier hook on its connection is still held, sent after that one’s', async () => {
+      const sessions = holdingSessions();
+      const listener = await open({ receive: sessions.receive });
+      const { token } = listener.hooks.grant('a');
+      const socket = await connectTo(listener);
+      const responses = recordResponses(socket);
+
+      socket.write(rawHook(listener, token) + rawHook(listener, token));
+      const [earlier, later] = [await sessions.next(), await sessions.next()];
+
+      expect(later.hook.reply({ decision: 'later' })).toBe('written');
+      expect(earlier.hook.reply({ decision: 'earlier' })).toBe('written');
+      await responses.ended(2);
+      const text = responses.text();
+      expect(text.indexOf('{"decision":"earlier"}')).toBeGreaterThan(0);
+      expect(text.indexOf('{"decision":"later"}')).toBeGreaterThan(
+        text.indexOf('{"decision":"earlier"}'),
+      );
+      socket.destroy();
     });
 
     it('is dropped when the listener closes, reported to nobody', async () => {
