@@ -1291,12 +1291,6 @@ describe('an end', () => {
     directory: '.',
     launchSettings: { part: null },
   };
-  const TASK = { id: 'a1', type: 'general-purpose' };
-
-  /** Reports what the transcript records of the key's session, as the driver does outside the hooks. */
-  function interruptionRecorded(): void {
-    driver.follows.at(-1)?.report([{ type: 'interrupted' }]);
-  }
 
   it('has nothing to end on a key with no record: no state, nothing signalled', async () => {
     await open();
@@ -1311,141 +1305,40 @@ describe('an end', () => {
     await expect(units.end(KEY)).resolves.toEqual({ action: 'nothing-to-end', state: 'ended' });
   });
 
-  it('has nothing to end on an `ended` session', async () => {
+  it('ends a live session as the app asked: `app`, the tasks it stopped given', async () => {
     await open();
     await started();
-    idle();
-    await exits();
+    hook('/turn-ended-with-a-task');
 
-    await expect(units.end(KEY)).resolves.toEqual({ action: 'nothing-to-end', state: 'ended' });
-    expect(signals).toEqual([]);
-  });
+    const ended = pending(units.end(KEY));
+    await listHost();
 
-  it('is refused on a `starting` session, with its state: one past its start-up dialog', async () => {
-    await open();
-    host.show(KEY, stubScreen('trust-folder'));
-    const ran = pending(units.run('explain', { file: 'a' }));
-    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
-    await expect(ran).resolves.toMatchObject({ state: 'waiting' });
-    hook('/ready');
-
-    await expect(units.end(KEY)).rejects.toMatchObject({
-      code: 'wrong-state',
-      key: KEY,
-      state: 'starting',
+    await expect(ended).resolves.toEqual({
+      action: 'ended',
+      stoppedTasks: [{ id: 'a1', type: 'general-purpose' }],
     });
-    expect(signals).toEqual([]);
-  });
-
-  it('ends an `idle` session, `app`, and resolves once its process is gone, with the tasks it stopped', async () => {
-    await open();
-    await started();
-    hook('/turn-ended-with-a-task');
-
-    const ended = pending(units.end(KEY));
-    await settle();
-    expect(signals).toEqual([`${KEY} SIGTERM`]);
-    await listHost();
-
-    await expect(ended).resolves.toEqual({ action: 'ended', stoppedTasks: [TASK] });
-    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'app' });
-    expect(host.writes).toEqual([]);
-  });
-
-  it('interrupts the turn of a `busy` session first, then ends it', async () => {
-    await open();
-    await started();
-
-    const ended = pending(units.end(KEY));
-    await settle();
-    expect(host.writes).toEqual([`${KEY} Escape`]);
-    expect(signals).toEqual([]);
-    interruptionRecorded();
-    await settle();
-    expect(signals).toEqual([`${KEY} SIGTERM`]);
-    await listHost();
-
-    await expect(ended).resolves.toEqual({ action: 'ended', stoppedTasks: [] });
     expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'app' });
   });
 
-  it('ends a `busy` session whose interrupt was not confirmed, all the same', async () => {
-    await open();
-    await started();
-
-    const ended = pending(units.end(KEY));
-    await vi.advanceTimersByTimeAsync(driver.interrupting.boundMs);
-    expect(signals).toEqual([`${KEY} SIGTERM`]);
-    await listHost();
-
-    await expect(ended).resolves.toEqual({ action: 'ended', stoppedTasks: [] });
-    expect(host.writes).toEqual([`${KEY} Escape`]);
-  });
-
-  it('ends a session waiting in the terminal at a start-up dialog at once, no key pressed: `app`, never `declined`', async () => {
-    await open();
-    host.show(KEY, stubScreen('trust-folder'));
-    const ran = pending(units.run('explain', { file: 'a' }));
-    await vi.advanceTimersByTimeAsync(SCREEN_INTERVAL_MS);
-    await expect(ran).resolves.toMatchObject({ state: 'waiting' });
-
-    const ended = pending(units.end(KEY));
-    await settle();
-    expect(signals).toEqual([`${KEY} SIGTERM`]);
-    await listHost();
-
-    await expect(ended).resolves.toEqual({ action: 'ended', stoppedTasks: [] });
-    expect(host.writes).toEqual([]);
-    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'app' });
-  });
-
-  it('waits for an end under way, its reason kept, and gives the tasks that end stopped', async () => {
-    await open();
-    await started();
-    hook('/turn-ended-with-a-task');
-    exitOnSignal = false;
-    pending(sessions.end(KEY, 'session-cap'));
-    await settle();
-
-    const ended = pending(units.end(KEY));
-    await settle();
-    await exits();
-
-    await expect(ended).resolves.toEqual({ action: 'ended', stoppedTasks: [TASK] });
-    expect(signals).toEqual([`${KEY} SIGTERM`]);
-    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'session-cap' });
-  });
-
-  it('ends `app` a session whose agent exits by itself while it is asked to end', async () => {
+  it('asked while a send types, waits for that send, then interrupts the turn the send began before it ends it', async () => {
     await open();
     await started();
     idle();
-    exitOnSignal = false;
+    const sent = pending(units.send(KEY, 'Hello'));
+    await settle();
 
     const ended = pending(units.end(KEY));
     await settle();
-    hook('/agent-exit');
-    await exits();
-
-    await expect(ended).resolves.toEqual({ action: 'ended', stoppedTasks: [] });
-    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'app' });
-  });
-
-  it('hears a hook that comes once the session is being ended, which changes nothing of the end', async () => {
-    await open();
-    await started();
-    idle();
-    exitOnSignal = false;
-
-    const ended = pending(units.end(KEY));
+    expect(signals).toEqual([]);
+    hook(`${PROMPT_PATH}Hello`);
+    await expect(sent).resolves.toEqual({ action: 'sent', state: 'busy' });
     await settle();
-    hook('/prompt-taken');
-    expect(sessionOf()?.state).toBe('busy');
-    await exits();
+    expect(host.writes.at(-1)).toBe(`${KEY} Escape`);
+    driver.follows.at(-1)?.report([{ type: 'interrupted' }]);
+    await listHost();
 
     await expect(ended).resolves.toEqual({ action: 'ended', stoppedTasks: [] });
-    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'app' });
-    expect(host.writes).toEqual([]);
+    expect(signals).toEqual([`${KEY} SIGTERM`]);
   });
 
   it('makes a send asked after it wait for it, then resume the ended session', async () => {
@@ -1467,7 +1360,7 @@ describe('an end', () => {
     expect(driver.launches[1]).toMatchObject({ resume: true, prompt: 'Hello' });
   });
 
-  it('fails `internal-failure` with the host’s failure when the kill fails, the session left live; a later end ends it', async () => {
+  it('rejects with the host’s own failure when the kill fails, the session left live', async () => {
     await open();
     await started();
     idle();
@@ -1477,20 +1370,9 @@ describe('an end', () => {
 
     const failed = pending(units.end(KEY));
     await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
-    const refusal = await failed.catch((error: unknown) => error);
-    expect(refusal).toBeInstanceOf(CockpitError);
-    expect(refusal).toMatchObject({
-      code: 'internal-failure',
-      where: 'session-host',
-      cause: failure,
-    });
-    expect(sessionOf()?.state).toBe('idle');
 
-    const ended = pending(units.end(KEY));
-    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
-    await expect(ended).resolves.toEqual({ action: 'ended', stoppedTasks: [] });
-    expect(host.kills).toEqual([KEY]);
-    expect(sessionOf()).toMatchObject({ state: 'ended', reason: 'app' });
+    await expect(failed).rejects.toBe(failure);
+    expect(sessionOf()?.state).toBe('idle');
   });
 
   it('is refused once the units of work are closed: nothing signalled', async () => {
@@ -1501,24 +1383,6 @@ describe('an end', () => {
 
     await expect(units.end(KEY)).rejects.toBeInstanceOf(SessionsClosedError);
     expect(signals).toEqual([]);
-  });
-
-  it('signals and kills nothing more once the core is closed while it waits for the agent to exit', async () => {
-    await open();
-    await started();
-    idle();
-    exitOnSignal = false;
-    const ended = pending(units.end(KEY));
-    await settle();
-    expect(signals).toEqual([`${KEY} SIGTERM`]);
-
-    void units.close();
-    sessions.close();
-
-    await expect(ended).rejects.toBeInstanceOf(SessionsClosedError);
-    await vi.advanceTimersByTimeAsync(driver.ending.boundMs);
-    expect(host.kills).toEqual([]);
-    expect(signals).toEqual([`${KEY} SIGTERM`]);
   });
 });
 

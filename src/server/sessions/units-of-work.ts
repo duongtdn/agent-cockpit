@@ -27,10 +27,8 @@ import type {
   SessionState,
 } from '../../shared/session.js';
 import type { Driver, DriverSettings } from '../driver.js';
-import { internalFailure } from '../failures.js';
 import { checkRecordedFolder, type JobFolder } from '../job-folders.js';
 import { refuseUnfitPrompt } from '../prompt-length.js';
-import { SessionHostError } from '../session-host/session-host-error.js';
 import type { RecordStore, UnitRecord } from '../state/records.js';
 import { Followers } from './followers.js';
 import type { JobRun, JobRuns } from './job-runs.js';
@@ -174,12 +172,14 @@ export interface UnitsOfWork {
    * background tasks known running as it went, stopped with it (empty when
    * none ran); `nothing-to-end` with the session's state, none for a key
    * with no record.
-   * @throws `CockpitError` `wrong-state` on `starting`; `internal-failure`
-   * (`where: 'session-host'`) with the host's failure as its cause when the
-   * host cannot kill a session that outlived the driver's bound: the
-   * session is left live, and a later end may kill it.
-   * `SessionsClosedError` once the units of work or the core are closed
-   * first, or the core is closed before the end settles.
+   * @throws `CockpitError` `wrong-state` on `starting`.
+   * @throws `SessionHostError` when the host cannot kill a session that
+   * outlived the driver's bound: the session is left live, and a later end
+   * may kill it. It has no code: as every failure of the machine, it
+   * reaches the browser as a 500 with no body, and the app's `error`
+   * handlers as `internal-failure`.
+   * @throws `SessionsClosedError` once the units of work or the core are
+   * closed first, or the core is closed before the end settles.
    */
   end(key: string): Promise<EndResult>;
   /**
@@ -372,12 +372,7 @@ class Units implements UnitsOfWork {
     if (this.#sessions.session(key) === undefined) {
       return { action: 'nothing-to-end', ...this.#recordedState(key) };
     }
-    try {
-      return await this.#sessions.interruptAndEnd(key, 'app');
-    } catch (error) {
-      if (error instanceof SessionHostError) throw internalFailure('session-host', error);
-      throw error;
-    }
+    return this.#sessions.interruptAndEnd(key, 'app');
   }
 
   /** The state of a key with no session in this process: `ended` when it is recorded, none when not. */
