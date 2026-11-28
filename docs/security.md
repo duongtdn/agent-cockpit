@@ -4,7 +4,8 @@ What the cockpit defends, against whom, and what is left to the app.
 
 **Status:** everything this document describes is built: the request checks
 and the app's opening beyond loopback, the link's token and its renewal, the
-agent-facing listener, the lines that keep the agent away from the
+agent-facing listener, the asks and what answering them allows, the
+lines that keep the agent away from the
 cockpit's own files, the app's port and the files it can name that would
 start code at the agent's next launch, the sandbox an app asks for, the variables an app hides, the state
 folder's trust, ending and removing sessions, and the terminal's clipboard. Each limit is stated where it applies, and the last
@@ -198,7 +199,8 @@ local request also carries the app's token, or is refused with `no-token`.
 - **Renewing it.** `await cockpit.renewToken()` writes a new token to the
   state folder, then puts it in force: the one before is refused at once,
   everywhere, `verify` included. Every browser-facing WebSocket is closed —
-  the sessions' followers and every terminal — so that nothing opened with
+  the sessions' and the asks' followers and every terminal — so that
+  nothing opened with
   the old token stays open; each page that reconnects is checked again and,
   without the new token, is told `no-token`. The person opens the new link,
   which `link` now gives; a page of the same origin that retries then finds
@@ -244,8 +246,55 @@ the state folder (`agentPort` fixes it).
   it from then on, and each launch, a resume among them, mints a new one.
   The files that held it stay in the session's folder until the app
   removes the key (`remove`), which deletes the folder with them.
+- A hook the agent waits on for a permission is held open, with no reply,
+  until the ask is settled; the connection carries nothing meanwhile. When
+  the cockpit closes, every held hook is dropped.
 - A failure while it serves a hook is answered 500 and goes to
   `cockpit.on('error')` as `internal-failure` (`where: 'agent-listener'`).
+
+## Asks
+
+Answering an ask is a shell by another route: one "allow" lets the agent
+run the command it asked for. The cockpit guards the asks as it guards a
+run.
+
+- **Behind the same checks.** The asks' paths, `POST /asks/answer` and the
+  WebSocket `/follow/asks`, pass the request checks and need the app's
+  token, as every path of the cockpit's does (a remote request, `authorize`
+  instead). A follower sees every ask's tool and input, which may hold the
+  work's content (a file the agent writes, whole). A renewal of the token
+  closes the asks' followers with the other sockets.
+- **"Remember" never widens past the call.** `remember: 'session'` adds one
+  rule for the rest of the session, never written to a settings file of
+  the person's or the project's, and never more than the call the person
+  saw: for `Bash`, that exact command, whatever its first word (a rule on a
+  first word would let `bash -c`, `env` or `xargs` run anything); for
+  `Write` and `Edit`, that one file (an `Edit` rule on its absolute path,
+  which covers both tools on that file and no other); for `Read`, that
+  file; for any other tool, the tool, every call of it (a remembered
+  `WebFetch` fetches any address for the rest of the session: an app that
+  must not allow that does not offer "remember" for such a tool, or denies
+  it by a rule). Where no rule can mean exactly the call — another tool on
+  files, a relative path, a command, path or tool name holding a character
+  the rule syntax reads as its own — nothing is added, and the next call
+  asks again. The app's deny and ask rules, and the cockpit's own denies,
+  hold over every rule remembered.
+- **An ask's content is the agent's.** Its `tool`, `input` and
+  `description` come from the agent, and so from the model and from
+  whatever it read: a file, a web page, a tool's output, any of which an
+  attacker may have written. A page shows them as text (`textContent`),
+  never as HTML: a crafted input drawn as HTML would run script in the
+  page that holds the app's token. The description is the agent's own
+  words about the call; the input is what runs: a page that asks a person
+  to decide shows the input.
+- **Nothing is answered for the person.** The cockpit holds an ask until
+  someone answers, interrupts the turn or ends the session, with no
+  deadline (the agent's hook is set to wait 30 days), and never answers in
+  a person's place. An ask the agent shows in its terminal alone (in
+  `auto` and `plan`, behind an API endpoint that does not pass the agent's
+  server-side check) waits for a person there: the app is told of it, but
+  cannot answer it. When the cockpit closes, the hooks it held are
+  dropped and the agent keeps its dialogs in the terminal.
 
 ## Keeping the agent out
 
@@ -573,6 +622,11 @@ must do itself:
   the server's own environment (above);
 - a tool of the person's that drives their browser (a browser automation
   server, an extension the agent can reach): the browser holds the token;
+- a tool other than `Bash` and the file tools remembered for the session
+  (`remember: 'session'`): every later call of it runs unasked until the
+  session ends (above);
+- what a page draws of an ask: its content is the agent's, and a page that
+  draws it as HTML runs what the agent wrote (above);
 - what the app's own routes serve: the cockpit checks only the requests it
   is given, and `verify` only when the app calls it;
 - TLS, accounts and sign-in, when the app opens the cockpit beyond

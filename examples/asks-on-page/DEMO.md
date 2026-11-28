@@ -96,12 +96,12 @@ Open http://127.0.0.1:4330/#cockpit=…
    sessions have no tmux prefix key, so no key detaches): the session goes
    on.
 5. **Allow for the session**: set _File_ to `one.txt`, press _Create it_,
-   then _Allow for the session_ on its ask: settled by `app`, `idle`. Set
-   _File_ to `two.txt` and press _Create it_ again: this time no ask
-   shows; the session goes `busy`, then `idle`, "Done: the command ran." The
-   session remembers `touch` commands until it ends: one program's
-   commands, never more (a command that is not one simple command is
-   remembered as that exact command).
+   then _Allow for the session_ on its ask: settled by `app`, `idle`. Press
+   _Create it_ again, still on `one.txt`: this time no ask shows; the
+   session goes `busy`, then `idle`, "Done: the command ran." The session
+   remembers that exact command, `touch one.txt`, until it ends, and
+   nothing wider: set _File_ to `two.txt` and press _Create it_, and the
+   agent asks again.
 6. **An ask the page cannot answer**: set _File_ to `planned.txt` and press
    _Create it in plan mode_: a second session, `plan`, starts in plan mode.
    It stays `busy` for several seconds: the agent asks in its terminal

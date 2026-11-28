@@ -150,8 +150,8 @@ export interface Handler {
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
    * Renews the app's token: puts the new one in force, then closes every
-   * browser-facing WebSocket — the sessions' followers and every terminal
-   * — so that each reconnect passes the checks again (a live terminal is a
+   * browser-facing WebSocket — the sessions' and the asks' followers and
+   * every terminal — so that each reconnect passes the checks again (a live terminal is a
    * shell). A request or handshake whose admission overlaps the renewal
    * was checked, or let in by the app's `authorize`, against a token that
    * may be revoked: it is never admitted, but answered 503 with

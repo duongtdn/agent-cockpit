@@ -22,7 +22,11 @@ files the cockpit can name that would start code at its next launch. The Claude 
 own driver part, the agent's version checked before each launch, start-up
 dialogs, failed turns, background tasks and compaction. The app
 interrupts, ends and removes its units of work, and idle sessions end
-after a timeout. Still to come: asks, the channel, activity.
+after a timeout. The agent's permission asks reach the app: followed on
+its server or its page, answered there or in the terminal, the first
+answer winning, "Allow for the session" never wider than the call. Still
+to come: the agent's questions, plans and background tasks' asks, the
+channel, activity.
 Nothing is published to npm so far.
 
 This project is not affiliated with or endorsed by Anthropic. "Claude Code"
@@ -81,7 +85,8 @@ ask settled, with what settled it.
 - [docs/api.md](docs/api.md) — the reference: every entry point, export and
   error code.
 - [docs/security.md](docs/security.md) — whom the cockpit defends against,
-  opening beyond loopback, the token, what the agent is kept from in each
+  opening beyond loopback, the token, answering asks, what the agent is kept
+  from in each
   permission mode, and what an app must do.
 - [docs/machines.md](docs/machines.md) — supported platforms and versions.
 - [CHANGELOG.md](CHANGELOG.md) — what changed, release by release.

@@ -280,7 +280,7 @@ Nothing is published yet.
   folder), else the run is refused `invalid-options`. A job with no prompt restarts an `idle` session
   launched with other settings (`resumed`, `settings-changed`). A session
   is ended for a fresh start or a restart by SIGTERM (a kill after 5
-  seconds), its turn not interrupted first. A first prompt over 120,000
+  seconds), a turn under way interrupted first, as an end does. A first prompt over 120,000
   UTF-8 bytes, too long for the agent's command line, is typed once the
   agent started and drew its input box, the page's terminals' keys held
   from the agent's start: the session stays `starting` until the agent
@@ -401,6 +401,63 @@ Nothing is published yet.
 - Ending a session that outlives its bound kills its tmux session, then
   its process group if it is still alive: a process that ignores SIGTERM
   and SIGHUP is gone too.
+- Asks: the agent's permissions, offered to the app. `cockpit.asks` and
+  the client's `asks` (`follow(key | '*', handler)`, `answer(id, answer)`,
+  `on('settled', handler)`), with the types `Ask`, `PermissionAsk`,
+  `AskAnswer`, `PermissionAnswer` and `AskSettled` from `.` and
+  `./client`, and the wire's `POST /asks/answer` and WebSocket
+  `/follow/asks` (`?key=` for one session). A permission Claude Code asks
+  is held on its `PermissionRequest` hook (registered with a 30-day
+  timeout, with `PostToolUseFailure`, `PostToolBatch` and `Notification`)
+  while its terminal shows the dialog; the first answer, the app's or the
+  person's, wins. An ask is `{ id, key, kind: 'permission', tool, input,
+  description?, answerable, since }`, its input frozen; a follower gets
+  the pending asks at once, in the order they opened, then each new one;
+  the settled event `{ id, key, by }` once per settlement, the app's own
+  answers included, `by` `'app'`, `'terminal'` (a Yes in the terminal, or
+  a "No" with a text, the agent going on) or `'cancelled'` (a plain "No"
+  or Esc, an interrupt, the session's end). A permission's answer is
+  `{ allow: true, remember?: 'session' }` or `{ allow: false, message? }`;
+  `answer` resolves once it is handed to the agent and refuses, in this
+  order, `unknown-id`, `already-settled` (`by`; a key's 1,000 most recent
+  settled asks remembered until it is removed), `terminal-only` and
+  `invalid-answer`. "Remember" adds one session rule, never wider than the
+  call: a `Bash` call's exact command, `Edit(//<path>)` for a `Write` or an
+  `Edit`, `Read(//<path>)` for a `Read`, the tool for any other tool, and
+  nothing (allowed once) for another file tool or a call no rule can spell
+  exactly. A handler that throws goes to `console.error` and stays
+  subscribed. The client's follows reconnect as `sessions.follow` does,
+  each ask given once and again when it changes, and a settlement made
+  while a socket was down told as it reconnects; its `on('settled')` tells
+  only the asks its follows gave.
+- A session is `waiting` while an ask is pending: `pending` lists each
+  (`{ kind: 'ask', id }`, or `{ kind: 'terminal', id }` for one only the
+  terminal can answer) in the order they opened, its `since` kept as asks
+  open and settle; `busy` once the last is answered, `idle` once an
+  interruption that settled it is recorded. A run or a send on it is
+  refused `wrong-state`, an open has nothing to open, and the idle timeout
+  and the cap never end it.
+- An ask Claude Code shows in its terminal alone, with no
+  `PermissionRequest` (in `auto` and `plan`, behind an API endpoint that
+  does not pass its server-side check), is listed from its `Notification`
+  as an ask `answerable: 'terminal'`, with the call's tool and input, the
+  session `waiting` on it; an answer from the app is refused
+  `terminal-only`.
+- Interrupt and end on a session waiting on asks: an ask the app can answer
+  is stopped by the driver's reply on its hook (a denial that interrupts),
+  no key, every ask of the turn settled `cancelled`; a reply not confirmed
+  within the bound (the person's Yes in the terminal leaves the hook
+  unread until the tool has run) is followed by one Esc and the bound
+  again, so an interrupt or an end may wait twice the bound. An ask only
+  the terminal can answer is stopped by one Esc.
+- A `fresh` run or open on a session in a turn interrupts the turn first,
+  as an end does, then ends the session: the partial answer stays in the
+  conversation. Other keys' launches never wait behind that interrupt.
+- `cockpit.close()` with asks pending settles nothing and tells nobody: the
+  held hooks are dropped, and the agent keeps its dialogs in the terminal.
+- `renewToken()` closes the asks' followers too.
+- `examples/asks-on-page`: a page with no terminal that follows every ask
+  and answers it, or says where to answer one only the terminal can.
 
 ### Not yet: refused or missing in this version
 
@@ -414,4 +471,8 @@ Nothing is published yet.
   wire, `unreachable` in the client). Such sessions are not listed as
   live: a restarted server lists the recorded keys `ended`.
 - `createCockpit` checks the platform and tmux, not Node's version.
-- The client has no `sessions.list()`; no events are built.
+- The client has no `sessions.list()`; no activity events are built.
+- Asks are permissions only: a question, a plan's approval and a
+  background task's ask still show in the agent's terminal alone, the
+  session `busy`. An ask pending when the server stops is not offered
+  again after a restart: the agent keeps its dialog in the terminal.

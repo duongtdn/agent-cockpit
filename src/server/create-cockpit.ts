@@ -75,8 +75,9 @@ export interface Cockpit {
    * unless its settings differ from an `idle` session's: then it is
    * restarted with none (`resumed`, `settings-changed`). With `fresh`, a
    * new conversation (`started`, `fresh-on-request`): a live `idle`,
-   * `busy` or `waiting` session is ended first, `starting` refused. A
-   * fresh start, either way, records the folder its job gives now.
+   * `busy` or `waiting` session is ended first (a turn interrupted first,
+   * as `end` does), `starting` refused. A fresh start, either way, records
+   * the folder its job gives now.
    * A launch resolves once the session leaves `starting`: `busy` once the
    * agent took the prompt, `idle` for a job without one, `waiting` while a
    * start-up dialog waits for the person in the terminal, `ended` when the
@@ -165,12 +166,15 @@ export interface Cockpit {
    * that interrupts), no key pressed, every ask of the turn settled
    * `cancelled`; else, one waiting on an ask answerable in the terminal
    * only, by the driver's keys for it (one Esc); else by its keys for a
-   * `busy` turn (one Esc).
+   * `busy` turn (one Esc). A reply not confirmed within the driver's bound
+   * is followed by the `busy` turn's keys, once, and the bound again: after
+   * a person's Yes in the terminal the agent no longer reads the hook the
+   * reply went to, though the ask stays pending until the tool has run.
    *
    * | State | Interrupt |
    * |---|---|
-   * | `busy`, `waiting` on an ask or a channel request (from features that add them) | The turn stopped: `interrupted` once the driver confirms the session `idle`. |
-   * | `waiting` in the terminal (a start-up dialog, a panel, a screen the driver cannot read) | Nothing to interrupt, no key pressed: a person must act there. |
+   * | `busy`, `waiting` on an ask, or on a channel request (from a feature that adds them) | The turn stopped: `interrupted` once the driver confirms the session `idle`. |
+   * | `waiting` in the terminal on no ask (a start-up dialog, a panel, a screen the driver cannot read) | Nothing to interrupt, no key pressed: a person must act there. |
    * | `idle`, `ended`, no record | Nothing to interrupt. |
    * | `starting` | Refused `wrong-state`. |
    *
@@ -191,7 +195,8 @@ export interface Cockpit {
    * @throws `CockpitError` `wrong-state` on `starting`;
    * `interrupt-unconfirmed` (`key`, the last state known) when the session
    * was not seen `idle` within the driver's bound (for Claude Code, 5
-   * seconds): nothing more was pressed.
+   * seconds; twice that after an unconfirmed reply): nothing more was
+   * pressed, and the asks the reply settled stay `cancelled`.
    * @throws The session host's error, with no code, when the host fails
    * while the keys are pressed. On the wire, a 500 with no body, and the
    * failure goes to `on('error')` as `internal-failure`. An `Error` with
@@ -207,8 +212,8 @@ export interface Cockpit {
    *
    * | State | End |
    * |---|---|
-   * | `idle`, `waiting` in the terminal | Ended at once, no key pressed. |
-   * | `busy`, `waiting` on an ask or a channel request (from features that add them) | Its turn interrupted first, as `interrupt` does, then ended whether or not the interrupt was confirmed: the partial answer is kept in the conversation. A prompt the interrupt withdraws is left in the box: no key is pressed once the end was asked but the interrupt's own. |
+   * | `idle`, `waiting` in the terminal on no ask | Ended at once, no key pressed. |
+   * | `busy`, `waiting` on an ask, or on a channel request (from a feature that adds them) | Its turn interrupted first, as `interrupt` does (up to twice the driver's bound when a reply goes unconfirmed), then ended whether or not the interrupt was confirmed: the partial answer is kept in the conversation, and an ask still pending is settled `cancelled`. A prompt the interrupt withdraws is left in the box: no key is pressed once the end was asked but the interrupt's own. |
    * | `ended`, no record | Nothing to end. |
    * | `starting` | Refused `wrong-state`. |
    *
@@ -406,7 +411,8 @@ export interface Cockpit {
   /**
    * Renews the app's token: a new one is written to the state folder and
    * put in force, and the one before is refused at once (`no-token`). Every
-   * browser-facing WebSocket is closed, the terminals' among them, so that
+   * browser-facing WebSocket is closed, the asks' followers and the
+   * terminals among them, so that
    * each page that reconnects is checked again: pages need the new link,
    * which `link` then gives. A request or handshake whose admission
    * overlaps the renewal — the old token compared, or the app's `authorize`

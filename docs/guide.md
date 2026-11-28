@@ -9,7 +9,8 @@ starting over, interrupting, ending and removing, their records, the cap
 on live sessions, the idle timeout, a launcher form from the jobs'
 descriptions and choices), the sessions followed live, a
 session's terminal in the page, access (the app's own API routes, opening
-beyond loopback, and renewing the token), and the Claude Code driver: its
+beyond loopback, and renewing the token), the agent's permission asks,
+followed and answered on a page, and the Claude Code driver: its
 options, a job's driver part, the sandbox and the agent's version. The sections after "Getting started" are
 written as the parts they describe are built; until then they only say what
 they will cover. [examples/jobs-console](../examples/jobs-console/DEMO.md) is
@@ -438,8 +439,11 @@ under a new id) is the one the session follows from then on, and the one
 an ended session's `canResume` tells of, and a resume will take up. `cockpit.sessions.follow` and the client's
 `sessions.follow` give the whole list at once, then at every change.
 
-So far a session is `waiting` only for something in the terminal
-(`pending: [{ kind: 'terminal', dialog? }]`): a start-up dialog the agent
+A session is `waiting` while the agent asks a permission (see
+[Asks](#asks)): `pending` lists each ask, `{ kind: 'ask', id }` for one
+the app can answer, `{ kind: 'terminal', id }` for one only the terminal
+can. It is also `waiting` for something in the terminal that is no ask
+(`pending: [{ kind: 'terminal', dialog? }]`, no `id`): a start-up dialog the agent
 shows before it takes a first prompt (`trust-folder`,
 `bypass-permissions`, `onboarding`, `login`), a dialog it shows that the
 driver has no name for, or a panel a launch prompt opened (`/help`,
@@ -542,8 +546,9 @@ taken its first prompt.
 | no record                 | `nothing-to-interrupt`          | `nothing-to-end`                            | `nothing-to-remove` (when no session either)    |
 | `starting`                | `wrong-state`                   | `wrong-state`                               | `wrong-state`                                   |
 
-Asks and channel requests, still to come, will make a session `waiting`
-whose turn Stop and End stop as on `busy`.
+A session `waiting` on an ask (see [Asks](#asks)) is stopped and ended
+as a `busy` one; channel requests, still to come, will be too. "`waiting`
+in the terminal" in the table is a dialog, a panel or a screen, no ask.
 
 **Stop** (`interrupt`) does what the person's Esc does in the terminal:
 it stops the agent's turn, and resolves once the session is `idle` again,
@@ -554,7 +559,8 @@ menu. The answer written so far stays in the conversation, marked as
 interrupted, and the next prompt carries on from it. When the session is
 not seen `idle` within the driver's bound (5 seconds for Claude Code), the
 call rejects `interrupt-unconfirmed` with the last state known, nothing
-more pressed: the page shows the state the list gives and lets the person
+more pressed (Stop on an ask may wait twice that: see [Asks](#asks)): the
+page shows the state the list gives and lets the person
 try again or end the session. A session `waiting` in the terminal (a
 start-up dialog, a panel, a screen the driver cannot read) runs no turn,
 and a key there could answer a dialog nobody saw: Stop presses nothing and
@@ -636,8 +642,84 @@ timeout later.
 
 ## Asks
 
-What the agent asks a person — a question, a plan, a permission, an input —
-and how an app shows and answers it.
+What the agent asks a person before it goes on, and how an app shows and
+answers it. This version offers one kind, the **permission**: the agent
+asks whether it may run a tool (`Bash` with a command, `Write` on a file).
+Questions, plans to approve and a background task's asks come later; until
+then the agent's terminal shows them as before, the session `busy`.
+
+**Both sides may answer; the first answer wins.** When Claude Code asks a
+permission, its terminal shows the dialog at once, and the cockpit holds
+the agent's hook and offers the same ask to the app. A person at the
+terminal is never blocked by the app, and an app without a terminal can
+answer from its page. The cockpit sets no deadline: an ask waits until
+someone answers it, interrupts the turn, or ends the session. While one is
+pending the session is `waiting`, `pending` listing each ask by its id.
+
+```js
+// in the page: follow the asks of every session ('*'), or of one key
+const stop = client.asks.follow('*', (ask) => {
+  // { id, key, kind: 'permission', tool, input, description?, answerable, since }
+  showAsk(ask); // tool, input and description come from the agent: show them as text
+});
+client.asks.on('settled', ({ id, key, by }) => markSettled(id, by)); // 'app' | 'terminal' | 'cancelled'
+
+await client.asks.answer(ask.id, { allow: true });
+await client.asks.answer(ask.id, { allow: true, remember: 'session' });
+await client.asks.answer(ask.id, { allow: false, message: 'Not in this folder.' });
+```
+
+The app's server has the same three calls on `cockpit.asks`. A follower
+gets the pending asks at once, then each new one, so a reloaded page, or
+one opened later, finds the ask still waiting; following never changes
+what the agent is answered. A page whose socket dropped reconnects by
+itself and learns which of its asks were settled meanwhile.
+
+**Answering.** Allow lets the call run; a denial's message reaches the
+model, which goes on with it (with none, Claude Code tells the model
+"Permission denied by hook"). An answer that comes late is refused
+`already-settled`, with who settled the ask, so a page whose person
+answered in the terminal just before can say so; `unknown-id`,
+`terminal-only` and `invalid-answer` are the other refusals, in that
+order. `on('settled')` tells every settlement once, the app's own answers
+included: `app`, `terminal` when a person answered in the terminal (a Yes,
+or a "No" with a text, the agent going on), `cancelled` when nobody did (a
+plain "No" or Esc in the terminal, an interrupt, the session's end).
+
+**Allow for the session** (`remember: 'session'`) also lets later calls
+like this one through until the session ends, never wider than what the
+person saw: a `Bash` call is remembered as that exact command (`touch b`
+asks again after `touch a` was remembered), a `Write` or an `Edit` as that
+one file, a `Read` as that file, any other tool as the tool. Where the
+cockpit cannot write a rule that means exactly that call (another file
+tool, a path or command with a character the agent's rule syntax reads as
+its own), the call is allowed once and the next one asks again. Nothing is
+written to the person's or the project's settings, and the app's deny and
+ask rules still hold.
+
+**An ask only the terminal can answer.** In `auto` and `plan`, behind an
+API endpoint that does not pass the agent's server-side safety check (a
+gateway that does not forward it), Claude Code asks some actions in its
+terminal alone, with no hook the cockpit can hold. It tells the cockpit by
+a notification about 6.5 seconds later; the session then shows `waiting`
+on an ask with `answerable: 'terminal'`, with the tool and its input. The
+app cannot answer it (`terminal-only`): a page shows where to answer it,
+or offers Stop and End. Nothing runs meanwhile; the agent waits for a
+person.
+
+**Stop and End.** Stop on a session waiting on asks stops its turn: an ask
+the app can answer is stopped by the cockpit's reply on the agent's hook,
+no key pressed, every ask of the turn settled `cancelled`; an ask only the
+terminal can answer, by one Esc. If the reply is not confirmed in time
+(the person had just answered Yes in the terminal, and the agent no
+longer reads the hook while the tool runs), the cockpit presses one Esc,
+then waits again. End stops the turn so before it ends the session.
+
+**Closing the server** settles nothing and tells nobody: the agent keeps
+its dialog in the terminal, where a person may still answer it.
+[examples/asks-on-page](../examples/asks-on-page/DEMO.md) answers asks on a
+page with no terminal; the [API reference](api.md#asks) has every field,
+answer and refusal.
 
 ## The channel
 

@@ -94,11 +94,12 @@ export interface CockpitClient {
   open(key: string, options?: OpenOptions): Promise<OpenResult>;
   /**
    * Interrupts a unit of work's turn, as the server's `cockpit.interrupt`
-   * does: on a `busy` session, or a `waiting` one whose wait is an ask or a
-   * channel request, it stops the turn and resolves once the session is
-   * `idle`. On an `idle` or `ended` session, a session waiting in the
-   * terminal (a dialog, a panel, a screen the driver cannot read: no key is
-   * sent), or a key with no record, it resolves with
+   * does: on a `busy` session, or a `waiting` one whose wait is an ask (one
+   * answerable in the terminal only among them) or a channel request, it
+   * stops the turn and resolves once the session is `idle`. On an `idle` or
+   * `ended` session, a session waiting in the terminal on no ask (a dialog,
+   * a panel, a screen the driver cannot read: no key is sent), or a key
+   * with no record, it resolves with
    * `nothing-to-interrupt`. Background tasks go on. Made again once, as a run is, when a renewal of the token
    * overlapped it.
    *
@@ -116,8 +117,8 @@ export interface CockpitClient {
   interrupt(key: string): Promise<InterruptResult>;
   /**
    * Ends a unit of work's session, as the server's `cockpit.end` does: on
-   * an `idle` session, or one waiting in the terminal (a dialog, a panel,
-   * a screen the driver cannot read), it signals the agent's process at
+   * an `idle` session, or one waiting in the terminal on no ask (a dialog,
+   * a panel, a screen the driver cannot read), it signals the agent's process at
    * once; on a `busy` session, or a `waiting` one whose wait is an ask or
    * a channel request, it interrupts the turn first. The conversation and
    * the record are kept. On an `ended` session or a key with no record it
