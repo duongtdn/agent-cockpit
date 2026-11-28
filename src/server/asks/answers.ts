@@ -2,9 +2,19 @@ import { z } from 'zod';
 import type { Ask, AskAnswer } from '../../shared/ask.js';
 import type { Issue } from '../../shared/cockpit-error.js';
 import { issuesOf } from '../jobs.js';
+import { lengthOverPromptBound, MAX_PROMPT_LENGTH } from '../prompt-length.js';
 
-/** The longest message a denial may carry: the prompt's bound, since it reaches the model as text. */
-const MAX_MESSAGE_LENGTH = 100_000;
+/**
+ * A denial's message: non-empty, and at most the prompt's bound, counted as
+ * the prompt's is, in code points (whatever zod's own `max` counts), since it
+ * reaches the model as text.
+ */
+const MESSAGE = z
+  .string()
+  .min(1)
+  .refine((message) => lengthOverPromptBound(message) === undefined, {
+    error: `Expected at most ${MAX_PROMPT_LENGTH} characters.`,
+  });
 
 /**
  * A field given as `undefined` taken as absent, and left out: an app built
@@ -34,7 +44,7 @@ const ANSWER_SHAPES: { readonly [Kind in Ask['kind']]: z.ZodType<AskAnswer> } = 
       z.strictObject({
         allow: z.literal(false),
         remember: z.never({ error: 'A denial cannot be remembered.' }).exactOptional(),
-        message: z.string().min(1).max(MAX_MESSAGE_LENGTH).exactOptional(),
+        message: MESSAGE.exactOptional(),
       }),
     ]),
   ),

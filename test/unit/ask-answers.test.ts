@@ -57,10 +57,16 @@ describe("a permission's answer", () => {
     expect(Object.keys('answer' in checked ? checked.answer : {})).toEqual(['allow']);
   });
 
+  it('takes a message of 100,000 characters counted in code points, astral ones among them', () => {
+    const answer = { allow: false, message: '\u{1F600}'.repeat(100_000) };
+    expect(checkAnswer('permission', answer)).toEqual({ answer });
+  });
+
   it.each([
     ['no string', 42],
     ['empty', ''],
     ['over 100,000 characters', 'x'.repeat(100_001)],
+    ['over 100,000 astral characters', '\u{1F600}'.repeat(100_001)],
   ])("is refused when a denial's message is %s", (_case, message) => {
     expect(pathsOf({ allow: false, message })).toEqual([['message']]);
   });

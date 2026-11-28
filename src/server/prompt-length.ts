@@ -7,6 +7,20 @@ import { CockpitError } from '../shared/cockpit-error.js';
  */
 export const MAX_PROMPT_LENGTH = 100_000;
 
+/**
+ * The length of a text in characters (code points), as the prompt's bound
+ * counts it; `undefined` when it is within {@link MAX_PROMPT_LENGTH}.
+ *
+ * @param text - The text: a prompt, or any text that reaches the model.
+ * @returns Its length when it is over the bound, else `undefined`.
+ */
+export function lengthOverPromptBound(text: string): number | undefined {
+  // Counted only past the bound's worth of UTF-16 units: no shorter text can be over it.
+  if (text.length <= MAX_PROMPT_LENGTH) return undefined;
+  const length = [...text].length;
+  return length <= MAX_PROMPT_LENGTH ? undefined : length;
+}
+
 /** A prompt of whitespace and U+2063 alone, all of which the agent trims off its ends. */
 const BLANK = /^[\s\u2063]*$/u;
 
@@ -25,10 +39,8 @@ export function refuseUnfitPrompt(prompt: string): void {
       issues: [{ path: ['prompt'], message: 'Expected a prompt with more than whitespace.' }],
     });
   }
-  // Counted only past the limit's worth of UTF-16 units: no shorter text can be over it.
-  if (prompt.length <= MAX_PROMPT_LENGTH) return;
-  const length = [...prompt].length;
-  if (length <= MAX_PROMPT_LENGTH) return;
+  const length = lengthOverPromptBound(prompt);
+  if (length === undefined) return;
   throw new CockpitError(
     'prompt-too-long',
     `The prompt is ${length} characters; the cockpit takes at most ${MAX_PROMPT_LENGTH}.`,
