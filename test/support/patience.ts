@@ -50,17 +50,20 @@ export const PATIENCE = {
   dialogKey: scaled(1_000),
   /**
    * A start-up dialog's redraw, which puts its selection back on its first
-   * option: about 150 ms after it showed, seen of 2.1.332. The one bound a
-   * test watches through, since no sign tells the redraw came.
+   * option: about 150 ms after it showed, seen of 2.1.332. Watched through,
+   * since no sign tells the redraw came.
    */
   dialogRedraw: scaled(500),
   /**
    * A key the real agent is expected to draw nothing for (one Esc on an
    * idle session, its input box empty), watched through: an absence has no
-   * sign to wait for. Long past the agent's reading of a lone Esc, which
-   * takes a key sent within some 20 ms of it as Alt+key, seen of 2.1.332.
+   * sign to wait for. It must outlast both the agent's redraw after the key
+   * and its double-press window: of 2.1.332, a second Esc within about
+   * 800 ms of the first pairs with it (two quick Escs open the rewind menu),
+   * the window its own code sets and the rewind menu's opening shows. Past
+   * the bound, the next Esc is a key of its own.
    */
-  keyWithoutEffect: scaled(1_000),
+  keyWithoutEffect: scaled(1_500),
   /** A dialog answered, gone from the screen. */
   dialogAnswered: scaled(3_000),
   /** A process the test ended, gone. */

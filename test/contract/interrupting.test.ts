@@ -84,6 +84,26 @@ async function idleAndEmpty(agent: ContractAgent, session: AgentSession): Promis
   await agent.eventually(async () => expect(isIdleAndEmpty(await session.screen())).toBe(true));
 }
 
+/** Reads a session's screen once it settled: two reads in a row agree. */
+async function settledScreen(agent: ContractAgent, session: AgentSession): Promise<string> {
+  return agent.eventually(async () => {
+    const first = await session.screen();
+    const second = await session.screen();
+    expect(second).toBe(first);
+    return second;
+  });
+}
+
+/**
+ * Gives a screen from its conversation's first row on: the welcome banner
+ * above it animates by itself (its logo, the sky around it) after the agent
+ * is idle, whatever its keys.
+ */
+function belowTheBanner(screen: string): string {
+  const rows = screen.split('\n');
+  return rows.slice(rows.findIndex((row) => row.startsWith('❯ '))).join('\n');
+}
+
 function isIdleAndEmpty(screen: string): boolean {
   return readScreen(screen).shows === 'input-box' && boxOf(screen) === '';
 }
@@ -251,18 +271,24 @@ it('24 — One Esc on an idle session, its input box empty, changes nothing; two
   await submitPrompt(agent, session, 'get ready');
   await agent.hook('Stop');
   await idleAndEmpty(agent, session);
+  const before = belowTheBanner(await settledScreen(agent, session));
   const hooksSince = hooksFromNow(agent);
 
   await session.press('Escape');
-  // An absence has no sign to wait for: watched through. It also keeps the next Escs apart
-  // from this one.
-  const changed = await cameTrue(
-    async () => !isIdleAndEmpty(await session.screen()),
-    PATIENCE.keyWithoutEffect,
-  );
+  // An absence has no sign to wait for: watched through, past the double-press window, so that
+  // the next Esc does not pair with this one.
+  let after = before;
+  await cameTrue(async () => {
+    after = belowTheBanner(await session.screen());
+    return after !== before;
+  }, PATIENCE.keyWithoutEffect);
   const hooksOfTheEsc = hooksSince();
   const textsAfterTheEsc = userTexts(session);
-  await session.press('Escape', 'Escape');
+  // Two presses, two writes: each Esc reaches the agent as a key of its own, a few
+  // milliseconds apart, well within the double-press window. The test shows two Escs that
+  // close open the menu; how close is the agent's own window, which it does not draw.
+  await session.press('Escape');
+  await session.press('Escape');
   const menu = await agent.eventually(async () => {
     const screen = await session.screen();
     expect(screen).toContain('Rewind');
@@ -270,7 +296,7 @@ it('24 — One Esc on an idle session, its input box empty, changes nothing; two
     return screen;
   });
 
-  expect(changed).toBe(false);
+  expect(after).toBe(before);
   expect(hooksOfTheEsc).toEqual([]);
   expect(textsAfterTheEsc).toEqual(['get ready']);
   expect(menu).toMatch(/^\s+get ready$/mu);
@@ -349,7 +375,10 @@ it("28 — Esc does not stop a background subagent: it interrupts the session's 
   expect(taskAfterTheEsc).toBeUndefined();
   expect(subagentStoppedBeforeItsEnd).toBe(false);
   expect(await task.ended).toBe('released');
-  expect(notified && conversationTexts(notified).join('\n')).toContain('<task-notification>');
+  const notification = notified && conversationTexts(notified).join('\n');
+  expect(notification).toContain('<task-notification>');
+  // The subagent finished: its last answer is the notification's result.
+  expect(notification).toMatch(/<result>\s*Counted\.\s*<\/result>/u);
   expect(noted.payload.last_assistant_message).toBe('Noted.');
 });
 
