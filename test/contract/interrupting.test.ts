@@ -1,16 +1,22 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { readInputBoxView, readScreen } from '../../src/claude-code/screen-reading.ts';
 import type { DriverEvent } from '../../src/server/driver.ts';
-import { eventually } from '../support/eventually.ts';
+import { cameTrue, eventually } from '../support/eventually.ts';
 import { heldTurn, TEXT_WRITTEN, toolUse, turn } from '../support/fake-api/index.ts';
+import { PATIENCE } from '../support/patience.ts';
 import type { AgentSession } from '../support/real-agent/runner.ts';
 import { type Moment, SAID_KEY, sessionAfter, startContractCockpit } from './cockpit-harness.ts';
 import {
   type ContractAgent,
+  conversationTexts,
   INTERRUPTED,
   INTERRUPTED_FOR_TOOL_USE,
+  sameText,
+  spinnerRow,
   startContractAgent,
+  submitInputBox,
   submitPrompt,
   userTexts,
 } from './harness.ts';
@@ -47,8 +53,7 @@ async function expectInterruption(
   session: AgentSession,
   interrupted: { readonly prompt: string; readonly marker: string },
 ): Promise<void> {
-  const hooksBefore = agent.hooks.events();
-  const hooksSince = () => agent.hooks.events().slice(hooksBefore.length);
+  const hooksSince = hooksFromNow(agent);
 
   await session.press('Escape');
 
@@ -61,6 +66,26 @@ async function expectInterruption(
   await agent.eventually(() =>
     expect(userTexts(session)).toEqual([interrupted.prompt, interrupted.marker, NEXT_PROMPT]),
   );
+}
+
+/** Gives what tells the events of the hooks received from now on. */
+function hooksFromNow(agent: ContractAgent): () => string[] {
+  const before = agent.hooks.events().length;
+  return () => agent.hooks.events().slice(before);
+}
+
+/** What a screen's input box holds, each row without the sign's column; `undefined` when it shows no box. */
+function boxOf(screen: string): string | undefined {
+  return readInputBoxView(screen)?.text.trimEnd();
+}
+
+/** Waits until a session is idle, its input box empty: no spinner's row, no busy hint, read as the box free. */
+async function idleAndEmpty(agent: ContractAgent, session: AgentSession): Promise<void> {
+  await agent.eventually(async () => expect(isIdleAndEmpty(await session.screen())).toBe(true));
+}
+
+function isIdleAndEmpty(screen: string): boolean {
+  return readScreen(screen).shows === 'input-box' && boxOf(screen) === '';
 }
 
 /** Interrupts a turn while the model's answer is awaited, after a tool call so that the turn has produced something. */
@@ -173,3 +198,265 @@ it('95 — the interruption marker carries the time the agent recorded it, earli
   expect(busyNow?.state).toBe('busy');
   expect(answered).toMatchObject({ state: 'idle', lastMessage: 'Going on.' });
 });
+
+/** A prompt the model has produced nothing for when the Esc comes. */
+const WITHDRAWN = 'withdraw this prompt';
+
+it("23 — Esc before the model produced anything, the input box empty, withdraws the prompt: it is back in the box, with no spinner's row above it; no hook fires, the transcript records nothing of the withdrawal, and the next prompt's conversation leaves it out", async () => {
+  const agent = await startContractAgent();
+  agent.api.script(heldTurn(), NEXT_ANSWER);
+  const session = await agent.startNew();
+  await agent.hook('SessionStart');
+  await submitPrompt(agent, session, WITHDRAWN);
+  const held = await agent.waitFor('the request the API holds', agent.api.heldRequest());
+  // The turn shows running, nothing produced yet: the spinner's row over the empty box.
+  await agent.eventually(async () => {
+    const screen = await session.screen();
+    expect(spinnerRow(screen)).toBeDefined();
+    expect(boxOf(screen)).toBe('');
+  });
+  const hooksSince = hooksFromNow(agent);
+
+  await session.press('Escape');
+
+  const withdrawn = await agent.eventually(async () => {
+    const screen = await session.screen();
+    expect(boxOf(screen)).toBe(WITHDRAWN);
+    return screen;
+  });
+  expect(await agent.waitFor('the held request to end', held.ended)).toBe('client-gone');
+  const hooksOfTheEsc = hooksSince();
+  // The barrier: the box cleared, the next prompt arrives alone, and a hook or a marker of the
+  // withdrawal would come before its own.
+  await session.press('C-u');
+  await agent.eventually(async () => expect(boxOf(await session.screen())).toBe(''));
+  await submitPrompt(agent, session, NEXT_PROMPT);
+  expect(hooksSince()).toEqual(['UserPromptSubmit']);
+  await agent.hook('Stop');
+  const next = await agent.api.conversationRequest(2);
+
+  expect(spinnerRow(withdrawn)).toBeUndefined();
+  expect(hooksOfTheEsc).toEqual([]);
+  expect(conversationTexts(next)).toContain(NEXT_PROMPT);
+  expect(conversationTexts(next).join('\n')).not.toContain(WITHDRAWN);
+  // The withdrawn prompt's own entry stays in the file; nothing is written of its withdrawal.
+  await agent.eventually(() => expect(userTexts(session)).toEqual([WITHDRAWN, NEXT_PROMPT]));
+});
+
+it('24 — One Esc on an idle session, its input box empty, changes nothing; two quick Escs open the rewind menu', async () => {
+  const agent = await startContractAgent();
+  agent.api.script(turn('Ready.'));
+  const session = await agent.startNew();
+  await agent.hook('SessionStart');
+  await submitPrompt(agent, session, 'get ready');
+  await agent.hook('Stop');
+  await idleAndEmpty(agent, session);
+  const hooksSince = hooksFromNow(agent);
+
+  await session.press('Escape');
+  // An absence has no sign to wait for: watched through. It also keeps the next Escs apart
+  // from this one.
+  const changed = await cameTrue(
+    async () => !isIdleAndEmpty(await session.screen()),
+    PATIENCE.keyWithoutEffect,
+  );
+  const hooksOfTheEsc = hooksSince();
+  const textsAfterTheEsc = userTexts(session);
+  await session.press('Escape', 'Escape');
+  const menu = await agent.eventually(async () => {
+    const screen = await session.screen();
+    expect(screen).toContain('Rewind');
+    expect(screen).toContain('Enter to continue · Esc to cancel');
+    return screen;
+  });
+
+  expect(changed).toBe(false);
+  expect(hooksOfTheEsc).toEqual([]);
+  expect(textsAfterTheEsc).toEqual(['get ready']);
+  expect(menu).toMatch(/^\s+get ready$/mu);
+  expect(readInputBoxView(menu)).toBeUndefined();
+  expect(hooksSince()).toEqual([]);
+});
+
+it('25 — Ctrl+U clears the input box, and does nothing on an empty one: what the first cleared is still what Ctrl+Y puts back', async () => {
+  const agent = await startContractAgent();
+  const session = await agent.startNew();
+  await agent.hook('SessionStart');
+  await idleAndEmpty(agent, session);
+  const draft = 'a draft to clear';
+  await session.type(draft);
+  await agent.eventually(async () => expect(boxOf(await session.screen())).toBe(draft));
+
+  await session.press('C-u');
+  await agent.eventually(async () => expect(boxOf(await session.screen())).toBe(''));
+  await session.press('C-u');
+  // Had the second Ctrl+U put anything in the box or the kill ring, the paste would show it.
+  await session.press('C-y');
+
+  await agent.eventually(async () => expect(boxOf(await session.screen())).toBe(draft));
+  expect(agent.hooks.events()).toEqual(['SessionStart']);
+});
+
+const TASK_PROMPT = 'Count the files.';
+
+it("28 — Esc does not stop a background subagent: it interrupts the session's turn, while the subagent runs on, finishes, and the session starts a turn of its own with a <task-notification> prompt", async () => {
+  const agent = await startContractAgent();
+  agent.api.script(
+    turn(
+      toolUse('Agent', {
+        description: 'Count files',
+        prompt: TASK_PROMPT,
+        subagent_type: 'general-purpose',
+      }),
+    ),
+    turn('Started.'),
+    // The turn the Esc interrupts: held after a tool call, so that it has produced something
+    // and the Esc does not withdraw its prompt.
+    turn('Checking.', toolUse('Bash', { command: 'true' })),
+    heldTurn(),
+    // The turn the task's end starts.
+    turn('Noted.'),
+  );
+  agent.api.scriptConversation(TASK_PROMPT, heldTurn(turn('Counted.')));
+  const session = await agent.startNew();
+  await agent.hook('SessionStart');
+  await submitPrompt(agent, session, 'start a task');
+  const task = await agent.waitFor("the subagent's request the API holds", agent.api.heldRequest());
+  let taskEnded: string | undefined;
+  void task.ended.then((outcome) => {
+    taskEnded = outcome;
+  });
+  expect((await agent.hook('Stop')).payload.last_assistant_message).toBe('Started.');
+  await submitPrompt(agent, session, 'think meanwhile');
+  const meanwhile = await agent.waitFor('the turn the API holds', agent.api.heldRequest(2));
+
+  await session.press('Escape');
+
+  await agent.eventually(() => expect(userTexts(session)).toContain(INTERRUPTED));
+  expect(await agent.waitFor('the interrupted turn to end', meanwhile.ended)).toBe('client-gone');
+  const taskAfterTheEsc = taskEnded;
+  const subagentStoppedBeforeItsEnd = agent.hooks.events().includes('SubagentStop');
+  task.release();
+  await agent.hook('SubagentStop');
+  const noted = await agent.hook('Stop');
+  // The session's request of the turn the task's end started: its last.
+  const notified = agent.api
+    .requests()
+    .filter((request) => request.kind === 'conversation')
+    .findLast((request) => !conversationTexts(request).join('\n').includes(TASK_PROMPT));
+
+  expect(conversationTexts(task.request).join('\n')).toContain(TASK_PROMPT);
+  expect(taskAfterTheEsc).toBeUndefined();
+  expect(subagentStoppedBeforeItsEnd).toBe(false);
+  expect(await task.ended).toBe('released');
+  expect(notified && conversationTexts(notified).join('\n')).toContain('<task-notification>');
+  expect(noted.payload.last_assistant_message).toBe('Noted.');
+});
+
+/** How a person's draft came to be in the box when the early Esc comes. */
+interface DraftCase {
+  readonly name: string;
+  readonly draft: string;
+  /** Submits the prompt and leaves the draft in the box, the turn held before anything streamed. */
+  readonly submitWithDraft: (
+    agent: ContractAgent,
+    session: AgentSession,
+    prompt: string,
+  ) => Promise<void>;
+}
+
+/**
+ * Types a draft as a person does, a line break between its lines, and waits
+ * until the box shows it.
+ */
+async function typeDraft(
+  agent: ContractAgent,
+  session: AgentSession,
+  draft: string,
+): Promise<void> {
+  for (const [index, line] of draft.split('\n').entries()) {
+    if (index > 0) await session.press('M-Enter');
+    await session.type(line);
+  }
+  await agent.eventually(async () => expect(boxOf(await session.screen())).toBe(draft));
+}
+
+/**
+ * Keeps a draft as the cockpit's send does: killed out of the box, the
+ * prompt typed and submitted, the draft pasted back as the turn starts.
+ * Each kill takes a line, then the line break before it.
+ */
+async function draftPutBack(
+  agent: ContractAgent,
+  session: AgentSession,
+  draft: string,
+  prompt: string,
+) {
+  await typeDraft(agent, session, draft);
+  const kills = 2 * draft.split('\n').length - 1;
+  await session.press(...Array<string>(kills).fill('C-u'));
+  await agent.eventually(async () => expect(boxOf(await session.screen())).toBe(''));
+  await submitPrompt(agent, session, prompt);
+  await session.press('C-y');
+}
+
+const DRAFT_CASES: readonly DraftCase[] = [
+  {
+    name: 'a one-line draft put back as the turn starts',
+    draft: 'my one-line draft',
+    submitWithDraft: (agent, session, prompt) =>
+      draftPutBack(agent, session, 'my one-line draft', prompt),
+  },
+  {
+    name: 'a three-line draft put back as the turn starts',
+    draft: 'draft line A\ndraft line B\ndraft line C',
+    submitWithDraft: (agent, session, prompt) =>
+      draftPutBack(agent, session, 'draft line A\ndraft line B\ndraft line C', prompt),
+  },
+  {
+    name: 'a draft typed during the turn',
+    draft: 'typed during the turn',
+    submitWithDraft: async (agent, session, prompt) => {
+      await submitPrompt(agent, session, prompt);
+      await agent.waitFor('the request the API holds', agent.api.heldRequest());
+      await typeDraft(agent, session, 'typed during the turn');
+    },
+  },
+];
+
+for (const { name, draft, submitWithDraft } of DRAFT_CASES) {
+  it(`128 — An Esc before the model produced anything, with ${name} in the input box, interrupts instead of withdrawing: the transcript records [Request interrupted by user], no hook fires, and the box holds the draft alone, exactly`, async () => {
+    const agent = await startContractAgent();
+    const prompt = 'the prompt sent';
+    agent.api.script(heldTurn(), NEXT_ANSWER);
+    const session = await agent.startNew();
+    await agent.hook('SessionStart');
+    await submitWithDraft(agent, session, prompt);
+    const held = await agent.waitFor('the request the API holds', agent.api.heldRequest());
+    // The turn shows running, nothing produced yet, the draft in the box.
+    await agent.eventually(async () => {
+      const screen = await session.screen();
+      expect(spinnerRow(screen)).toBeDefined();
+      expect(boxOf(screen)).toBe(draft);
+    });
+    const hooksSince = hooksFromNow(agent);
+
+    await session.press('Escape');
+
+    await agent.eventually(() => expect(userTexts(session)).toContain(INTERRUPTED));
+    const afterTheEsc = await agent.eventually(async () => {
+      const screen = await session.screen();
+      expect(spinnerRow(screen)).toBeUndefined();
+      return screen;
+    });
+    expect(await agent.waitFor('the held request to end', held.ended)).toBe('client-gone');
+    // The barrier: what the box holds, submitted, arrives exactly as the agent holds it.
+    const { hook } = await submitInputBox(agent, session, (box) => sameText(box, draft));
+    expect(hooksSince()).toEqual(['UserPromptSubmit']);
+    await agent.hook('Stop');
+
+    expect(boxOf(afterTheEsc)).toBe(draft);
+    expect(hook.payload.prompt).toBe(draft);
+    await agent.eventually(() => expect(userTexts(session)).toEqual([prompt, INTERRUPTED, draft]));
+  });
+}

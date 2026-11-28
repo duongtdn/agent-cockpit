@@ -54,6 +54,13 @@ export const PATIENCE = {
    * test watches through, since no sign tells the redraw came.
    */
   dialogRedraw: scaled(500),
+  /**
+   * A key the real agent is expected to draw nothing for (one Esc on an
+   * idle session, its input box empty), watched through: an absence has no
+   * sign to wait for. Long past the agent's reading of a lone Esc, which
+   * takes a key sent within some 20 ms of it as Alt+key, seen of 2.1.332.
+   */
+  keyWithoutEffect: scaled(1_000),
   /** A dialog answered, gone from the screen. */
   dialogAnswered: scaled(3_000),
   /** A process the test ended, gone. */
