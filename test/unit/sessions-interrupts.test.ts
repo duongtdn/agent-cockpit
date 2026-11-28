@@ -586,6 +586,39 @@ describe('an interrupt confirmed by the withdrawn prompt', () => {
     await expect(result).resolves.toEqual({ action: 'interrupted', state: 'idle' });
   });
 
+  it("rejects with the close's refusal when the core is closed during the clearing", async () => {
+    await busySession();
+    driver.clearInputBox = async () => {
+      sessions.close();
+      return 'cleared';
+    };
+
+    const result = interrupting();
+    await settle();
+    host.show(KEY, withdrawnScreen(PROMPT));
+    await nextRead();
+
+    await expect(result).rejects.toBeInstanceOf(SessionsClosedError);
+  });
+
+  it('clears nothing when the session moved on from the withdrawn idle before the interrupt looked', async () => {
+    await busySession();
+    const result = interrupting();
+    await settle();
+    host.show(KEY, withdrawnScreen(PROMPT));
+    const followed = sessions.follow((list) => {
+      if (list.some((session) => session.key === KEY && session.state === 'idle')) {
+        hook('/prompt-taken');
+      }
+    });
+
+    await nextRead();
+    followed();
+
+    await expect(result).resolves.toEqual({ action: 'interrupted', state: 'idle' });
+    expect(writes()).toEqual(['Escape']);
+  });
+
   it('clears nothing when the interruption was recorded: the box holds the person’s draft or nothing', async () => {
     await busySession();
 

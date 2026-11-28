@@ -279,7 +279,10 @@ export interface Sessions {
    * waiting on more than the terminal, then the driver's bound for it to
    * be `idle`; nothing pressed where no turn runs. A session the cockpit is
    * ending is first awaited ended, then read again. Background tasks go
-   * on: the `idle` session lists those it listed before the turn.
+   * on: the `idle` session lists those it listed before the turn and those
+   * the turn started. A prompt withdrawn into the input box is cleared once
+   * the screen showed it, whoever pressed the Esc: a person's Esc in the
+   * terminal while the interrupt waits cannot be told from the cockpit's.
    *
    * @param key - The session's key.
    * @returns `interrupted` once the session is `idle`, told before a
@@ -425,8 +428,6 @@ interface Entry {
   readonly changeListeners: Set<(session: Session) => void>;
   /** Reads the screen for the open turn's prompt withdrawn by an early Esc, which nothing else tells. */
   readonly withdrawal: WithdrawnWatch;
-  /** The `idle` session the screen showed with the turn's prompt withdrawn. */
-  withdrawnIdle?: Session;
   /** Where its launch and life stand: what the core may do with it. */
   readonly lifecycle: SessionLifecycle;
   /** Why the cockpit itself ends the session, which prevails over the agent's word. */
@@ -574,43 +575,23 @@ class SessionRegistry implements Sessions {
     // An end under way is the cockpit's own: its outcome is the state the interrupt reads.
     await settlesBeforeAbort(entry.lifecycle.endUnderWay, this.#closing.signal);
     this.#refuseIfClosed(key);
-    return interruptTurn(this.#interrupted(entry), {
-      interrupting: this.#options.driver.interrupting,
+    const { driver, host } = this.#options;
+    const target: InterruptedSession = {
+      key,
+      session: () => this.session(key),
+      changeListeners: entry.changeListeners,
+      withdrawal: entry.withdrawal,
+      takesKeys: () => this.#takesInput(entry),
+      sendKeys: (keys) => host.sendKeys(key, keys),
+      gone: () => this.#gone(entry),
+      clearInputBox: () =>
+        this.#throughTypingTerminal(entry, (terminal) => driver.clearInputBox(terminal)),
+    };
+    return interruptTurn(target, {
+      interrupting: driver.interrupting,
       closing: this.#closing.signal,
       refusal: () => new SessionsClosedError(key),
     });
-  }
-
-  /** The session as an interrupt acts on it. */
-  #interrupted(entry: Entry): InterruptedSession {
-    return {
-      key: entry.key,
-      session: () => this.session(entry.key),
-      onChange: (listener) => {
-        entry.changeListeners.add(listener);
-        return () => void entry.changeListeners.delete(listener);
-      },
-      pressKeys: (keys) => this.#pressKeys(entry, keys),
-      wasWithdrawn: (session) => session === entry.withdrawnIdle,
-      clearInputBox: () =>
-        this.#throughTypingTerminal(entry, (terminal) =>
-          this.#options.driver.clearInputBox(terminal),
-        ),
-    };
-  }
-
-  /**
-   * Presses keys in a session the cockpit is not ending; one found gone is
-   * ended at once, as the next list of the host would.
-   */
-  async #pressKeys(entry: Entry, keys: readonly string[]): Promise<void> {
-    if (!this.#takesInput(entry)) return;
-    try {
-      await this.#options.host.sendKeys(entry.key, keys);
-    } catch (error) {
-      if (!(error instanceof SessionHostError && error.reason === 'no-session')) throw error;
-      await this.#gone(entry);
-    }
   }
 
   firstPrompt(key: string): Promise<Session> | undefined {
@@ -736,20 +717,6 @@ class SessionRegistry implements Sessions {
     entry.withdrawal.follow(entry.session.state === 'busy' ? told.withdrawablePrompt : undefined);
   }
 
-  /** The screen showed the turn's prompt withdrawn: the session is `idle`, told at once. */
-  #withdrawn(entry: Entry): void {
-    if (
-      this.#closing.signal.aborted ||
-      !entry.lifecycle.isListened ||
-      entry.session.state !== 'busy'
-    )
-      return;
-    const course = courseWithdrawn(courseOf(entry), now());
-    // Known before the change is told: an interrupt waiting on it asks.
-    entry.withdrawnIdle = course.session;
-    this.#take(entry, course);
-  }
-
   /**
    * Follows the conversation the agent moved to, when it is another (Claude
    * Code's `/clear` starts one under a new id): what the driver tells
@@ -838,7 +805,11 @@ class SessionRegistry implements Sessions {
       withdrawal: new WithdrawnWatch({
         read: () => this.#readScreenText(key),
         signs: this.#options.driver.screenStateSigns,
-        onWithdrawn: () => this.#withdrawn(entry),
+        // Not while the cockpit kills it: its hooks are not heard either.
+        onWithdrawn: () => {
+          if (!entry.lifecycle.isListened) return;
+          this.#take(entry, courseWithdrawn(courseOf(entry), now()));
+        },
       }),
       lifecycle: new SessionLifecycle('reserved'),
       heard: false,
@@ -1057,6 +1028,7 @@ class SessionRegistry implements Sessions {
     if (session === entry.session) return;
     entry.session = session;
     entry.firstPrompt.changed(session);
+    entry.withdrawal.changed(session);
     this.#notify();
     for (const listener of entry.changeListeners) listener(session);
   }

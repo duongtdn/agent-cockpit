@@ -4,6 +4,7 @@ import type { InputBoxClearing, SessionInterrupting } from '../driver.js';
 import { SessionHostError } from '../session-host/session-host-error.js';
 import { fulfilledWithin } from './abort-race.js';
 import { wrongState } from './refusals.js';
+import type { WithdrawnWatch } from './withdrawn-watch.js';
 
 /**
  * What an interrupt does with a session: nothing, there being no turn to
@@ -44,22 +45,24 @@ export function interruptionOf(session: Session | undefined): Interruption {
 
 /** What an interrupt works with: the session, as the sessions core keeps it. */
 export interface InterruptedSession {
+  /** The session's key: its name on the host, and what an error names. */
   readonly key: string;
   /** The session as it is now: `undefined` when there is none. */
   session(): Session | undefined;
-  /**
-   * Calls the listener with the session at each change, until the function
-   * returned is called.
-   */
-  onChange(listener: (session: Session) => void): () => void;
+  /** Called with the session at each change: the interrupt adds itself while it waits. */
+  readonly changeListeners: Set<(session: Session) => void>;
+  /** Tells which `idle` session the screen showed with the turn's prompt withdrawn. */
+  readonly withdrawal: Pick<WithdrawnWatch, 'wasWithdrawn'>;
+  /** Whether keys may be pressed into it: the cockpit is not ending it, and the core is open. */
+  takesKeys(): boolean;
   /**
    * Presses keys in the session's terminal, leaving a person's scrolling
-   * back first. Nothing is pressed once the cockpit is ending the session;
-   * a session found gone is ended. Rejects with what the host fails with.
+   * back first. Rejects with what the host fails with: `no-session` for a
+   * session gone.
    */
-  pressKeys(keys: readonly string[]): Promise<void>;
-  /** Whether this `idle` session is the one the screen showed with the turn's prompt withdrawn. */
-  wasWithdrawn(session: Session): boolean;
+  sendKeys(keys: readonly string[]): Promise<void>;
+  /** Ends a session found gone from the host, as the next list of the host would. */
+  gone(): Promise<void>;
   /**
    * Clears the agent's input box, the page's terminals' keys held
    * meanwhile. Rejects with what the host fails with.
@@ -118,15 +121,31 @@ async function stopTheTurn(
   // Listened to before the keys, which the turn's end may answer at once.
   const rest = restingState(target);
   try {
-    await target.pressKeys(interrupting.busy.keys);
+    await pressKeys(target, interrupting.busy.keys);
     const settled = await fulfilledWithin(rest.reached, interrupting.boundMs, closing);
     if (closing.aborted) throw refusal();
     if (settled === undefined) throw unconfirmed(target);
     if (settled.state === 'ended') return nothingToInterrupt(settled);
-    if (target.wasWithdrawn(settled)) await clearWithdrawnPrompt(target);
+    if (target.withdrawal.wasWithdrawn(settled)) await clearWithdrawnPrompt(target);
+    // The clearing waits on the host: the core may have closed meanwhile.
+    if (closing.aborted) throw refusal();
     return { action: 'interrupted', state: 'idle' };
   } finally {
     rest.stop();
+  }
+}
+
+/**
+ * Presses keys into a session the cockpit is not ending (the end tells
+ * what becomes of it); one found gone is ended at once.
+ */
+async function pressKeys(target: InterruptedSession, keys: readonly string[]): Promise<void> {
+  if (!target.takesKeys()) return;
+  try {
+    await target.sendKeys(keys);
+  } catch (error) {
+    if (!(error instanceof SessionHostError && error.reason === 'no-session')) throw error;
+    await target.gone();
   }
 }
 
@@ -144,13 +163,14 @@ function restingState(target: InterruptedSession): {
   readonly reached: Promise<Session>;
   stop(): void;
 } {
-  let stop = () => {};
+  let listener: (session: Session) => void = () => {};
   const reached = new Promise<Session>((resolve) => {
-    stop = target.onChange((session) => {
+    listener = (session) => {
       if (session.state === 'idle' || session.state === 'ended') resolve(session);
-    });
+    };
   });
-  return { reached, stop: () => stop() };
+  target.changeListeners.add(listener);
+  return { reached, stop: () => void target.changeListeners.delete(listener) };
 }
 
 function nothingToInterrupt(session: Session | undefined): InterruptResult {

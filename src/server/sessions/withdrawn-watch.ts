@@ -1,3 +1,4 @@
+import type { Session } from '../../shared/session.js';
 import type { ScreenStateSigns } from '../driver.js';
 import { ScreenWatch } from './screen-watch.js';
 
@@ -12,7 +13,8 @@ export interface WithdrawnWatchOptions {
   readonly signs: Pick<ScreenStateSigns, 'promptWithdrawn'>;
   /**
    * Called once the screen shows the prompt withdrawn: the watch has
-   * stopped, and the agent waits for a prompt.
+   * stopped, and the agent waits for a prompt. The `idle` session it makes
+   * is the withdrawn one (see {@link WithdrawnWatch.wasWithdrawn}).
    */
   readonly onWithdrawn: () => void;
 }
@@ -32,6 +34,9 @@ export class WithdrawnWatch {
   readonly #options: WithdrawnWatchOptions;
   #prompt: string | undefined;
   #screen: ScreenWatch<string> | undefined;
+  /** Whether {@link WithdrawnWatchOptions.onWithdrawn} runs: the change it makes is the withdrawn idle. */
+  #withdrawing = false;
+  #withdrawnIdle: Session | undefined;
 
   /** @param options - See {@link WithdrawnWatchOptions}. */
   constructor(options: WithdrawnWatchOptions) {
@@ -56,6 +61,27 @@ export class WithdrawnWatch {
     this.#screen.start();
   }
 
+  /**
+   * Takes the session at each of its changes: the `idle` session made as
+   * the prompt was read withdrawn is the withdrawn one, until the next
+   * change.
+   *
+   * @param session - The session as it is now.
+   */
+  changed(session: Session): void {
+    this.#withdrawnIdle = this.#withdrawing && session.state === 'idle' ? session : undefined;
+  }
+
+  /**
+   * Tells whether the session is the `idle` one the screen showed with
+   * the turn's prompt withdrawn, and the session has not changed since.
+   *
+   * @param session - A session.
+   */
+  wasWithdrawn(session: Session): boolean {
+    return session === this.#withdrawnIdle;
+  }
+
   /** Stops watching: nothing is called from now on, until a prompt is followed again. */
   stop(): void {
     this.#screen?.stop();
@@ -66,6 +92,11 @@ export class WithdrawnWatch {
   #take(text: string, prompt: string): void {
     if (!this.#options.signs.promptWithdrawn(text, prompt)) return;
     this.stop();
-    this.#options.onWithdrawn();
+    this.#withdrawing = true;
+    try {
+      this.#options.onWithdrawn();
+    } finally {
+      this.#withdrawing = false;
+    }
   }
 }
