@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createFailureReport } from '../../src/server/failures.ts';
+import { createFailureReport, internalFailure } from '../../src/server/failures.ts';
 import { isCockpitError } from '../../src/shared/cockpit-error.ts';
 
 describe('the failures the cockpit reports to the app', () => {
@@ -65,5 +65,15 @@ describe('the failures the cockpit reports to the app', () => {
 
     expect(fallback).toHaveBeenCalledWith(own);
     expect(later).toHaveBeenCalledTimes(1);
+  });
+
+  it('are made alike for an operation that rejects with one: the session host failing to end a session', () => {
+    const cause = new Error('tmux failed.');
+
+    const failure = internalFailure('session-host', cause);
+
+    expect(isCockpitError(failure, 'internal-failure')).toBe(true);
+    expect(failure).toMatchObject({ where: 'session-host', cause });
+    expect(failure.message).toMatch(/session host/);
   });
 });
