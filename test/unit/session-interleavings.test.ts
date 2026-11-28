@@ -9,7 +9,9 @@
  * `interrupted` on a session not `idle`, a key removed and not run since
  * is unknown, with no record, and nothing of a removed record — its
  * conversations, its history — comes back into the key's record when it
- * is run again.
+ * is run again, and no session was ended for idleness while a terminal
+ * was attached to it, a background task ran in it, or it was not `idle`, as
+ * its end began.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -87,12 +89,14 @@ function keyOf(file: File): string {
 }
 
 /**
- * What a run's options vary: the cap, whether an agent exits when it is
- * signalled, and how long the host takes to kill a session or count its
- * terminals, and the driver to tell whether a conversation can resume.
+ * What a run's options vary: the cap, the idle timeout, whether an agent
+ * exits when it is signalled, and how long the host takes to kill a
+ * session or count its terminals, and the driver to tell whether a
+ * conversation can resume.
  */
 interface Setting {
   readonly maxSessions: number | undefined;
+  readonly idleTimeoutMs: number | undefined;
   readonly exitOnSignal: boolean;
   readonly slowness: Slowness;
 }
@@ -133,6 +137,13 @@ class World {
   readonly keysPressedAgain: string[] = [];
   /** Each key of an interrupt that resolved `interrupted` though no change made its session `idle` while it ran. */
   readonly interruptedNotIdle: string[] = [];
+  /**
+   * Each end for idleness begun on a session that was not `idle`, or had a
+   * terminal attached or a background task running: `<key> <why>`.
+   */
+  readonly idleEndsOfHeld: string[] = [];
+  /** How many terminals are attached to each key's session, as the host counts them. */
+  readonly #attached = new Map<string, number>();
   readonly records: MemoryRecords = createMemoryRecords();
   units: UnitsOfWork | undefined;
   closed = false;
@@ -153,7 +164,10 @@ class World {
   /** The conversations of every record removed, by key: those its current one, earlier ones and history name. */
   readonly #removedConversations = new Map<string, Set<string>>();
 
-  constructor({ exitOnSignal, slowness }: Setting) {
+  readonly #idleTimeoutMs: number | undefined;
+
+  constructor({ exitOnSignal, slowness, idleTimeoutMs }: Setting) {
+    this.#idleTimeoutMs = idleTimeoutMs;
     const driver = this.#driver;
     driver.promptFitsLaunch = (prompt) => prompt.length <= COMMAND_LINE_LIMIT;
     const canResume = driver.canResume.bind(driver);
@@ -190,9 +204,10 @@ class World {
       this.#seeIdles(list);
     });
     this.#watchTheInterrupts();
+    this.#watchTheIdleEnds();
   }
 
-  async open({ maxSessions }: Setting): Promise<void> {
+  async open({ maxSessions, idleTimeoutMs }: Setting): Promise<void> {
     this.units = await openUnitsOfWork({
       sessions: this.sessions,
       records: this.records,
@@ -201,7 +216,19 @@ class World {
       environment: () => ({ PATH: '/usr/bin' }),
       folders: stubFolders(),
       ...(maxSessions === undefined ? {} : { maxSessions }),
+      ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
     });
+  }
+
+  /** A time just past the idle timeout: 1 ms when there is none. */
+  get pastTheIdleTimeoutMs(): number {
+    return (this.#idleTimeoutMs ?? 0) + 1;
+  }
+
+  /** Attaches terminals to a key's session, or detaches them, as a page or a person does. */
+  attach(key: string, count: number): void {
+    this.#attached.set(key, count);
+    this.host.attachTerminals(key, count);
   }
 
   get unitsOfWork(): UnitsOfWork {
@@ -376,6 +403,20 @@ class World {
       });
   }
 
+  /** Marks each end for idleness begun on a session that something held, as the end begins. */
+  #watchTheIdleEnds(): void {
+    const end = this.sessions.end.bind(this.sessions);
+    this.sessions.end = (key, reason) => {
+      if (reason === 'idle-timeout') {
+        const session = this.sessions.session(key);
+        if (session?.state !== 'idle') this.idleEndsOfHeld.push(`${key} ${session?.state}`);
+        else if (session.backgroundTasks !== undefined) this.idleEndsOfHeld.push(`${key} tasks`);
+        if ((this.#attached.get(key) ?? 0) > 0) this.idleEndsOfHeld.push(`${key} attached`);
+      }
+      return end(key, reason);
+    };
+  }
+
   /**
    * Counts the interrupt's keys pressed while it runs: an end's whole run,
    * its interrupt's inside it, is one mark.
@@ -546,7 +587,18 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
   {
     weight: 8,
     arbitrary: fc
-      .tuple(file, fc.constantFrom('ready', 'start-and-take', 'prompt', 'working', 'turn-ended'))
+      .tuple(
+        file,
+        fc.constantFrom(
+          'ready',
+          'start-and-take',
+          'prompt',
+          'working',
+          'turn-ended',
+          'turn-ended-with-a-task',
+          'task-finished',
+        ),
+      )
       .map(([file, hook]) =>
         command(`hook ${file} ${hook}`, (world) => {
           const key = keyOf(file);
@@ -569,6 +621,22 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
     arbitrary: file.map((file) => command(`gone ${file}`, (world) => world.host.exit(keyOf(file)))),
   },
   {
+    weight: 2,
+    arbitrary: fc
+      .tuple(file, fc.constantFrom(0, 1))
+      .map(([file, count]) =>
+        command(`attach ${file} ${count}`, (world) => world.attach(keyOf(file), count)),
+      ),
+  },
+  {
+    weight: 2,
+    arbitrary: fc.constant(
+      command('tick past the idle timeout', (world) =>
+        vi.advanceTimersByTimeAsync(world.pastTheIdleTimeoutMs),
+      ),
+    ),
+  },
+  {
     weight: 4,
     arbitrary: fc
       .constantFrom(
@@ -585,6 +653,7 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
 const delay = fc.constantFrom(0, 300, LIVENESS_INTERVAL_MS + 500);
 const setting: fc.Arbitrary<Setting> = fc.record({
   maxSessions: fc.constantFrom(undefined, 1, 2),
+  idleTimeoutMs: fc.constantFrom(undefined, 500, 3_000),
   exitOnSignal: fc.boolean(),
   slowness: fc.record({ kill: delay, count: delay, resume: delay }),
 });
@@ -614,7 +683,7 @@ afterEach(() => {
 });
 
 describe('the sessions, whatever the order of what happens to them', () => {
-  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known nor its record come back', async () => {
+  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known nor its record come back, no session held ended for idleness', async () => {
     const { parameters, replayPath } = replay();
     await fc.assert(
       fc.asyncProperty(
@@ -639,6 +708,7 @@ describe('the sessions, whatever the order of what happens to them', () => {
             expect(world.interruptedNotIdle).toEqual([]);
             expect(world.removedButKnown()).toEqual([]);
             expect(world.removedConversationsKept()).toEqual([]);
+            expect(world.idleEndsOfHeld).toEqual([]);
             if (!world.closed) {
               expect(world.sessions.liveKeys()).toEqual([]);
               const notEnded = world.sessions.list().filter((each) => each.state !== 'ended');
