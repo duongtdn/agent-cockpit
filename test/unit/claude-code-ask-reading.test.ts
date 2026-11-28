@@ -53,6 +53,14 @@ function started(asked: Payload, callId: string): Payload {
   return { ...pre, tool_name, tool_input, prompt_id, tool_use_id: callId };
 }
 
+/**
+ * A call's hook in `auto`, where the agent asks some permissions in its terminal alone (row 147);
+ * the recorded calls are of `default`, where every permission comes through `PermissionRequest`.
+ */
+function inAuto(call: Payload): Payload {
+  return { ...call, permission_mode: 'auto' };
+}
+
 /** The hook that tells a call ran (`PostToolUse`) or failed (`PostToolUseFailure`). */
 function finished(call: Payload, event: 'PostToolUse' | 'PostToolUseFailure' = 'PostToolUse') {
   const { tool_name, tool_input, prompt_id, tool_use_id } = call;
@@ -204,7 +212,7 @@ describe('an ask settled by its call', () => {
 
   it("an ask is matched to its call's PreToolUse of the same turn only (prompt_id)", () => {
     const asked = bashAsked();
-    read(started({ ...asked, prompt_id: 'another-prompt' }, 'toolu_1'));
+    read(inAuto(started({ ...asked, prompt_id: 'another-prompt' }, 'toolu_1')));
     askOf(asked);
 
     // The call has no ask: the agent asking in its terminal is about it.
@@ -249,7 +257,7 @@ describe('a permission asked in the terminal only', () => {
   it.each(['permission_prompt', 'agent_needs_input'])(
     'Notification %s while a call has no ask: an ask of that call, from its PreToolUse',
     (type) => {
-      const call = started(bashAsked(), 'toolu_1');
+      const call = inAuto(started(bashAsked(), 'toolu_1'));
       read(call);
 
       expect(read(notification(type)).events).toEqual([
@@ -270,7 +278,7 @@ describe('a permission asked in the terminal only', () => {
   );
 
   it('the panel then the dialog: one ask, opened by the first Notification', () => {
-    read(started(bashAsked(), 'toolu_1'));
+    read(inAuto(started(bashAsked(), 'toolu_1')));
     read(notification('agent_needs_input'));
 
     expect(read(notification('permission_prompt')).events).toEqual([]);
@@ -278,9 +286,9 @@ describe('a permission asked in the terminal only', () => {
 
   it('the oldest call with no ask is the one asked about', () => {
     const held = readOf('r1.txt');
-    read(started(held, 'toolu_1'));
-    read(started(readOf('r2.txt'), 'toolu_2'));
-    read(started(readOf('r3.txt'), 'toolu_3'));
+    read(inAuto(started(held, 'toolu_1')));
+    read(inAuto(started(readOf('r2.txt'), 'toolu_2')));
+    read(inAuto(started(readOf('r3.txt'), 'toolu_3')));
     askOf(held);
 
     expect(read(notification('permission_prompt')).events).toEqual([
@@ -294,7 +302,7 @@ describe('a permission asked in the terminal only', () => {
   });
 
   it('settled by its call finished, by its reference', () => {
-    const call = started(bashAsked(), 'toolu_1');
+    const call = inAuto(started(bashAsked(), 'toolu_1'));
     read(call);
     const [asked] = read(notification('permission_prompt')).events;
     const ref = asked?.type === 'asked-in-terminal' ? asked.ask.ref : 'none';
@@ -304,10 +312,30 @@ describe('a permission asked in the terminal only', () => {
 
   it('a Notification that follows a held PermissionRequest opens nothing', () => {
     const asked = bashAsked();
-    read(started(asked, 'toolu_1'));
+    read(inAuto(started(asked, 'toolu_1')));
     askOf(asked);
 
     expect(read(notification('permission_prompt')).events).toEqual([]);
+  });
+
+  it("a call of default mode is never asked about in the terminal alone: a held ask's Notification while a call allowed by a rule still runs opens nothing", () => {
+    const asked = bashAsked();
+    read(started(readOf('r1.txt'), 'toolu_1'));
+    read(started(asked, 'toolu_2'));
+    askOf(asked);
+
+    expect(read(notification('permission_prompt')).events).toEqual([]);
+  });
+
+  it("in auto, a held ask's Notification while a call allowed by a rule still runs opens an ask of that call: nothing tells it from one asked in the terminal", () => {
+    const asked = bashAsked();
+    read(inAuto(started(readOf('r1.txt'), 'toolu_1')));
+    read(inAuto(started(asked, 'toolu_2')));
+    askOf(asked);
+
+    expect(read(notification('permission_prompt')).events).toEqual([
+      { type: 'asked-in-terminal', ask: expect.objectContaining({ ref: expect.any(String) }) },
+    ]);
   });
 
   it("a Notification that follows a question's PermissionRequest opens nothing: the terminal's alone", () => {
@@ -319,7 +347,7 @@ describe('a permission asked in the terminal only', () => {
   });
 
   it('a Notification with no call unfinished opens nothing', () => {
-    const call = started(bashAsked(), 'toolu_1');
+    const call = inAuto(started(bashAsked(), 'toolu_1'));
     expect(read(notification('permission_prompt')).events).toEqual([]);
 
     read(call);
@@ -328,7 +356,7 @@ describe('a permission asked in the terminal only', () => {
   });
 
   it("a background task's Notification, or one of another type, opens nothing", () => {
-    read(started(bashAsked(), 'toolu_1'));
+    read(inAuto(started(bashAsked(), 'toolu_1')));
     const tasks = { ...notification('permission_prompt'), agent_id: tasksAsk().agent_id };
     const idle = { ...notification('permission_prompt'), notification_type: 'idle_prompt' };
 
@@ -347,7 +375,7 @@ describe('a turn, or a process, drops its calls and asks', () => {
     const call = started(asked, 'toolu_1');
     read(call);
     askOf(asked);
-    read(started(readOf('r1.txt'), 'toolu_2'));
+    read(inAuto(started(readOf('r1.txt'), 'toolu_2')));
 
     read(recordedPayload(event));
 

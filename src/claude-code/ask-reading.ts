@@ -14,6 +14,14 @@ const NOT_PERMISSIONS: readonly unknown[] = ['AskUserQuestion', 'ExitPlanMode'];
  */
 const ASKING_NOTIFICATIONS: readonly unknown[] = ['agent_needs_input', 'permission_prompt'];
 
+/**
+ * The mode in which every permission the agent asks comes through
+ * `PermissionRequest`: its calls are never asked in the terminal alone,
+ * which the agent does in `auto` and `plan`. Any other mode, one the
+ * agent names otherwise included, may be.
+ */
+const ASKS_THROUGH_ITS_HOOK = 'default';
+
 const NOTHING: HookOutcome = { events: [] };
 
 /**
@@ -25,6 +33,8 @@ interface Call {
   readonly identity: string;
   readonly promptId: unknown;
   readonly content: AskContent;
+  /** Whether the agent may ask about it in its terminal alone, by the mode it was called in. */
+  readonly askableInTerminal: boolean;
   /** Whether an ask was matched to it: by its `PermissionRequest`, or opened from a `Notification`. */
   asked: boolean;
 }
@@ -118,6 +128,7 @@ function callStarted(turn: Turn, payload: Record<string, unknown>): HookOutcome 
       ...call,
       id: payload.tool_use_id,
       promptId: payload.prompt_id,
+      askableInTerminal: payload.permission_mode !== ASKS_THROUGH_ITS_HOOK,
       asked: false,
     });
   }
@@ -153,7 +164,8 @@ function callFinished(turn: Turn, payload: Record<string, unknown>): HookOutcome
 
 function notified(turn: Turn, payload: Record<string, unknown>, openAsk: AskOpener): HookOutcome {
   if (!ASKING_NOTIFICATIONS.includes(payload.notification_type)) return NOTHING;
-  const call = turn.calls.find((each) => !each.asked);
+  // A held ask's notice comes as a dialog's would: a call running in default mode is no ask.
+  const call = turn.calls.find((each) => !each.asked && each.askableInTerminal);
   if (call === undefined) return NOTHING;
   call.asked = true;
   const event: DriverEvent = {

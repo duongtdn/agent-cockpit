@@ -123,6 +123,10 @@ const ROW_OF_EACH_HTTP_HOOK: Readonly<Record<string, string>> = {
   PostCompact: '16 (compaction.test.ts)',
   SubagentStart: '62 (tasks.test.ts)',
   SubagentStop: '62 (tasks.test.ts)',
+  PermissionRequest: '137 (permissions.test.ts)',
+  PostToolUseFailure: '142 (permissions.test.ts)',
+  PostToolBatch: '144 (permissions.test.ts)',
+  Notification: '147 (permissions.test.ts)',
 };
 
 it('every HTTP hook the driver configures has a row that reads it through the listener', () => {
