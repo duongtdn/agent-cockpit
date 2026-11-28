@@ -13,7 +13,11 @@
  * conversations, its history — comes back into the key's record when it
  * is run again, and no session was ended for idleness while a terminal
  * was attached to it, a background task ran in it, or it was not `idle`
- * since the timeout or longer, as its end began.
+ * since the timeout or longer, as its end began. The agent's asks: each
+ * settled once and told once, a session `waiting` exactly while it lists
+ * an ask still pending (and listing every one), no hook held once its ask
+ * settled or its session ended, and every answer resolved or refused for
+ * a reason the app is told.
  *
  * A failure prints its seed, its path and the shrunk sequence with its
  * `replayPath`; run it again with `INTERLEAVINGS_SEED`, `INTERLEAVINGS_PATH`
@@ -23,6 +27,7 @@
 
 import fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Asks } from '../../src/server/asks/asks.ts';
 import { SessionHostError } from '../../src/server/session-host/session-host-error.ts';
 import type { JobRuns } from '../../src/server/sessions/job-runs.ts';
 import {
@@ -37,17 +42,23 @@ import { START_DEADLINE_MS } from '../../src/server/sessions/start-up-watch.ts';
 import { openUnitsOfWork, type UnitsOfWork } from '../../src/server/sessions/units-of-work.ts';
 import type { UnitRecord } from '../../src/server/state/records.ts';
 import { createTerminalHolds } from '../../src/server/terminal-hold.ts';
+import type { Ask } from '../../src/shared/ask.ts';
 import { CockpitError } from '../../src/shared/cockpit-error.ts';
 import type { Session } from '../../src/shared/session.ts';
 import { DRIVER_DEFAULTS } from '../support/driver-defaults.ts';
 import {
+  ASK_PATH,
+  ASKED_IN_TERMINAL_PATH,
+  CALL_FINISHED_PATH,
+  createFakeHolds,
   createFakeHost,
   createMemoryRecords,
   createRecordingHookAccess,
   createStubDriver,
   createTestAsks,
+  type FakeHeldHook,
+  type FakeHolds,
   type FakeHost,
-  holdNoHook,
   type MemoryRecords,
   PROMPT_PATH,
   type StubDriver,
@@ -126,9 +137,44 @@ interface Call {
   failure?: unknown;
 }
 
+/** Why an answer may be refused: each a refusal the app is told. */
+const ANSWER_REFUSALS: readonly string[] = [
+  'unknown-id',
+  'already-settled',
+  'terminal-only',
+  'invalid-answer',
+];
+
+/** The answers an app gives: each kind of answer, one that fits no ask, and one to an id never opened. */
+type AnswerGiven = 'allow' | 'remember' | 'deny' | 'invalid' | 'unknown-id';
+
+const ANSWERS: Readonly<Record<Exclude<AnswerGiven, 'unknown-id'>, unknown>> = {
+  allow: { allow: true },
+  remember: { allow: true, remember: 'session' },
+  deny: { allow: false, message: 'Not that.' },
+  invalid: { allow: 'yes' },
+};
+
+/** The call a stub ask is about, as its content names it. */
+function refOf(ask: Ask): string {
+  return String(ask.input.command).replace(/^touch /, '');
+}
+
 /** The core and the units of work on their doubles, and what the properties look at. */
 class World {
   readonly host: FakeHost = createFakeHost();
+  readonly asks: Asks = createTestAsks();
+  readonly holds: FakeHolds = createFakeHolds();
+  /** Each breach of the asks' properties, as it was seen: `<what> <id or key>`. */
+  readonly askBreaches: string[] = [];
+  /** The id of each ask opened, by the call it is about. */
+  readonly #askOfCall = new Map<string, string>();
+  /** How many times each ask opened was told settled. */
+  readonly #settledTold = new Map<string, number>();
+  /** The calls each key's agent asked about, in order. */
+  readonly #calls = new Map<string, string[]>();
+  /** The call each held hook is about. */
+  readonly #callOfHeld = new Map<FakeHeldHook, string>();
   readonly sessions: Sessions;
   readonly calls: Call[] = [];
   /** Each key whose end was told again without a launch between. */
@@ -207,7 +253,7 @@ class World {
         listener: { host: '127.0.0.1', port: 4000 },
       }),
       holds: createTerminalHolds(),
-      asks: createTestAsks(),
+      asks: this.asks,
       signal: (pid) => {
         const key = KEYS.find((each) => this.host.pidOf(each) === pid);
         if (key === undefined) return;
@@ -219,6 +265,7 @@ class World {
       this.#seeEnds(list);
       this.#seeIdles(list);
     });
+    this.#watchTheAsks();
     this.#watchTheInterrupts();
     this.#watchTheIdleEnds();
     this.#watchTheEndsAsked();
@@ -351,6 +398,97 @@ class World {
       for (const key of KEYS) this.host.exit(key);
       await vi.advanceTimersByTimeAsync(DRAIN_STEP_MS);
     }
+  }
+
+  /** The agent asks a permission about a new call, held, or in its terminal only. */
+  ask(key: string, inTerminal: boolean): void {
+    const call = `call-${[...this.#calls.values()].flat().length + 1}`;
+    this.#calls.set(key, [...(this.#calls.get(key) ?? []), call]);
+    const held = this.holds.held.length;
+    this.receive(key, `${inTerminal ? ASKED_IN_TERMINAL_PATH : ASK_PATH}${call}`);
+    const hook = this.holds.held[held];
+    if (hook !== undefined) this.#callOfHeld.set(hook, call);
+  }
+
+  /**
+   * A person answers Yes in the terminal: the oldest call of the key whose
+   * ask is pending finishes (or its last call, its ask settled already).
+   */
+  finishCall(key: string): void {
+    const calls = this.#calls.get(key) ?? [];
+    const pending = new Set(this.asks.pending(key).map((ask) => ask.id));
+    const call = calls.find((each) => pending.has(this.#askOfCall.get(each) ?? '')) ?? calls.at(-1);
+    if (call !== undefined) this.receive(key, `${CALL_FINISHED_PATH}${call}`);
+  }
+
+  /** A person answers a plain "No" in the terminal: the agent closes the oldest hook of the key it holds open. */
+  closeHeld(key: string): void {
+    const calls = new Set(this.#calls.get(key));
+    const hook = this.holds.held.find(
+      (each) => each.end === 'open' && calls.has(this.#callOfHeld.get(each) ?? ''),
+    );
+    hook?.closeByAgent();
+  }
+
+  /** The app answers the oldest pending ask of the key (or the last it opened, or an id never opened). */
+  answer(key: string, given: AnswerGiven): void {
+    const opened = (this.#calls.get(key) ?? []).flatMap((call) => this.#askOfCall.get(call) ?? []);
+    const id =
+      given === 'unknown-id'
+        ? 'no-such-ask'
+        : (this.asks.pending(key)[0]?.id ?? opened.at(-1) ?? 'no-such-ask');
+    const answer = given === 'unknown-id' ? ANSWERS.allow : ANSWERS[given];
+    this.asks.answer(id, answer).catch((refused: unknown) => {
+      if (refused instanceof CockpitError && ANSWER_REFUSALS.includes(refused.code)) return;
+      this.askBreaches.push(`answer ${id} failed: ${String(refused)}`);
+    });
+  }
+
+  /** Sends a hook of a key's agent, held when the core holds it. */
+  receive(key: string, path: string): void {
+    this.sessions.receive({ key, path, body: {} }, this.holds.hold);
+  }
+
+  /**
+   * Checks the asks against the sessions once a command ran: each session
+   * lists exactly its asks pending, in the order they opened, and no hook is
+   * held for an ask settled or a session ended. After the close neither
+   * the core nor the hooks move again.
+   */
+  checkTheAsks(): void {
+    if (this.closed) return;
+    for (const key of KEYS) {
+      const session = this.sessions.session(key);
+      const listed =
+        session?.state === 'waiting' ? session.pending.flatMap((each) => each.id ?? []) : [];
+      const pending = this.asks.pending(key).map((ask) => ask.id);
+      if (listed.join() !== pending.join()) {
+        this.askBreaches.push(`${key} lists [${listed}] with [${pending}] pending`);
+      }
+    }
+    const pending = new Set(this.asks.pending('*').map((ask) => ask.id));
+    for (const [hook, call] of this.#callOfHeld) {
+      if (hook.end !== 'open') continue;
+      const id = this.#askOfCall.get(call) ?? call;
+      if (!pending.has(id)) this.askBreaches.push(`held after settled ${id}`);
+    }
+  }
+
+  /** Checks, once every agent exited, that every ask opened was told settled exactly once. */
+  checkEveryAskSettled(): void {
+    for (const id of this.#askOfCall.values()) {
+      const told = this.#settledTold.get(id) ?? 0;
+      if (told !== 1) this.askBreaches.push(`told ${told} times ${id}`);
+    }
+  }
+
+  #watchTheAsks(): void {
+    this.asks.follow('*', (ask) => void this.#askOfCall.set(refOf(ask), ask.id));
+    this.asks.on('settled', ({ id }) => {
+      const told = (this.#settledTold.get(id) ?? 0) + 1;
+      this.#settledTold.set(id, told);
+      if (told > 1) this.askBreaches.push(`told again ${id}`);
+    });
   }
 
   /** Keeps the conversations of each record as it is removed. */
@@ -552,6 +690,7 @@ function command(label: string, act: (world: World) => unknown): Command {
     async run(_model, world) {
       await act(world);
       await vi.advanceTimersByTimeAsync(0);
+      world.checkTheAsks();
     },
     toString: () => label,
   };
@@ -648,8 +787,46 @@ const COMMANDS: fc.WeightedArbitrary<Command>[] = [
           const key = keyOf(file);
           const prompt = world.lastPrompt.get(key) ?? '';
           const path = hook === 'prompt' ? `${PROMPT_PATH}${prompt}` : `/${hook}`;
-          world.sessions.receive({ key, path, body: {} }, holdNoHook);
+          world.receive(key, path);
         }),
+      ),
+  },
+  {
+    weight: 4,
+    arbitrary: fc
+      .tuple(
+        file,
+        fc.constantFrom(
+          'asked',
+          'asked-in-terminal',
+          'yes',
+          'yes-failing',
+          'plain-no',
+          'amended-no',
+        ),
+      )
+      .map(([file, act]) =>
+        command(`ask ${file} ${act}`, (world) => {
+          const key = keyOf(file);
+          if (act === 'asked' || act === 'asked-in-terminal') {
+            world.ask(key, act === 'asked-in-terminal');
+          }
+          // A tool that fails after a Yes ends its call as one that ran: the driver tells both `call-finished`.
+          else if (act === 'yes' || act === 'yes-failing') world.finishCall(key);
+          else if (act === 'plain-no') world.closeHeld(key);
+          else world.receive(key, '/batch-ended');
+        }),
+      ),
+  },
+  {
+    weight: 3,
+    arbitrary: fc
+      .tuple(
+        file,
+        fc.constantFrom<AnswerGiven>('allow', 'remember', 'deny', 'invalid', 'unknown-id'),
+      )
+      .map(([file, given]) =>
+        command(`answer ${file} ${given}`, (world) => world.answer(keyOf(file), given)),
       ),
   },
   {
@@ -728,7 +905,7 @@ afterEach(() => {
 });
 
 describe('the sessions, whatever the order of what happens to them', () => {
-  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known nor its record come back, no session held ended for idleness', async () => {
+  it('leave no session between two phases, every call settled, each end told once, nothing typed into a session being ended, no interrupt pressing twice or resolved on a session not idle, no removed key known nor its record come back, no session held ended for idleness, every ask settled and told once, a session waiting exactly on its pending asks, no hook held past its ask', async () => {
     const { parameters, replayPath } = replay();
     await fc.assert(
       fc.asyncProperty(
@@ -755,6 +932,8 @@ describe('the sessions, whatever the order of what happens to them', () => {
             expect(world.removedButKnown()).toEqual([]);
             expect(world.removedConversationsKept()).toEqual([]);
             expect(world.idleEndsOfHeld).toEqual([]);
+            if (!world.closed) world.checkEveryAskSettled();
+            expect(world.askBreaches).toEqual([]);
             if (!world.closed) {
               expect(world.sessions.liveKeys()).toEqual([]);
               const notEnded = world.sessions.list().filter((each) => each.state !== 'ended');
