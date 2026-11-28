@@ -1,5 +1,5 @@
 /**
- * The units of work: what a run, a send, an open and an interrupt do in each state of a
+ * The units of work: what a run, a send, an open, an interrupt and an end do in each state of a
  * key's session, on top of the sessions core — the conversation resumed
  * or started anew, a live session ended first, a prompt typed, the cap on
  * live sessions — and the records that keep each key's conversations,
@@ -15,6 +15,7 @@ import type {
   BackgroundTask,
   EndedSession,
   EndReason,
+  EndResult,
   HistoryEntry,
   InterruptResult,
   OpenOptions,
@@ -26,8 +27,10 @@ import type {
   SessionState,
 } from '../../shared/session.js';
 import type { Driver, DriverSettings } from '../driver.js';
+import { internalFailure } from '../failures.js';
 import { checkRecordedFolder, type JobFolder } from '../job-folders.js';
 import { refuseUnfitPrompt } from '../prompt-length.js';
+import { SessionHostError } from '../session-host/session-host-error.js';
 import type { RecordStore, UnitRecord } from '../state/records.js';
 import { Followers } from './followers.js';
 import type { JobRun, JobRuns } from './job-runs.js';
@@ -151,6 +154,34 @@ export interface UnitsOfWork {
    * first.
    */
   interrupt(key: string): Promise<InterruptResult>;
+  /**
+   * Ends a unit of work's session, once the operations asked before it on
+   * the key settled: its agent's process ended, its conversation and
+   * record kept, `ended` with `reason: 'app'`.
+   *
+   * | State | End |
+   * |---|---|
+   * | no record, `ended` | Nothing to end. |
+   * | `starting` | Refused `wrong-state`. |
+   * | `idle`, `waiting` in the terminal only (a start-up dialog, a panel) | Ended at once, no key pressed. |
+   * | `busy`, `waiting` on anything else | Its turn interrupted first, as `interrupt` does, then ended whether or not the interrupt was confirmed. |
+   *
+   * A session being ended already (the cap's end, a restart's) has that
+   * end awaited, its reason kept.
+   *
+   * @param key - The unit of work's key.
+   * @returns `ended` once the session's process is gone, with the
+   * background tasks known running as it went, stopped with it (empty when
+   * none ran); `nothing-to-end` with the session's state, none for a key
+   * with no record.
+   * @throws `CockpitError` `wrong-state` on `starting`; `internal-failure`
+   * (`where: 'session-host'`) with the host's failure as its cause when the
+   * host cannot kill a session that outlived the driver's bound: the
+   * session is left live, and a later end may kill it.
+   * `SessionsClosedError` once the units of work or the core are closed
+   * first, or the core is closed before the end settles.
+   */
+  end(key: string): Promise<EndResult>;
   /**
    * Lists the units of work: each recorded key's session with its record,
    * `ended` when no session of this process lives, in the order the keys
@@ -330,10 +361,29 @@ class Units implements UnitsOfWork {
 
   async #interrupt(key: string): Promise<InterruptResult> {
     if (this.#sessions.session(key) !== undefined) return this.#sessions.interrupt(key);
+    return { action: 'nothing-to-interrupt', ...this.#recordedState(key) };
+  }
+
+  async end(key: string): Promise<EndResult> {
+    return this.#queue.run(key, () => this.#end(key));
+  }
+
+  async #end(key: string): Promise<EndResult> {
+    if (this.#sessions.session(key) === undefined) {
+      return { action: 'nothing-to-end', ...this.#recordedState(key) };
+    }
+    try {
+      return await this.#sessions.interruptAndEnd(key, 'app');
+    } catch (error) {
+      if (error instanceof SessionHostError) throw internalFailure('session-host', error);
+      throw error;
+    }
+  }
+
+  /** The state of a key with no session in this process: `ended` when it is recorded, none when not. */
+  #recordedState(key: string): { state?: SessionState } {
     const record = this.#records.get(key);
-    return record === undefined
-      ? { action: 'nothing-to-interrupt' }
-      : { action: 'nothing-to-interrupt', state: this.#sessionOf(record).state };
+    return record === undefined ? {} : { state: this.#sessionOf(record).state };
   }
 
   list(): Session[] {
