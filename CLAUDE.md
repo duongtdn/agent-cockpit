@@ -288,7 +288,14 @@ real screens kept as fixtures (`test/fixtures/screens`,
 `exec`s it), so a test reads its environment in `/proc`. It refuses to run
 without `CLAUDE_CONFIG_DIR` (it never writes the person's configuration).
 It fires `SessionStart` once started; then a script's steps: `turn` (the
-launch prompt's `UserPromptSubmit`, then `Stop` with the reply),
+launch prompt's `UserPromptSubmit`, its `asks`, then `Stop` with the
+reply; each ask a tool and input: `PreToolUse`, then `PermissionRequest`
+held for its reply — `allow` fires `PostToolUse`, `deny` goes on, `deny`
+with `interrupt` ends the turn with the transcript's interruption marker
+and no `Stop`; with no decision, or before one, the test answers as the
+person in the terminal, `answerInTerminal`: `esc` closes the hook and
+interrupts, `yes` fires `PostToolUse`, `amended-no` the refused call's
+`PostToolBatch`, both leaving the hook open),
 `stay-busy` (`UserPromptSubmit`, then nothing until killed), `hold` (until
 the test's `release`), `exit` (`SessionEnd` with the reason of the agent's
 own exit, then status 0). On SIGTERM, as the cockpit ends a session, it

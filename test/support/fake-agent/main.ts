@@ -6,11 +6,17 @@ import { CANNOT_PLAY_STATUS, createFakeAgent } from './agent.ts';
 import { type CommandLine, parseCommandLine } from './command-line.ts';
 import { createHookRunner } from './hook-runner.ts';
 import { type HookSettings, parseHookSettings } from './hook-settings.ts';
-import { readScript, type Step, takeRelease } from './script.ts';
+import {
+  readScript,
+  type Step,
+  type TerminalAnswer,
+  takeRelease,
+  takeTerminalAnswer,
+} from './script.ts';
 import { openTranscript, transcriptPathFor } from './transcript.ts';
 import { fakeAgentVersion, versionOutput } from './version.ts';
 
-/** How often a held agent looks whether the test released it, in milliseconds. */
+/** How often a held agent looks whether the test released it or answered its ask, in milliseconds. */
 const RELEASE_CHECK_MS = 10;
 
 /** Ends the process at once, saying why, as a program that cannot start does. */
@@ -65,6 +71,14 @@ async function released(cwd: string): Promise<void> {
   while (!takeRelease(cwd)) await pause(RELEASE_CHECK_MS);
 }
 
+async function answeredInTerminal(cwd: string, signal: AbortSignal): Promise<TerminalAnswer> {
+  for (;;) {
+    const answer = takeTerminalAnswer(cwd);
+    if (answer !== undefined) return answer;
+    await pause(RELEASE_CHECK_MS, undefined, { signal });
+  }
+}
+
 if (process.argv.slice(2).join(' ') === '--version') {
   process.stdout.write(versionOutput(fakeAgentVersion(process.env)));
   process.exit(0);
@@ -85,6 +99,7 @@ const agent = createFakeAgent({
   recorded: (event, where) => recordedPayload(event, where, values),
   transcript: openTranscript(transcriptPath, sessionId),
   released: () => released(cwd),
+  answeredInTerminal: (signal) => answeredInTerminal(cwd, signal),
   exit: (status) => process.exit(status),
 });
 

@@ -27,7 +27,12 @@ export interface Transcript {
   recordPrompt(prompt: string): void;
   /** Records a text the agent answered. */
   recordReply(text: string): void;
+  /** Records that the person interrupted the turn while a call was open, as no hook tells. */
+  recordInterruption(): void;
 }
+
+/** What Claude Code writes when a person interrupts a turn while a tool call is open. */
+const INTERRUPTED_FOR_TOOL_USE = '[Request interrupted by user for tool use]';
 
 /**
  * Opens a conversation's transcript for writing. The file appears with its
@@ -52,5 +57,6 @@ export function openTranscript(path: string, sessionId: string): Transcript {
   return {
     recordPrompt: (prompt) => record('user', prompt),
     recordReply: (text) => record('assistant', [{ type: 'text', text }]),
+    recordInterruption: () => record('user', [{ type: 'text', text: INTERRUPTED_FOR_TOOL_USE }]),
   };
 }

@@ -1,18 +1,34 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   CANNOT_PLAY_STATUS,
   OF_THE_SESSION,
+  ofTheCall,
+  REFUSED_BATCH,
   STOP_WITH_NO_TASK,
   TERMINATED_STATUS,
 } from '../support/fake-agent/agent.ts';
 import { fakeAgentCommand } from '../support/fake-agent/launching.ts';
-import { release, type Step, writeScript } from '../support/fake-agent/script.ts';
+import {
+  type AskedCall,
+  answerInTerminal,
+  release,
+  type Step,
+  writeScript,
+} from '../support/fake-agent/script.ts';
 import { transcriptPathFor } from '../support/fake-agent/transcript.ts';
 import { versionOutput } from '../support/fake-agent/version.ts';
 import { type HookReceiver, startHookReceiver } from '../support/hooks/hook-receiver.ts';
@@ -115,6 +131,50 @@ function valuesOf({ folder, sessionId }: Run) {
 /** The payloads the receiver got by HTTP, in order. */
 const posted = () => receiver.received.filter((hook) => hook.via === 'http');
 
+/** The events the receiver got by HTTP, in order. */
+const postedEvents = () => posted().map((hook) => hook.event);
+
+/** The call a turn asks for in these tests. */
+const CALL: AskedCall = {
+  tool: 'Bash',
+  input: { command: 'touch b.txt', description: 'Create b.txt' },
+};
+
+/** A turn on the launch's prompt that asks for {@link CALL}. */
+const ASKING_TURN: Step = { do: 'turn', reply: 'Made b.txt.', asks: [CALL] };
+
+/** {@link ASKING_TURN}, then the agent's own exit: what it fired is all there once it ended. */
+const ASK_THEN_EXIT: readonly Step[] = [ASKING_TURN, { do: 'exit' }];
+
+/** {@link ASKING_TURN}, then a wait: the process, and any connection it left open, stay. */
+const ASK_THEN_HOLD: readonly Step[] = [ASKING_TURN, { do: 'hold' }];
+
+/** The reply of a `PermissionRequest` hook that decides, as the cockpit writes one. */
+const decision = (decided: Record<string, unknown>) => ({
+  hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: decided },
+});
+
+/** The texts of the transcript's entries, in order. */
+function transcriptTexts(agent: Run): string[] {
+  return readFileSync(valuesOf(agent).transcriptPath, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => {
+      const { content } = (JSON.parse(line) as { message: { content: unknown } }).message;
+      return typeof content === 'string'
+        ? content
+        : ((content as { text: string }[])[0]?.text ?? '');
+    });
+}
+
+/** Runs a script that asks, its `PermissionRequest` held, and gives the held hook. */
+async function asking(script: readonly Step[] = ASK_THEN_EXIT) {
+  receiver.hold('PermissionRequest');
+  const agent = run({ script, prompt: 'Make b.txt' });
+  const permission = await receiver.next('PermissionRequest');
+  return { agent, permission };
+}
+
 describe('the fake agent', () => {
   it("says the pinned agent's version on --version, as Claude Code does, and starts nothing", async () => {
     const agent = fakeAgentCommand();
@@ -199,6 +259,119 @@ describe('the fake agent', () => {
     expect((await receiver.next('SessionEnd')).payload).toEqual(
       recordedPayload('SessionEnd', { reason: 'prompt_input_exit' }, valuesOf(agent)),
     );
+  });
+
+  describe('asks for a call', () => {
+    it("fires the recorded PreToolUse then PermissionRequest for the call, the call's own ids in both, and waits on the held hook", async () => {
+      const { agent, permission } = await asking();
+      const values = valuesOf(agent);
+      const before = recordedPayload('PreToolUse', ofTheCall(CALL.tool), values);
+
+      expect(postedEvents()).toEqual(['UserPromptSubmit', 'PreToolUse', 'PermissionRequest']);
+      expect(posted()[1]?.payload).toEqual({ ...before, tool_input: CALL.input });
+      expect(permission.payload).toEqual({
+        ...recordedPayload('PermissionRequest', ofTheCall(CALL.tool), values),
+        tool_input: CALL.input,
+        prompt_id: before.prompt_id,
+      });
+      expect(permission.isOpen()).toBe(true);
+    });
+
+    it('on allow, fires PostToolUse of the call and goes on to end the turn', async () => {
+      const { agent, permission } = await asking();
+      const values = valuesOf(agent);
+      const before = recordedPayload('PreToolUse', ofTheCall(CALL.tool), values);
+
+      permission.answer(decision({ behavior: 'allow' }));
+
+      expect((await agent.ended).status).toBe(0);
+      expect((await receiver.next('PostToolUse')).payload).toEqual({
+        ...recordedPayload('PostToolUse', ofTheCall(CALL.tool), values),
+        tool_input: CALL.input,
+        tool_use_id: before.tool_use_id,
+        prompt_id: before.prompt_id,
+      });
+      expect(postedEvents().slice(3)).toEqual(['PostToolUse', 'Stop', 'SessionEnd']);
+    });
+
+    it('on deny, goes on to end the turn, the call not run', async () => {
+      const { agent, permission } = await asking();
+
+      permission.answer(decision({ behavior: 'deny', message: 'Not now' }));
+
+      expect((await agent.ended).status).toBe(0);
+      expect(postedEvents().slice(3)).toEqual(['Stop', 'SessionEnd']);
+    });
+
+    it('on deny with interrupt, ends the turn as an interruption: the marker in the transcript, no Stop', async () => {
+      const { agent, permission } = await asking();
+
+      permission.answer(decision({ behavior: 'deny', interrupt: true }));
+
+      expect((await agent.ended).status).toBe(0);
+      expect(postedEvents().slice(3)).toEqual(['SessionEnd']);
+      expect(transcriptTexts(agent)).toEqual([
+        'Make b.txt',
+        '[Request interrupted by user for tool use]',
+      ]);
+    });
+
+    it('on a reply with no decision, leaves the call to the terminal, as its dialog stays there', async () => {
+      const { agent, permission } = await asking();
+      permission.answer({});
+
+      answerInTerminal(agent.folder, 'yes');
+
+      expect((await agent.ended).status).toBe(0);
+      expect(postedEvents().slice(3)).toEqual(['PostToolUse', 'Stop', 'SessionEnd']);
+    });
+
+    it("on the person's Esc, closes the held connection and ends the turn as an interruption", async () => {
+      const { agent, permission } = await asking();
+
+      answerInTerminal(agent.folder, 'esc');
+
+      await permission.closedBySender;
+      expect((await agent.ended).status).toBe(0);
+      expect(postedEvents().slice(3)).toEqual(['SessionEnd']);
+      expect(transcriptTexts(agent).at(-1)).toBe('[Request interrupted by user for tool use]');
+    });
+
+    it("on the person's Yes, fires PostToolUse of the call and leaves the connection open, the turn going on", async () => {
+      const { agent, permission } = await asking(ASK_THEN_HOLD);
+
+      answerInTerminal(agent.folder, 'yes');
+
+      await receiver.next('Stop');
+      expect(postedEvents().slice(3)).toEqual(['PostToolUse', 'Stop']);
+      expect(permission.isOpen()).toBe(true);
+    });
+
+    it("on the person's amended No, fires the recorded PostToolBatch of a refused call and leaves the connection open, the turn going on", async () => {
+      const { agent, permission } = await asking(ASK_THEN_HOLD);
+      const values = valuesOf(agent);
+      const before = recordedPayload('PreToolUse', ofTheCall(CALL.tool), values);
+      const refused = recordedPayload('PostToolBatch', REFUSED_BATCH, values);
+      const [recordedCall] = refused.tool_calls as Record<string, unknown>[];
+
+      answerInTerminal(agent.folder, 'amended-no');
+
+      await receiver.next('Stop');
+      expect((await receiver.next('PostToolBatch')).payload).toEqual({
+        ...refused,
+        prompt_id: before.prompt_id,
+        tool_calls: [
+          {
+            ...recordedCall,
+            tool_name: CALL.tool,
+            tool_input: CALL.input,
+            tool_use_id: before.tool_use_id,
+          },
+        ],
+      });
+      expect(postedEvents().slice(3)).toEqual(['PostToolBatch', 'Stop']);
+      expect(permission.isOpen()).toBe(true);
+    });
   });
 
   it.each([
